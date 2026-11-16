@@ -1,0 +1,4 @@
+{
+  "scripts": ["typecheck", "build"],
+  "description": "Add server-only secret handling and the required preview cookie contract for custom integrations"
+}

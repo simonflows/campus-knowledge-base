@@ -1,0 +1,30 @@
+diff --git a/.vibecraft/template.json b/.vibecraft/template.json
+index bbea0d79890803fe29ca006899b37647abe6dc88..82624d07a14c5d29eda42c09d0413bf0ddc77777 100644
+--- a/.vibecraft/template.json
++++ b/.vibecraft/template.json
+@@ -1,3 +1,3 @@
+ {
+-  "version": "1.0.3"
++  "version": "1.0.4"
+ }
+diff --git a/AGENTS.md b/AGENTS.md
+index d14e263a279184f09d296e681e022547a28345fa..14eb50a7146db955c95d1325bb303e02bd269a72 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -16,6 +16,16 @@
+ - Yandex Cloud Document API is DynamoDB-compatible; existing plumbing is already set up.
+ - Internet access is available. Prefer official sources for framework/block lookups and keep local fallback paths when external access fails.
+ 
++## Secrets And Preview Cookies
++
++- Write server-side application code that uses `process.env.<NAME>` with the environment variable names specified in the task (for example, `process.env.CRM_API_TOKEN`). The running application resolves secret values at runtime.
++- As the development agent, never read, extract, inspect, or print secret values yourself. Do not retrieve them through tools, shell commands, environment dumps, or ad hoc scripts.
++- Never put secret values in .env files, source code, configuration, logs, documentation, client code, or browser storage.
++- Never ask the user to send secret values in chat. If the application reports missing credentials, report only the required variable names so they can be supplied through VibeCraft's secure form.
++- Project secrets reach the runtime asynchronously. If the application reports that a just-saved variable is missing, report that the environment may still be updating; do not replace it with a hardcoded value or an .env file.
++- Name every application cookie `__Host-vibecraft-<purpose>` (for example, `__Host-vibecraft-session`). Preview only forwards cookies with this exact prefix.
++- Every such cookie must have `Secure` and `Path=/`. Do not set Domain. Preserve this contract when setting, replacing, or deleting cookies, including during local development.
++
+ ## Request Classification
+ 
+ Before building, classify the request:
