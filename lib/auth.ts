@@ -1,4 +1,4 @@
-import { getCardStatus, isJointProject, type KnowledgeCard } from "./knowledge";
+import { cardContent, getCardStatus, getApprovedVersion, getPublicApprovedCard, getRequiredUniversityApprovals, type KnowledgeCard } from "./knowledge";
 
 export const ROLES = [
   "admin",
@@ -377,14 +377,12 @@ export function isCardOwner(
 ): boolean {
   if (!user) return false;
 
-  const normalizedOwners = owners.map(normalize);
+  const normalizedOwners = new Set(owners.flatMap((owner) => [normalize(owner), ...owner.split(",").map(normalize)]));
   const aliases = [...user.ownerAliases, ...user.organizationAliases]
     .map(normalize)
     .filter(Boolean);
 
-  return aliases.some((alias) =>
-    normalizedOwners.some((owner) => owner.includes(alias))
-  );
+  return aliases.some((alias) => normalizedOwners.has(alias));
 }
 
 export function canManageTypes(user: SessionUser | null): boolean {
@@ -413,18 +411,21 @@ export function canRequestEdit(
 ): boolean {
   if (!user || user.role === "guest") return false;
 
-  return !canEditCard(user, card);
+  return !canEditCard(user, card) && (canSeeCard(user, card) || !!getApprovedVersion(card));
 }
 
 export function canEditCard(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user) return false;
+  if (!user || user.role === "guest" || user.role === "ministry") return false;
 
   if (user.role === "admin") return true;
 
   if (card.type === "campus") return false;
+  if (card.type === "university") {
+    return user.universityId === card.universityId && ["university_owner", "university_pr"].includes(user.role);
+  }
 
   if (getCardStatus(card) !== "approved" && card.submittedBy === user.id) {
     return true;
@@ -439,16 +440,15 @@ export function canSeeCard(
 ): boolean {
   if (getCardStatus(card) === "approved") return true;
 
-  if (!user) return false;
+  if (!user || user.role === "guest") return false;
 
-  if (user.role === "admin") return true;
+  if (canEditCard(user, card)) return true;
   if (card.submittedBy === user.id) return true;
   if (isCardOwner(user, card.owners)) return true;
 
   return Boolean(
     user.universityId &&
-    isJointProject(card) &&
-    card.participantUniversityIds.includes(user.universityId)
+    getRequiredUniversityApprovals(card).includes(user.universityId)
   );
 }
 
@@ -456,11 +456,40 @@ export function canConfirmJointParticipation(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user?.universityId || !isJointProject(card)) return false;
-  if (getCardStatus(card) === "approved") return false;
-  if (!card.participantUniversityIds.includes(user.universityId)) return false;
+  if (!user?.universityId) return false;
+  if (getCardStatus(card) !== "pending") return false;
+  if (!getRequiredUniversityApprovals(card).includes(user.universityId)) return false;
 
   return !(card.participantApprovals ?? []).includes(user.universityId);
+}
+
+export function visibleKnowledgeCard(user: SessionUser | null, card: KnowledgeCard): KnowledgeCard | null {
+  const currentVisible = canSeeCard(user, card);
+  const visible = currentVisible ? cardContent(card) : getPublicApprovedCard(card);
+  if (!visible) return null;
+  const editor = canEditCard(user, card);
+  if (editor || (currentVisible && getCardStatus(card) !== "approved")) {
+    Object.assign(visible, {
+      submittedBy: card.submittedBy,
+      submittedByName: card.submittedByName,
+      reviewedBy: card.reviewedBy,
+      reviewedAt: card.reviewedAt,
+      reviewComment: card.reviewComment,
+      participantApprovals: card.participantApprovals,
+      requiredApprovalUniversityIds: card.requiredApprovalUniversityIds,
+    });
+    if (getCardStatus(card) !== "approved" && card.approvedSnapshot) {
+      visible.approvedSnapshot = getPublicApprovedCard(card) ?? undefined;
+    }
+  }
+  if (editor) visible.diskSync = card.diskSync;
+  const requests = editor ? card.editRequests : user && user.role !== "guest" ? card.editRequests?.filter((r) => r.authorId === user.id) : [];
+  if (requests?.length) visible.editRequests = requests;
+  return visible;
+}
+
+export function visibleKnowledgeCards(user: SessionUser | null, cards: KnowledgeCard[]): KnowledgeCard[] {
+  return cards.flatMap((card) => visibleKnowledgeCard(user, card) ?? []);
 }
 
 export function getUserOwnershipLabel(user: SessionUser): string {

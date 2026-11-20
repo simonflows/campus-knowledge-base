@@ -32,8 +32,9 @@ function test(name: string, fn: () => void): void {
 
 console.log("\n=== Тесты «Канон кампуса «Южный Урал»» ===\n");
 
-test("1. Эталонная база содержит 18 карточек и 3 статьи со всеми валидными sourceCardIds", () => {
-  assert.equal(knowledgeSeedCards.length, 18);
+test("1. База содержит 18 исходных карточек, 7 паспортов вузов и 3 статьи со всеми валидными sourceCardIds", () => {
+  assert.equal(knowledgeSeedCards.filter((card) => card.type !== "university").length, 18);
+  assert.equal(knowledgeSeedCards.filter((card) => card.type === "university").length, 7);
   assert.equal(articleSeed.length, 3);
 
   const cardIds = new Set(knowledgeSeedCards.map((c) => c.id));
@@ -46,7 +47,7 @@ test("1. Эталонная база содержит 18 карточек и 3 �
 
 test("2. Все 18 эталонных описаний карточек и 3 готовые статьи не содержат красных и жёлтых ошибок", () => {
   for (const card of knowledgeSeedCards) {
-    if (!card.referenceDescription.trim()) continue;
+    if (!card.referenceDescription.trim() || card.type === "university") continue;
     const chk = checkFactText(card.referenceDescription, knowledgeSeedCards);
     assert.equal(
       chk.summary.red,
@@ -169,6 +170,7 @@ test("6. 152-ФЗ: санитайзер Alibaba удаляет ПДн, теле�
 });
 
 test("7. Безопасность: HMAC-SHA256 куки, Origin-защита, rate-limit и изоляция ролей 7 вузов", () => {
+  process.env.CAMPUS_DEMO_LOGIN = "true";
   const token = signSessionToken("demo-admin");
   assert.equal(verifySessionToken(token), "demo-admin");
   assert.equal(verifySessionToken("demo-admin"), null);

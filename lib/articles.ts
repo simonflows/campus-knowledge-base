@@ -14,6 +14,9 @@ export type ArticleSection = {
 };
 
 export type ReadyArticle = {
+  approval?: { revisionId: string; approvedBy: string; approvedAt: string };
+  originalDraftId?: string;
+  channel?: string;
   id: string;
   title: string;
   lead: string;
@@ -28,6 +31,22 @@ export type ReadyArticle = {
   updatedAt: string;
   diskSync?: DiskSyncInfo;
 };
+
+/** Public library responses contain the publication, without its draft prompt or backup paths. */
+export function publicArticle(article: ReadyArticle): ReadyArticle {
+  const publication = { ...article, query: "" };
+  delete publication.originalDraftId;
+  delete publication.diskSync;
+  return publication;
+}
+
+export function isApprovedArticle(article: ReadyArticle): boolean {
+  return Boolean(
+    article.approval?.revisionId &&
+    article.approval.approvedBy &&
+    article.approval.approvedAt
+  );
+}
 
 export type GeneratedArticleDraft = Omit<
   ReadyArticle,
@@ -263,7 +282,9 @@ export const articleSeed: ReadyArticle[] = [
   },
 ];
 
-export const DEMO_ARTICLE_IDS: string[] = articleSeed.map((article) => article.id);
+export const DEMO_ARTICLE_IDS: string[] = articleSeed.map(
+  (article) => article.id
+);
 
 export function isDemoArticle(id: string): boolean {
   return DEMO_ARTICLE_IDS.includes(id);

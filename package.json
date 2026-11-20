@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3050",
+    "dev": "next dev -p 8080",
     "dev:docker": "next dev -p 8080",
     "build": "next build",
     "build:static": "npm run db:generate && cross-env OUTPUT_MODE=export next build",
-    "start": "next start -p 3050",
+    "start": "next start -p 8080",
     "check": "npm run lint && npm run typecheck",
     "test": "tsx scripts/test-suite.ts",
+    "test:fact-storage": "tsx scripts/test-university-facts.ts && tsx scripts/test-storage-sync.ts && tsx scripts/test-durable-sync.ts && tsx scripts/test-local-store-preservation.ts",
     "lint": "eslint .",
     "check:backlog": "tsx scripts/check-backlog.ts",
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\"",
@@ -17,7 +18,16 @@
     "setup": "node scripts/setup-keys.mjs",
     "docker:dev": "docker compose up --build",
     "docker:dev:down": "docker compose down",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:pilot-auth": "tsx scripts/test-pilot-auth.ts",
+    "test:interface": "tsx scripts/test-interface.ts",
+    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark",
+    "qa:mark-fixture": "tsx scripts/mark-qa-fixture.ts",
+    "test:editorial": "tsx scripts/test-editorial.ts",
+    "test:requests": "tsx scripts/test-requests.ts",
+    "test:pilot-browser": "tsx scripts/run-pilot-qa.ts",
+    "test:fixture": "npm run test:editorial && npm run test:requests && npm run test:pilot-browser",
+    "test:benchmark": "tsx scripts/test-benchmark-pilot.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.758.0",
@@ -26,9 +36,10 @@
     "@tailwindcss/postcss": "^4.2.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "docx": "^9.16.0",
     "dotenv": "^17.4.0",
     "lucide-react": "^1.7.0",
-    "next": "16.2.2",
+    "next": "16.4.6",
     "next-themes": "^0.4.6",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
@@ -47,12 +58,19 @@
     "@typescript-eslint/parser": "^8.58.0",
     "cross-env": "^10.1.0",
     "eslint": "^9.39.4",
-    "eslint-config-next": "16.2.2",
+    "eslint-config-next": "16.4.6",
+    "fflate": "^0.8.3",
     "js-yaml": "^4.1.1",
+    "playwright-core": "^1.65.1",
     "postcss": "^8.5.8",
     "prettier": "^3.8.1",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
+  },
+  "overrides": {
+    "@ts-morph/common": {
+      "minimatch": "11.0.9"
+    }
   }
 }

@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { runWithAiProvider } from "@/lib/ai-providers";
-import { sanitizeCardFor152FZ } from "@/lib/alibaba-ai";
-import { flattenArticleChunks, type ReadyArticle } from "@/lib/articles";
+import {
+  flattenArticleChunks,
+  isApprovedArticle,
+  type ReadyArticle,
+} from "@/lib/articles";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   buildArticleMessages,
@@ -10,9 +14,12 @@ import {
   buildNoDataDraft,
   extractJsonObject,
   getBasisChunks,
+  groundGeneratedArticle,
+  isGroundedArticleText,
   normalizeGeneratedArticle,
   selectRelevantArticles,
   selectRelevantCards,
+  selectUniversityMetricCards,
 } from "@/lib/editor";
 import type { KnowledgeCard } from "@/lib/knowledge";
 import { mockArticles, mockKnowledgeCards } from "@/lib/mock-data";
@@ -50,7 +57,7 @@ async function loadArticles(): Promise<ReadyArticle[]> {
     }
   }
 
-  return mockArticles;
+  return mockArticles.filter(isApprovedArticle);
 }
 
 function sourceSummary(card: KnowledgeCard) {
@@ -63,6 +70,13 @@ function sourceSummary(card: KnowledgeCard) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!verifySameOrigin(request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
+  if (!(await getSessionUser()))
+    return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   let body: unknown;
 
   try {
@@ -86,16 +100,34 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { query, basis, provider } = parsed.data;
+  const { query, basis, provider, audience, outlet, length } = parsed.data;
   const [cards, articles] = await Promise.all([loadCards(), loadArticles()]);
 
-  const basisArticle = basis
-    ? articles.find((article) => article.id === basis.articleId)
-    : undefined;
+  const metricCards = selectUniversityMetricCards(query, cards);
+  if (
+    metricCards &&
+    !metricCards.some((card) => card.structuredMetrics.length)
+  ) {
+    return NextResponse.json(
+      buildNoDataDraft({
+        query,
+        message:
+          "В утверждённых паспортах вузов нет подтверждённых показателей по этому запросу. Уточните вуз и период или запросите документ у владельца карточки.",
+      })
+    );
+  }
+
+  const basisArticle =
+    !metricCards && basis
+      ? articles.find(
+          (article) =>
+            article.id === basis.articleId && isApprovedArticle(article)
+        )
+      : undefined;
   const basisChunks = getBasisChunks(basisArticle, basis?.chunkIds);
 
-  const scoredCards = selectRelevantCards(cards, query);
-  const selectedCards = scoredCards.map((item) => item.card);
+  const selectedCards: KnowledgeCard[] =
+    metricCards ?? selectRelevantCards(cards, query).map((item) => item.card);
 
   if (basisArticle) {
     basisArticle.sourceCardIds.forEach((cardId) => {
@@ -111,32 +143,55 @@ export async function POST(request: NextRequest) {
       buildNoDataDraft({
         query,
         message:
-          "В канонических карточках нет сведений по этому запросу. Уточните вуз, проект или тему: умный редактор не использует общие знания модели и не придумывает факты.",
+          "В официальных данных нет сведений по этому запросу. Уточните вуз, проект или тему: умный редактор не использует общие знания модели и не придумывает факты.",
       })
     );
   }
 
-  const matchedArticles = selectRelevantArticles(articles, query).filter(
-    (article) => article.id !== basisArticle?.id
-  );
+  const matchedArticles = metricCards
+    ? []
+    : selectRelevantArticles(articles.filter(isApprovedArticle), query).filter(
+        (article) => article.id !== basisArticle?.id
+      );
+  const sourceArticles = basisArticle
+    ? [basisArticle, ...matchedArticles]
+    : matchedArticles;
 
   const referenceChunks = [
     ...basisChunks,
     ...matchedArticles.flatMap((article) => flattenArticleChunks(article)),
-  ].slice(0, 10);
-
-  const promptCards =
-    provider === "alibaba"
-      ? selectedCards.map(sanitizeCardFor152FZ)
-      : selectedCards;
+  ]
+    .slice(0, 10)
+    .filter((chunk) => {
+      const article = sourceArticles.find(
+        (item) => item.id === chunk.articleId
+      );
+      const sourceCards = selectedCards.filter((card) =>
+        article?.sourceCardIds.includes(card.id)
+      );
+      return (
+        sourceCards.length > 0 &&
+        isGroundedArticleText(chunk.content, sourceCards)
+      );
+    });
+  const usedArticles = sourceArticles.filter((article) =>
+    referenceChunks.some((chunk) => chunk.articleId === article.id)
+  );
 
   const execution = await runWithAiProvider(
     buildArticleMessages({
-      query,
-      cards: promptCards,
+      query: [
+        query,
+        audience && `Аудитория: ${audience}`,
+        outlet && `Площадка: ${outlet}`,
+        length && `Желаемый объём: ${length}`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      cards: selectedCards,
       referenceChunks,
     }),
-    provider
+    metricCards ? "canonical" : provider
   );
 
   let articlePayload = null;
@@ -153,21 +208,31 @@ export async function POST(request: NextRequest) {
         typeof raw === "object" &&
         (raw as Record<string, unknown>).noData === true
       ) {
-        const message =
-          typeof (raw as Record<string, unknown>).noDataMessage === "string"
-            ? ((raw as Record<string, unknown>).noDataMessage as string)
-            : "В канонических карточках нет достаточных сведений по запросу.";
-
-        return NextResponse.json(buildNoDataDraft({ query, message }));
+        return NextResponse.json(
+          buildNoDataDraft({
+            query,
+            message:
+              "В официальных данных нет достаточных сведений по запросу.",
+          })
+        );
       }
 
-      articlePayload = normalizeGeneratedArticle(raw, {
+      const candidate = normalizeGeneratedArticle(raw, {
         selectedCards,
-        matchedArticles,
+        matchedArticles: usedArticles,
       });
+      const reason = groundGeneratedArticle(candidate, selectedCards);
+      if (reason) {
+        actualProvider = "canonical";
+        modelLabel = "Подготовка по проверенным фактам";
+        fallbackReason = reason;
+      } else {
+        articlePayload = candidate;
+      }
     } catch (parseError) {
       actualProvider = "canonical";
-      modelLabel = "Канонический движок (резерв после некорректного JSON модели)";
+      modelLabel =
+        "Подготовка по проверенным фактам (резерв после некорректного JSON модели)";
       fallbackReason =
         parseError instanceof Error
           ? parseError.message
@@ -179,7 +244,7 @@ export async function POST(request: NextRequest) {
     articlePayload = buildDeterministicArticleDraft({
       query,
       selectedCards,
-      matchedArticles,
+      matchedArticles: usedArticles,
       referenceChunks,
     });
   }
@@ -195,7 +260,7 @@ export async function POST(request: NextRequest) {
     query,
     article: { ...articlePayload, query },
     sources,
-    usedArticles: matchedArticles.map((item) => ({
+    usedArticles: usedArticles.map((item) => ({
       id: item.id,
       title: item.title,
     })),

@@ -4,18 +4,21 @@ import {
   PutCommand,
   ScanCommand,
   UpdateCommand,
+  type ScanCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
 
 import {
   articleSeed,
   DEMO_ARTICLE_IDS,
   isDemoArticle,
+  isApprovedArticle,
   type ReadyArticle,
 } from "./articles";
-import { docClient, getStorageMode } from "./db";
+import { docClient, getStorageMode, getWritableStorageMode } from "./db";
 import { createPendingDiskSync, type DiskSyncInfo } from "./disk-sync";
 import {
-  getCardStatus,
+  getPublicApprovedCard,
+  isCardApproved,
   knowledgeSeedCards,
   type CardEditRequest,
   type CardStatus,
@@ -26,6 +29,10 @@ import { mutateLocalStore, readLocalStore } from "./local-store";
 import { TableName } from "./schema";
 import type { SaveArticleInput } from "./validation/articles";
 import type { KnowledgeCardInput } from "./validation/knowledge";
+import {
+  knowledgeUpdateModeration,
+  missingUniversityPassports,
+} from "./knowledge-lifecycle";
 
 export async function getAllKnowledgeCards(): Promise<KnowledgeCard[]> {
   const mode = await getStorageMode();
@@ -35,23 +42,32 @@ export async function getAllKnowledgeCards(): Promise<KnowledgeCard[]> {
     return store.cards;
   }
 
-  if (mode === "static-export") {
+  if (mode === "static-export" || mode === "read-only") {
     return knowledgeSeedCards;
   }
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-    })
-  );
-
-  return (result.Items as KnowledgeCard[]) ?? [];
+  const cards: KnowledgeCard[] = [];
+  let cursor: Record<string, unknown> | undefined;
+  do {
+    const result: ScanCommandOutput = await docClient.send(
+      new ScanCommand({
+        TableName: TableName.KNOWLEDGE_CARDS,
+        ConsistentRead: true,
+        ExclusiveStartKey: cursor,
+      })
+    );
+    cards.push(...((result.Items as KnowledgeCard[]) ?? []));
+    cursor = result.LastEvaluatedKey;
+  } while (cursor);
+  return cards;
 }
 
 export async function getCanonicalKnowledgeCards(): Promise<KnowledgeCard[]> {
   const cards = await getAllKnowledgeCards();
 
-  return cards.filter((card) => getCardStatus(card) === "approved");
+  return cards
+    .map(getPublicApprovedCard)
+    .filter((card): card is KnowledgeCard => card !== null);
 }
 
 export async function getKnowledgeCardById(
@@ -64,7 +80,7 @@ export async function getKnowledgeCardById(
     return store.cards.find((card) => card.id === id) ?? null;
   }
 
-  if (mode === "static-export") {
+  if (mode === "static-export" || mode === "read-only") {
     return knowledgeSeedCards.find((card) => card.id === id) ?? null;
   }
 
@@ -72,6 +88,7 @@ export async function getKnowledgeCardById(
     new GetCommand({
       TableName: TableName.KNOWLEDGE_CARDS,
       Key: { id },
+      ConsistentRead: true,
     })
   );
 
@@ -99,7 +116,7 @@ export async function createKnowledgeCard(
     diskSync: createPendingDiskSync(),
   } as KnowledgeCard;
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => ({
@@ -127,21 +144,33 @@ export type KnowledgeCardModerationPatch = {
   editRequests?: CardEditRequest[];
 };
 
+function checkCardVersion(card: KnowledgeCard, expectedUpdatedAt?: string) {
+  if (expectedUpdatedAt !== undefined && card.updatedAt !== expectedUpdatedAt)
+    throw Object.assign(new Error("Card changed"), { name: "ConditionalCheckFailedException" });
+}
+
+// A second successful write in the same millisecond still needs a distinct version.
+function nextCardVersion(card: KnowledgeCard) {
+  return new Date(Math.max(Date.now(), (Date.parse(card.updatedAt) || 0) + 1)).toISOString();
+}
+
 export async function setKnowledgeCardModeration(
   id: string,
-  patch: KnowledgeCardModerationPatch
+  patch: KnowledgeCardModerationPatch,
+  expectedUpdatedAt?: string
 ): Promise<KnowledgeCard | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
       const current = store.cards.find((card) => card.id === id);
       if (!current) return { store, result: null };
+      checkCardVersion(current, expectedUpdatedAt);
 
       const next: KnowledgeCard = {
         ...current,
         ...patch,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nextCardVersion(current),
       };
 
       return {
@@ -157,17 +186,20 @@ export async function setKnowledgeCardModeration(
   const current = await getKnowledgeCardById(id);
 
   if (!current) return null;
+  checkCardVersion(current, expectedUpdatedAt);
 
   const next: KnowledgeCard = {
     ...current,
     ...patch,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nextCardVersion(current),
   };
 
   await docClient.send(
     new PutCommand({
       TableName: TableName.KNOWLEDGE_CARDS,
       Item: next,
+      ConditionExpression: "updatedAt = :previousUpdatedAt",
+      ExpressionAttributeValues: { ":previousUpdatedAt": current.updatedAt },
     })
   );
 
@@ -176,21 +208,26 @@ export async function setKnowledgeCardModeration(
 
 export async function updateKnowledgeCard(
   id: string,
-  data: KnowledgeCardInput
+  data: KnowledgeCardInput,
+  editor?: { id: string; name: string; isAdmin: boolean },
+  expectedUpdatedAt?: string
 ): Promise<KnowledgeCard | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
       const current = store.cards.find((card) => card.id === id);
       if (!current) return { store, result: null };
+      checkCardVersion(current, expectedUpdatedAt);
 
       const next = {
         ...current,
         ...data,
+        ...knowledgeUpdateModeration(current, data, editor),
+        diskSync: createPendingDiskSync(),
         id: current.id,
         createdAt: current.createdAt,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nextCardVersion(current),
       } as KnowledgeCard;
 
       return {
@@ -206,19 +243,24 @@ export async function updateKnowledgeCard(
   const current = await getKnowledgeCardById(id);
 
   if (!current) return null;
+  checkCardVersion(current, expectedUpdatedAt);
 
   const next = {
     ...current,
     ...data,
+    ...knowledgeUpdateModeration(current, data, editor),
+    diskSync: createPendingDiskSync(),
     id: current.id,
     createdAt: current.createdAt,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nextCardVersion(current),
   } as KnowledgeCard;
 
   await docClient.send(
     new PutCommand({
       TableName: TableName.KNOWLEDGE_CARDS,
       Item: next,
+      ConditionExpression: "updatedAt = :previousUpdatedAt",
+      ExpressionAttributeValues: { ":previousUpdatedAt": current.updatedAt },
     })
   );
 
@@ -227,17 +269,29 @@ export async function updateKnowledgeCard(
 
 export async function setKnowledgeCardDiskSync(
   id: string,
-  diskSync: DiskSyncInfo
+  diskSync: DiskSyncInfo,
+  expectedUpdatedAt: string,
+  expectedAttemptId?: string
 ): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
       store: {
         ...store,
-        cards: store.cards.map((card) =>
-          card.id === id ? { ...card, diskSync } : card
-        ),
+        cards: store.cards.map((card) => {
+          if (card.id !== id) return card;
+          if (
+            !isCardApproved(card) ||
+            card.updatedAt !== expectedUpdatedAt ||
+            (expectedAttemptId &&
+              card.diskSync?.attemptId !== expectedAttemptId)
+          )
+            throw Object.assign(new Error("Card changed during backup"), {
+              name: "ConditionalCheckFailedException",
+            });
+          return { ...card, diskSync };
+        }),
       },
       result: undefined,
     }));
@@ -249,13 +303,20 @@ export async function setKnowledgeCardDiskSync(
       TableName: TableName.KNOWLEDGE_CARDS,
       Key: { id },
       UpdateExpression: "set diskSync = :diskSync",
-      ExpressionAttributeValues: { ":diskSync": diskSync },
+      ConditionExpression: `attribute_exists(id) AND updatedAt = :version AND (attribute_not_exists(#status) OR #status = :approved)${expectedAttemptId ? " AND diskSync.attemptId = :attempt" : ""}`,
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: {
+        ":diskSync": diskSync,
+        ":version": expectedUpdatedAt,
+        ":approved": "approved",
+        ...(expectedAttemptId ? { ":attempt": expectedAttemptId } : {}),
+      },
     })
   );
 }
 
 export async function deleteKnowledgeCard(id: string): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
@@ -280,11 +341,17 @@ export async function ensureKnowledgeSeed(): Promise<void> {
   const mode = await getStorageMode();
 
   if (mode === "local-json") {
-    await readLocalStore();
+    await mutateLocalStore((store) => ({
+      store: {
+        ...store,
+        cards: [...store.cards, ...missingUniversityPassports(store.cards)],
+      },
+      result: undefined,
+    }));
     return;
   }
 
-  if (mode === "static-export") return;
+  if (mode === "static-export" || mode === "read-only") return;
 
   const result = await docClient.send(
     new ScanCommand({
@@ -293,16 +360,24 @@ export async function ensureKnowledgeSeed(): Promise<void> {
     })
   );
 
-  if ((result.Items?.length ?? 0) > 0) return;
+  const seedCards =
+    (result.Items?.length ?? 0) > 0
+      ? missingUniversityPassports(await getAllKnowledgeCards())
+      : knowledgeSeedCards;
 
   await Promise.all(
-    knowledgeSeedCards.map((card) =>
-      docClient.send(
-        new PutCommand({
-          TableName: TableName.KNOWLEDGE_CARDS,
-          Item: card,
+    seedCards.map((card) =>
+      docClient
+        .send(
+          new PutCommand({
+            TableName: TableName.KNOWLEDGE_CARDS,
+            Item: card,
+            ConditionExpression: "attribute_not_exists(id)",
+          })
+        )
+        .catch((error) => {
+          if (error?.name !== "ConditionalCheckFailedException") throw error;
         })
-      )
     )
   );
 }
@@ -315,7 +390,7 @@ export async function getAllCardTypes(): Promise<CardTypeDefinition[]> {
     return store.cardTypes;
   }
 
-  if (mode === "static-export") return [];
+  if (mode === "static-export" || mode === "read-only") return [];
 
   const result = await docClient.send(
     new ScanCommand({
@@ -336,7 +411,7 @@ export async function getCardTypeById(
     return store.cardTypes.find((type) => type.id === id) ?? null;
   }
 
-  if (mode === "static-export") return null;
+  if (mode === "static-export" || mode === "read-only") return null;
 
   const result = await docClient.send(
     new GetCommand({
@@ -358,7 +433,7 @@ export async function createCardType(
     updatedAt: now,
   };
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => ({
@@ -381,7 +456,7 @@ export async function updateCardType(
   id: string,
   data: Partial<Pick<CardTypeDefinition, "name" | "description" | "fields">>
 ): Promise<CardTypeDefinition | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
@@ -431,7 +506,7 @@ export async function updateCardType(
 }
 
 export async function deleteCardType(id: string): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
@@ -452,47 +527,16 @@ export async function deleteCardType(id: string): Promise<void> {
   );
 }
 
-export async function getCustomCardCounts(): Promise<Record<string, number>> {
-  const mode = await getStorageMode();
-
-  if (mode === "local-json") {
-    const store = await readLocalStore();
-    return store.cards.reduce<Record<string, number>>((counts, card) => {
-      if (card.type === "custom" && card.customTypeId) {
-        counts[card.customTypeId] = (counts[card.customTypeId] ?? 0) + 1;
-      }
-      return counts;
-    }, {});
+export function customCardCounts(cards: KnowledgeCard[]): Record<string, number> {
+  const counts: Record<string, number> = Object.create(null);
+  for (const card of cards) {
+    if (card.type === "custom") counts[card.customTypeId] = (counts[card.customTypeId] ?? 0) + 1;
   }
-
-  if (mode === "static-export") return {};
-
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      FilterExpression: "#type = :type",
-      ExpressionAttributeNames: { "#type": "type" },
-      ExpressionAttributeValues: { ":type": "custom" },
-      ProjectionExpression: "customTypeId",
-    })
-  );
-
-  return (result.Items ?? []).reduce<Record<string, number>>((counts, item) => {
-    const cardTypeId = item.customTypeId as string | undefined;
-
-    if (cardTypeId) {
-      counts[cardTypeId] = (counts[cardTypeId] ?? 0) + 1;
-    }
-
-    return counts;
-  }, {});
+  return counts;
 }
 
-export async function countKnowledgeCardsByCustomType(
-  typeId: string
-): Promise<number> {
-  const counts = await getCustomCardCounts();
-  return counts[typeId] ?? 0;
+export async function countKnowledgeCardsByCustomType(typeId: string): Promise<number> {
+  return customCardCounts(await getAllKnowledgeCards())[typeId] ?? 0;
 }
 
 export async function getAllArticles(): Promise<ReadyArticle[]> {
@@ -500,18 +544,28 @@ export async function getAllArticles(): Promise<ReadyArticle[]> {
 
   if (mode === "local-json") {
     const store = await readLocalStore();
-    return store.articles;
+    return store.articles.filter(isApprovedArticle);
   }
 
-  if (mode === "static-export") return articleSeed;
+  if (mode === "static-export" || mode === "read-only")
+    return articleSeed.filter(isApprovedArticle);
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.ARTICLES,
-    })
-  );
-
-  return (result.Items as ReadyArticle[]) ?? [];
+  const articles: ReadyArticle[] = [];
+  let cursor: ScanCommandOutput["LastEvaluatedKey"];
+  do {
+    const page: ScanCommandOutput = await docClient.send(
+      new ScanCommand({
+        TableName: TableName.ARTICLES,
+        ExclusiveStartKey: cursor,
+        ConsistentRead: true,
+      })
+    );
+    articles.push(
+      ...((page.Items ?? []) as ReadyArticle[]).filter(isApprovedArticle)
+    );
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return articles;
 }
 
 export async function getArticleById(id: string): Promise<ReadyArticle | null> {
@@ -519,11 +573,19 @@ export async function getArticleById(id: string): Promise<ReadyArticle | null> {
 
   if (mode === "local-json") {
     const store = await readLocalStore();
-    return store.articles.find((article) => article.id === id) ?? null;
+    return (
+      store.articles.find(
+        (article) => article.id === id && isApprovedArticle(article)
+      ) ?? null
+    );
   }
 
-  if (mode === "static-export") {
-    return articleSeed.find((article) => article.id === id) ?? null;
+  if (mode === "static-export" || mode === "read-only") {
+    return (
+      articleSeed.find(
+        (article) => article.id === id && isApprovedArticle(article)
+      ) ?? null
+    );
   }
 
   const result = await docClient.send(
@@ -533,7 +595,8 @@ export async function getArticleById(id: string): Promise<ReadyArticle | null> {
     })
   );
 
-  return (result.Item as ReadyArticle) ?? null;
+  const article = result.Item as ReadyArticle | undefined;
+  return article && isApprovedArticle(article) ? article : null;
 }
 
 export async function createArticle(
@@ -548,7 +611,7 @@ export async function createArticle(
     diskSync: createPendingDiskSync(),
   };
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => ({
@@ -571,7 +634,7 @@ export async function updateArticle(
   id: string,
   data: SaveArticleInput
 ): Promise<ReadyArticle | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
@@ -624,17 +687,31 @@ export async function updateArticle(
 
 export async function setArticleDiskSync(
   id: string,
-  diskSync: DiskSyncInfo
+  diskSync: DiskSyncInfo,
+  expectedUpdatedAt: string,
+  expectedRevisionId: string,
+  expectedAttemptId?: string
 ): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
       store: {
         ...store,
-        articles: store.articles.map((article) =>
-          article.id === id ? { ...article, diskSync } : article
-        ),
+        articles: store.articles.map((article) => {
+          if (article.id !== id) return article;
+          if (
+            !isApprovedArticle(article) ||
+            article.updatedAt !== expectedUpdatedAt ||
+            article.approval?.revisionId !== expectedRevisionId ||
+            (expectedAttemptId &&
+              article.diskSync?.attemptId !== expectedAttemptId)
+          )
+            throw Object.assign(new Error("Article changed during backup"), {
+              name: "ConditionalCheckFailedException",
+            });
+          return { ...article, diskSync };
+        }),
       },
       result: undefined,
     }));
@@ -646,13 +723,19 @@ export async function setArticleDiskSync(
       TableName: TableName.ARTICLES,
       Key: { id },
       UpdateExpression: "set diskSync = :diskSync",
-      ExpressionAttributeValues: { ":diskSync": diskSync },
+      ConditionExpression: `attribute_exists(id) AND updatedAt = :version AND approval.revisionId = :revision${expectedAttemptId ? " AND diskSync.attemptId = :attempt" : ""}`,
+      ExpressionAttributeValues: {
+        ":diskSync": diskSync,
+        ":version": expectedUpdatedAt,
+        ":revision": expectedRevisionId,
+        ...(expectedAttemptId ? { ":attempt": expectedAttemptId } : {}),
+      },
     })
   );
 }
 
 export async function deleteArticle(id: string): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
@@ -697,7 +780,7 @@ export async function clearDemoArticles(): Promise<number> {
     });
   }
 
-  if (mode === "static-export") return 0;
+  if (mode === "static-export" || mode === "read-only") return 0;
 
   let removed = 0;
   await Promise.all(
@@ -728,7 +811,7 @@ export async function ensureArticleSeed(): Promise<void> {
     return;
   }
 
-  if (mode === "static-export") return;
+  if (mode === "static-export" || mode === "read-only") return;
 
   const result = await docClient.send(
     new ScanCommand({

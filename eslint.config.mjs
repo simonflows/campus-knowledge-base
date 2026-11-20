@@ -4,6 +4,7 @@ import tsparser from "@typescript-eslint/parser";
 
 const eslintConfig = [
   ...nextConfig,
+  { ignores: [".next-campus-demo/**"] },
   {
     files: ["**/*.{ts,tsx}"],
     plugins: {

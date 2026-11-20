@@ -26,6 +26,7 @@ if (process.env.NODE_ENV !== "production") globalForDb.docClient = docClient;
 const globalForDbAvailable = globalThis as unknown as {
   _dbAvailable: boolean | null;
   _dbAvailablePromise: Promise<boolean> | null;
+  _dbAvailableCheckedAt: number | undefined;
 };
 
 export async function isDatabaseAvailable(): Promise<boolean> {
@@ -42,7 +43,11 @@ export async function isDatabaseAvailable(): Promise<boolean> {
     return false;
   }
 
-  if (globalForDbAvailable._dbAvailable != null) {
+  if (
+    globalForDbAvailable._dbAvailable != null &&
+    Date.now() - (globalForDbAvailable._dbAvailableCheckedAt ?? 0) <
+      (globalForDbAvailable._dbAvailable ? 30_000 : 5_000)
+  ) {
     return globalForDbAvailable._dbAvailable;
   }
 
@@ -52,18 +57,20 @@ export async function isDatabaseAvailable(): Promise<boolean> {
 
   const promise = (async () => {
     try {
-      await docClient.send(
-        new ListTablesCommand({}),
-        { abortSignal: AbortSignal.timeout(2_500) }
-      );
+      await docClient.send(new ListTablesCommand({}), {
+        abortSignal: AbortSignal.timeout(2_500),
+      });
       globalForDbAvailable._dbAvailable = true;
       return true;
     } catch {
       console.warn(
-        "DynamoDB / YDB Document API недоступен. Используется локальное файловое хранилище (.data/local-store.json)."
+        "DynamoDB / YDB Document API недоступен. Запись в общую базу отключена."
       );
       globalForDbAvailable._dbAvailable = false;
       return false;
+    } finally {
+      globalForDbAvailable._dbAvailableCheckedAt = Date.now();
+      globalForDbAvailable._dbAvailablePromise = null;
     }
   })();
 
@@ -71,25 +78,65 @@ export async function isDatabaseAvailable(): Promise<boolean> {
   return promise;
 }
 
-export type StorageMode = "dynamodb" | "local-json" | "static-export";
+export type StorageMode =
+  | "dynamodb"
+  | "local-json"
+  | "static-export"
+  | "read-only";
+
+export function resolveStorageMode(options: {
+  available: boolean;
+  outputMode?: string;
+  localDemo?: string;
+  nodeEnv?: string;
+}): StorageMode {
+  if (options.outputMode === "export") return "static-export";
+  if (options.localDemo === "true" && options.nodeEnv !== "production")
+    return "local-json";
+  if (options.available) return "dynamodb";
+  return "read-only";
+}
 
 export async function getStorageMode(): Promise<StorageMode> {
   if (process.env.OUTPUT_MODE === "export") {
     return "static-export";
+  }
+  if (
+    process.env.CAMPUS_LOCAL_DEMO === "true" &&
+    process.env.NODE_ENV !== "production"
+  ) {
+    const { getLocalStoreReadProblem } = await import("./local-store");
+    return (await getLocalStoreReadProblem()) ? "read-only" : "local-json";
   }
 
   if (await isDatabaseAvailable()) {
     return "dynamodb";
   }
 
-  return "local-json";
+  return resolveStorageMode({
+    available: false,
+    localDemo: process.env.CAMPUS_LOCAL_DEMO,
+    nodeEnv: process.env.NODE_ENV,
+  });
 }
 
 export async function isStorageWritable(): Promise<boolean> {
-  return (await getStorageMode()) !== "static-export";
+  const mode = await getStorageMode();
+  return mode === "dynamodb" || mode === "local-json";
+}
+
+export async function getWritableStorageMode(): Promise<
+  "dynamodb" | "local-json"
+> {
+  const mode = await getStorageMode();
+  if (mode === "dynamodb" || mode === "local-json") return mode;
+  throw new Error(
+    "Общая база недоступна; запись отключена. Локальное демо включается отдельно."
+  );
 }
 
 export function resetDbAvailableCache(): void {
   globalForDbAvailable._dbAvailable = null;
   globalForDbAvailable._dbAvailablePromise = null;
+  globalForDbAvailable._dbAvailableCheckedAt = undefined;
 }

@@ -1,22 +1,28 @@
+import "../data-workspaces.css";
+
 import { ComparisonWorkspace } from "@/components/comparison/comparison-workspace";
-import { getAlibabaAiConfig } from "@/lib/alibaba-ai";
+import { isAlibabaAiConfigured } from "@/lib/alibaba-ai";
+import { getSessionUser, isAdminPinRequired } from "@/lib/auth-server";
+import { demoLoginEnabled } from "@/lib/pilot-auth";
 import { getStorageMode } from "@/lib/db";
-import { getYandexAiConfig } from "@/lib/yandex-ai";
+import { isYandexAiConfigured } from "@/lib/yandex-ai";
 
 export const dynamic = "force-dynamic";
 
 export default async function ComparisonPage() {
-  const [storageMode, yandexCfg, alibabaCfg] = await Promise.all([
+  const [storageMode, user] = await Promise.all([
     getStorageMode(),
-    Promise.resolve(getYandexAiConfig()),
-    Promise.resolve(getAlibabaAiConfig()),
+    getSessionUser(),
   ]);
 
   return (
     <ComparisonWorkspace
-      yandexConfigured={yandexCfg.configured}
-      alibabaConfigured={alibabaCfg.configured}
+      yandexConfigured={isYandexAiConfigured()}
+      alibabaConfigured={isAlibabaAiConfigured()}
       storageMode={storageMode}
+      canRunLive={
+        user?.role === "admin" && (!demoLoginEnabled() || isAdminPinRequired())
+      }
     />
   );
 }

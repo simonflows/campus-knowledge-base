@@ -1,3 +1,5 @@
+import "../data-workspaces.css";
+
 import { FactCheckWorkspace } from "@/components/fact-check/fact-check-workspace";
 import { isStorageWritable } from "@/lib/db";
 import { mockKnowledgeCards } from "@/lib/mock-data";

@@ -10,6 +10,12 @@ export type DiskSyncInfo = {
   folderPath: string | null;
   filePath: string | null;
   summaryPath: string | null;
+  attemptId?: string;
+  sourceUpdatedAt?: string;
+  sourceRevisionId?: string;
+  fileUploaded?: boolean;
+  summaryUploaded?: boolean;
+  pointerPaths?: string[];
 };
 
 export const diskSyncStatusLabels: Record<DiskSyncStatus, string> = {

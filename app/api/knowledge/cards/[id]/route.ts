@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canEditCard } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canEditCard, visibleKnowledgeCard } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { folderIds, getCardStatus } from "@/lib/knowledge";
@@ -18,6 +18,11 @@ import {
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function PUT(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -82,6 +87,22 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
   let cardInput = parsed.data;
 
+  const expectedVersion = request.headers.get("if-match");
+  if (expectedVersion && expectedVersion !== current.updatedAt)
+    return NextResponse.json(
+      { error: "Карточка изменилась. Обновите её перед сохранением." },
+      { status: 409 }
+    );
+  if (
+    current.type === "university" &&
+    cardInput.type === "university" &&
+    current.universityId !== cardInput.universityId
+  )
+    return NextResponse.json(
+      { error: "Нельзя изменить вуз паспорта" },
+      { status: 400 }
+    );
+
   if (cardInput.type !== current.type) {
     return NextResponse.json(
       { error: "Тип карточки нельзя изменить после создания" },
@@ -129,7 +150,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const updated = await updateKnowledgeCard(id, cardInput);
+    const updated = await updateKnowledgeCard(id, cardInput, {
+      id: user.id,
+      name: user.name,
+      isAdmin: user.role === "admin",
+    }, current.updatedAt);
 
     if (!updated) {
       return NextResponse.json(
@@ -149,8 +174,19 @@ export async function PUT(request: NextRequest, context: RouteContext) {
           })
         : updated;
 
-    return NextResponse.json(card);
+    return NextResponse.json(visibleKnowledgeCard(user, card));
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error:
+            "Карточка изменилась. Обновите её перед повторным сохранением.",
+        },
+        { status: 409 }
+      );
     console.error("Ошибка обновления карточки базы знаний:", error);
     return NextResponse.json(
       { error: "Ошибка обновления карточки" },

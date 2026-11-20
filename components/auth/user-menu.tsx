@@ -1,13 +1,16 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { LogIn, LogOut, ShieldCheck } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { roleShortLabels, type SessionUser } from "@/lib/auth";
+import { clearEditorialRecovery } from "@/lib/editorial-session-cleanup";
 
 type UserMenuProps = {
   initialUser: SessionUser | null;
@@ -15,14 +18,17 @@ type UserMenuProps = {
 
 export function UserMenu({ initialUser }: UserMenuProps) {
   const router = useRouter();
+  const accountCurrent = usePathname() === "/login" ? "page" : undefined;
   const [isBusy, setIsBusy] = useState(false);
 
   const handleLogout = async () => {
     setIsBusy(true);
 
     try {
-      await fetch("/api/auth/session", { method: "DELETE" });
-      toast.success("Вы вышли из демонстрационного аккаунта");
+      const response = await fetch("/api/auth/session", { method: "DELETE" });
+      if (!response.ok) throw new Error("Logout failed");
+      clearEditorialRecovery();
+      toast.success("Вы вышли из аккаунта");
       router.refresh();
       router.push("/login");
     } catch {
@@ -34,25 +40,26 @@ export function UserMenu({ initialUser }: UserMenuProps) {
 
   if (!initialUser) {
     return (
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        onClick={() => router.push("/login")}
+      <Link
+        href="/login"
+        className={buttonVariants({
+          className: "atlas-account atlas-login",
+          size: "sm",
+        })}
+        aria-current={accountCurrent}
       >
-        <LogIn className="h-4 w-4" />
-        <span className="hidden sm:inline">Войти по роли</span>
-        <span className="sm:hidden">Войти</span>
-      </Button>
+        <LogIn className="h-4 w-4" aria-hidden="true" />
+        <span>Войти</span>
+      </Link>
     );
   }
 
   return (
     <div className="flex items-center gap-2">
-      <button
-        type="button"
-        onClick={() => router.push("/login")}
-        className="hidden items-center gap-2 rounded-full bg-muted/60 py-1 pr-1 pl-3 text-left transition-colors hover:bg-muted sm:flex"
+      <Link
+        href="/login"
+        aria-current={accountCurrent}
+        className="atlas-account hidden items-center gap-2 border py-1 pr-1 pl-3 text-left transition-colors sm:flex"
       >
         <span className="flex flex-col">
           <span className="text-xs font-semibold leading-tight">
@@ -66,7 +73,7 @@ export function UserMenu({ initialUser }: UserMenuProps) {
           <ShieldCheck className="h-3 w-3" />
           {initialUser.organization}
         </Badge>
-      </button>
+      </Link>
       <Button
         type="button"
         variant="ghost"

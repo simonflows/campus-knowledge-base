@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   canCreateCard,
-  canSeeCard,
+  visibleKnowledgeCard,
+  visibleKnowledgeCards,
   getUserOwnershipLabel,
   isCardOwner,
 } from "@/lib/auth";
@@ -31,15 +32,13 @@ export async function GET() {
     try {
       await ensureKnowledgeSeed();
       const cards = await getAllKnowledgeCards();
-      return NextResponse.json(cards.filter((card) => canSeeCard(user, card)));
+      return NextResponse.json(visibleKnowledgeCards(user, cards), { headers: { "Cache-Control": "private, no-store" } });
     } catch (error) {
       console.error("Ошибка получения карточек базы знаний:", error);
     }
   }
 
-  return NextResponse.json(
-    mockKnowledgeCards.filter((card) => canSeeCard(user, card))
-  );
+  return NextResponse.json(visibleKnowledgeCards(user, mockKnowledgeCards), { headers: { "Cache-Control": "private, no-store" } });
 }
 
 function extractUniversityFolderId(folderId: string): string | null {
@@ -239,7 +238,7 @@ export async function POST(request: NextRequest) {
           })
         : created;
 
-    return NextResponse.json(card, { status: 201 });
+    return NextResponse.json(visibleKnowledgeCard(user, card), { status: 201 });
   } catch (error) {
     console.error("Ошибка создания карточки базы знаний:", error);
     return NextResponse.json(

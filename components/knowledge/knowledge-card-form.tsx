@@ -40,6 +40,8 @@ import {
   knowledgeCardInputSchema,
 } from "@/lib/validation/knowledge";
 import { cn } from "@/lib/utils";
+import { UniversityMetricsEditor } from "./university-metrics-editor";
+import type { StructuredMetric } from "@/lib/knowledge";
 
 const selectClassName =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -89,7 +91,7 @@ function parseLegalEntityLines(value: string): CampusLegalEntity[] {
   });
 }
 
-type FormType = "project" | "laboratory" | "custom" | "campus";
+type FormType = "project" | "laboratory" | "custom" | "campus" | "university";
 
 type KnowledgeCardFormProps = {
   cards: KnowledgeCard[];
@@ -119,6 +121,8 @@ export function KnowledgeCardForm({
     initialCard?.type === "laboratory" ? initialCard : null;
   const customCard = initialCard?.type === "custom" ? initialCard : null;
   const campusCard = initialCard?.type === "campus" ? initialCard : null;
+  const universityCard =
+    initialCard?.type === "university" ? initialCard : null;
   const isEdit = Boolean(initialCard);
 
   const defaultUniversityId =
@@ -138,6 +142,12 @@ export function KnowledgeCardForm({
         : "project");
 
   const [type, setType] = useState<FormType>(initialFormType);
+  const [universityId, setUniversityId] = useState(
+    universityCard?.universityId ?? defaultUniversityId
+  );
+  const [structuredMetrics, setStructuredMetrics] = useState<
+    StructuredMetric[]
+  >(universityCard?.structuredMetrics ?? []);
   const [selectedCustomTypeId, setSelectedCustomTypeId] = useState<
     string | null
   >(customCard?.customTypeId ?? initialCustomTypeFromFolder ?? null);
@@ -267,6 +277,12 @@ export function KnowledgeCardForm({
       setFolderId(folderIds.campus);
       return;
     }
+    if (value === "university") {
+      setType("university");
+      setSelectedCustomTypeId(null);
+      setFolderId(folderIds.subfolder(universityId, "passport"));
+      return;
+    }
 
     const nextType = value as "project" | "laboratory";
     setType(nextType);
@@ -383,10 +399,10 @@ export function KnowledgeCardForm({
             {cards
               .filter((card) => card.id !== initialCard?.id)
               .map((card) => (
-              <option key={card.id} value={card.id}>
-                {card.title}
-              </option>
-            ))}
+                <option key={card.id} value={card.id}>
+                  {card.title}
+                </option>
+              ))}
           </select>
         </div>
       );
@@ -468,57 +484,68 @@ export function KnowledgeCardForm({
           ? folderIds.customType(selectedCustomType.id)
           : type === "campus"
             ? folderIds.campus
-            : isJoint
-              ? folderIds.joint
-              : folderId,
+            : type === "university"
+              ? folderIds.subfolder(universityId, "passport")
+              : isJoint
+                ? folderIds.joint
+                : folderId,
       owners: splitList(owners),
       referenceDescription,
       stopFormula,
     };
 
     const payload =
-      type === "custom" && selectedCustomType
+      type === "university"
         ? {
             ...base,
-            type: "custom" as const,
-            customTypeId: selectedCustomType.id,
-            customFields,
+            type: "university" as const,
+            universityId,
+            structuredMetrics,
           }
-        : type === "project"
+        : type === "custom" && selectedCustomType
           ? {
               ...base,
-              type: "project" as const,
-              sphere,
-              initiatorUniversityId,
-              coExecutors: splitList(coExecutors),
-              industrialPartner,
-              readinessStage,
-              contour,
-              confirmedFigures: splitList(confirmedFigures),
-              isJoint,
-              participantUniversityIds: isJoint ? participantUniversityIds : [],
+              type: "custom" as const,
+              customTypeId: selectedCustomType.id,
+              customFields,
             }
-          : type === "campus"
+          : type === "project"
             ? {
                 ...base,
-                type: "campus" as const,
-                campusMetrics: parseMetricLines(campusMetrics),
-                tariffs: parseTariffLines(campusTariffs),
-                legalEntities: parseLegalEntityLines(campusLegalEntities),
-                stopList: splitLines(campusStopList),
+                type: "project" as const,
+                sphere,
+                initiatorUniversityId,
+                coExecutors: splitList(coExecutors),
+                industrialPartner,
+                readinessStage,
+                contour,
+                confirmedFigures: splitList(confirmedFigures),
+                isJoint,
+                participantUniversityIds: isJoint
+                  ? participantUniversityIds
+                  : [],
               }
-            : {
-                ...base,
-                type: "laboratory" as const,
-                affiliation,
-                partner,
-                head,
-                placementStatus: placementStatus || undefined,
-                placementDetails,
-                workDirections: splitList(workDirections),
-                equipment: splitList(equipment),
-                confirmedIndicators: splitList(confirmedIndicators),
-              };
+            : type === "campus"
+              ? {
+                  ...base,
+                  type: "campus" as const,
+                  campusMetrics: parseMetricLines(campusMetrics),
+                  tariffs: parseTariffLines(campusTariffs),
+                  legalEntities: parseLegalEntityLines(campusLegalEntities),
+                  stopList: splitLines(campusStopList),
+                }
+              : {
+                  ...base,
+                  type: "laboratory" as const,
+                  affiliation,
+                  partner,
+                  head,
+                  placementStatus: placementStatus || undefined,
+                  placementDetails,
+                  workDirections: splitList(workDirections),
+                  equipment: splitList(equipment),
+                  confirmedIndicators: splitList(confirmedIndicators),
+                };
 
     const parsed = knowledgeCardInputSchema.safeParse(payload);
 
@@ -562,11 +589,16 @@ export function KnowledgeCardForm({
           : "/api/knowledge/cards";
       const response = await fetch(endpoint, {
         method: isEdit ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(initialCard ? { "If-Match": initialCard.updatedAt } : {}),
+        },
         body: JSON.stringify(cardPayload),
       });
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         const message =
@@ -597,7 +629,7 @@ export function KnowledgeCardForm({
           toast.success("Черновик отправлен координатору на подтверждение", {
             description: isJoint
               ? "Для совместного проекта также нужно подтверждение обоих вузов-участников."
-              : "Карточка не попадёт в канон до одобрения администратором.",
+              : "Карточка не попадёт в официальные данные до одобрения администратором.",
           });
         } else if (card.diskSync?.status === "synced") {
           toast.success("Карточка сохранена и выгружена на Яндекс Диск");
@@ -621,19 +653,19 @@ export function KnowledgeCardForm({
   };
 
   return (
-    <Card className="animate-in fade-in slide-in-from-top-2 rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10 duration-300">
+    <Card className="data-index-editor animate-in fade-in slide-in-from-top-2 duration-300">
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <CardTitle className="font-heading text-xl">
             {isEdit
-              ? "Редактирование канонической карточки"
-              : "Новая каноническая карточка"}
+              ? "Редактирование официальной карточки"
+              : "Новая официальная карточка"}
           </CardTitle>
           <CardDescription>
             {isEdit
               ? "Правки сохраняются в карточку. Чужие утверждённые карточки доступны только для запроса правки."
               : currentUser?.role === "university_pr"
-                ? "Карточка сохранится черновиком и уйдёт координатору на подтверждение. В канон она попадёт только после одобрения."
+                ? "Карточка сохранится черновиком и уйдёт координатору на подтверждение. В официальные данные она попадёт только после одобрения."
                 : "Сохранение доступно только при заполнении обязательных полей. Новые карточки проходят проверку координатора."}
           </CardDescription>
         </div>
@@ -679,6 +711,7 @@ export function KnowledgeCardForm({
                   <optgroup label="Стандартные типы">
                     <option value="project">Проект / продукт</option>
                     <option value="laboratory">Лаборатория / объект</option>
+                    <option value="university">Паспорт вуза</option>
                   </optgroup>
                   {customTypes.length > 0 ? (
                     <optgroup label="Пользовательские типы">
@@ -723,7 +756,7 @@ export function KnowledgeCardForm({
               />
               {isEdit && currentUser?.role !== "admin" ? (
                 <p className="text-[11px] text-muted-foreground">
-                  Владельцев карточки меняет только администратор канона.
+                  Владельцев карточки меняет только координатор.
                 </p>
               ) : null}
             </div>
@@ -747,19 +780,24 @@ export function KnowledgeCardForm({
                   Карточка появится в разделе «03_Пользовательские_типы».
                 </p>
               </div>
-            ) : type === "campus" ? (
+            ) : type === "campus" || type === "university" ? (
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="card-folder">
                   Папка хранения
                 </label>
                 <Input
                   id="card-folder"
-                  value="00_Кампус_общие_параметры"
+                  value={
+                    type === "university"
+                      ? `${universities.find((university) => university.id === universityId)?.shortName ?? universityId} / Паспорт_и_спикеры`
+                      : "00_Кампус_общие_параметры"
+                  }
                   disabled
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Общие параметры кампуса редактирует только администратор
-                  канона.
+                  {type === "university"
+                    ? "Показатели хранятся в паспорте выбранного вуза."
+                    : "Общие параметры кампуса редактирует только координатор."}
                 </p>
               </div>
             ) : (
@@ -802,7 +840,37 @@ export function KnowledgeCardForm({
             )}
           </div>
 
-          {type === "custom" ? (
+          {type === "university" ? (
+            <div className="flex flex-col gap-4">
+              <label
+                className="flex flex-col gap-2 text-sm"
+                htmlFor="passport-university"
+              >
+                Вуз
+                <select
+                  id="passport-university"
+                  className={selectClassName}
+                  value={universityId}
+                  disabled={
+                    isEdit ||
+                    (currentUser?.role !== "admin" &&
+                      Boolean(currentUser?.universityId))
+                  }
+                  onChange={(event) => setUniversityId(event.target.value)}
+                >
+                  {universities.map((university) => (
+                    <option key={university.id} value={university.id}>
+                      {university.shortName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <UniversityMetricsEditor
+                metrics={structuredMetrics}
+                onChange={setStructuredMetrics}
+              />
+            </div>
+          ) : type === "custom" ? (
             <>
               <Separator />
 
@@ -1296,16 +1364,29 @@ export function KnowledgeCardForm({
           </div>
 
           {formError ? (
-            <p role="alert" className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/20">
+            <p
+              role="alert"
+              className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/20"
+            >
               {formError}
             </p>
           ) : null}
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-            <Button type="button" variant="outline" className="h-10 sm:h-8" onClick={onCancel} disabled={isSaving}>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 sm:h-8"
+              onClick={onCancel}
+              disabled={isSaving}
+            >
               Отмена
             </Button>
-            <Button type="submit" className="h-10 sm:h-8" disabled={isSaving || !dbAvailable}>
+            <Button
+              type="submit"
+              className="h-10 sm:h-8"
+              disabled={isSaving || !dbAvailable}
+            >
               <Plus className="h-4 w-4" />
               {isSaving
                 ? "Сохраняем..."

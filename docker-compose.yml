@@ -7,10 +7,18 @@ services:
     cpus: ${DYNAMODB_CPU_LIMIT:-0.5}
     restart: on-failure:3
     ports:
-      - "8000:8000"
-    command: "-jar DynamoDBLocal.jar -sharedDb"
+      - "127.0.0.1:8000:8000"
+    # The named data volume must survive container replacement.
+    working_dir: /home/dynamodblocal
+    user: "0:0"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - dynamodb-data:/home/dynamodblocal/data
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath ./data"
     healthcheck:
-      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000/ || exit 1"]
+      test:
+        ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8000/ || exit 1"]
       interval: 2s
       timeout: 5s
       retries: 10
@@ -25,6 +33,13 @@ services:
       - .env.docker
     environment:
       - NODE_ENV=development
+      - YANDEX_AI_STUDIO_API_KEY
+      - YANDEX_AI_STUDIO_FOLDER_ID
+      - YANDEX_AI_STUDIO_MODEL_URI
+      - YANDEX_DISK_OAUTH_TOKEN
+      - ALIBABA_DASHSCOPE_API_KEY
+      - ALIBABA_MODEL_NAME
+      - ALIBABA_DASHSCOPE_BASE_URL
       - NODE_OPTIONS=${APP_NODE_OPTIONS:---max-old-space-size=1024}
     mem_limit: ${APP_MEMORY_LIMIT:-1536m}
     memswap_limit: ${APP_MEMORY_SWAP_LIMIT:-1536m}
@@ -39,3 +54,6 @@ services:
       dynamodb-local:
         condition: service_healthy
 
+volumes:
+  dynamodb-data:
+    name: campus-knowledge-dynamodb-data

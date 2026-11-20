@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canManageTypes } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canManageTypes, visibleKnowledgeCards } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   createCardType,
   getAllCardTypes,
-  getCustomCardCounts,
+  customCardCounts,
+  getAllKnowledgeCards,
 } from "@/lib/models";
 import { mockCustomCardTypes } from "@/lib/mock-data";
 import { cardTypeInputSchema } from "@/lib/validation/knowledge";
@@ -16,16 +17,18 @@ export async function GET() {
 
   if (dbAvailable) {
     try {
-      const [types, counts] = await Promise.all([
+      const [types, cards, user] = await Promise.all([
         getAllCardTypes(),
-        getCustomCardCounts(),
+        getAllKnowledgeCards(),
+        getSessionUser(),
       ]);
 
+      const counts = customCardCounts(visibleKnowledgeCards(user, cards));
       return NextResponse.json(
         types.map((type) => ({
           ...type,
           cardCount: counts[type.id] ?? 0,
-        }))
+        })), { headers: { "Cache-Control": "private, no-store" } }
       );
     } catch (error) {
       console.error("Ошибка получения типов карточек:", error);
@@ -38,6 +41,9 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   const user = await getSessionUser();
 
   if (!user) {

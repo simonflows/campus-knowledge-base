@@ -25,28 +25,58 @@ export class YandexAiError extends Error {
 export function isYandexAiConfigured(): boolean {
   return Boolean(
     process.env.YANDEX_AI_STUDIO_API_KEY &&
-      process.env.YANDEX_AI_STUDIO_FOLDER_ID
+    process.env.YANDEX_AI_STUDIO_FOLDER_ID
   );
 }
 
-export function getYandexAiConfig() {
-  const folderId = process.env.YANDEX_AI_STUDIO_FOLDER_ID ?? "";
-  const modelUri =
-    process.env.YANDEX_AI_STUDIO_MODEL_URI ??
-    (folderId ? `gpt://${folderId}/yandexgpt/latest` : "gpt://<folder_id>/yandexgpt/latest");
+export function getYandexModelLabel(): string {
+  const uri = process.env.YANDEX_AI_STUDIO_MODEL_URI;
+  if (!uri) return "yandexgpt/latest";
+  const publicModel =
+    /^gpt:\/\/[^/]+\/(yandexgpt(?:-lite)?\/(?:latest|rc|deprecated))$/.exec(
+      uri
+    );
+  return publicModel?.[1] ?? "Модель Yandex AI Studio";
+}
 
-  return {
-    configured: isYandexAiConfigured(),
-    hasApiKey: Boolean(process.env.YANDEX_AI_STUDIO_API_KEY),
-    hasFolderId: Boolean(folderId),
-    modelUri,
-  };
+export type AiCompletion = {
+  text: string;
+  usage: { inputTokens: number; outputTokens: number } | null;
+};
+
+export function parseTokenUsage(
+  input: unknown,
+  output: unknown
+): AiCompletion["usage"] {
+  const inputTokens =
+    typeof input === "string" && /^\d+$/.test(input) ? Number(input) : input;
+  const outputTokens =
+    typeof output === "string" && /^\d+$/.test(output)
+      ? Number(output)
+      : output;
+  if (
+    typeof inputTokens !== "number" ||
+    !Number.isSafeInteger(inputTokens) ||
+    inputTokens < 0 ||
+    typeof outputTokens !== "number" ||
+    !Number.isSafeInteger(outputTokens) ||
+    outputTokens < 0
+  )
+    return null;
+  return { inputTokens, outputTokens };
 }
 
 export async function callYandexAi(
   messages: YandexAiMessage[],
-  options: { temperature?: number; maxTokens?: number } = {}
+  options?: { temperature?: number; maxTokens?: number }
 ): Promise<string> {
+  return (await callYandexAiWithUsage(messages, options)).text;
+}
+
+export async function callYandexAiWithUsage(
+  messages: YandexAiMessage[],
+  options: { temperature?: number; maxTokens?: number } = {}
+): Promise<AiCompletion> {
   const apiKey = process.env.YANDEX_AI_STUDIO_API_KEY;
   const folderId = process.env.YANDEX_AI_STUDIO_FOLDER_ID;
 
@@ -81,20 +111,13 @@ export async function callYandexAi(
         signal: AbortSignal.timeout(60_000),
       }
     );
-  } catch (error) {
-    throw new YandexAiError(
-      error instanceof Error
-        ? `Не удалось связаться с Yandex AI Studio: ${error.message}`
-        : "Не удалось связаться с Yandex AI Studio"
-    );
+  } catch {
+    throw new YandexAiError("Не удалось связаться с Yandex AI Studio");
   }
 
   if (!response.ok) {
-    const details = await response.text().catch(() => "");
     throw new YandexAiError(
-      `Yandex AI Studio вернул ошибку ${response.status}${
-        details ? `: ${details.slice(0, 500)}` : ""
-      }`,
+      `Yandex AI Studio вернул ошибку HTTP ${response.status}`,
       response.status
     );
   }
@@ -102,6 +125,7 @@ export async function callYandexAi(
   const data = (await response.json().catch(() => null)) as {
     result?: {
       alternatives?: Array<{ message?: { text?: string } }>;
+      usage?: { inputTextTokens?: unknown; completionTokens?: unknown };
     };
   } | null;
 
@@ -111,5 +135,11 @@ export async function callYandexAi(
     throw new YandexAiError("Yandex AI Studio вернул пустой ответ");
   }
 
-  return text;
+  return {
+    text,
+    usage: parseTokenUsage(
+      data?.result?.usage?.inputTextTokens,
+      data?.result?.usage?.completionTokens
+    ),
+  };
 }

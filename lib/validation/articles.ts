@@ -35,6 +35,9 @@ export const generateArticleInputSchema = z.object({
     .min(10, "Опишите задачу подробнее")
     .max(2_000, "Слишком длинный запрос"),
   provider: z.enum(AI_PROVIDER_CHOICES).default("auto"),
+  audience: z.string().trim().max(240).default(""),
+  outlet: z.string().trim().max(240).default(""),
+  length: z.string().trim().max(100).default(""),
   basis: z
     .object({
       articleId: z.string().trim().min(1),

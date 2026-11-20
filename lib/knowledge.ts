@@ -180,7 +180,7 @@ export function buildKnowledgeTree(
       id: folderIds.customRoot,
       name: "03_Пользовательские_типы",
       description:
-        "Типы карточек, созданные администратором канона в конструкторе полей",
+        "Типы карточек, созданные координатором в конструкторе полей",
       kind: "custom-root",
       children: customTypes.map((type) => ({
         id: folderIds.customType(type.id),
@@ -192,14 +192,19 @@ export function buildKnowledgeTree(
   ];
 }
 
-export type KnowledgeCardType = "project" | "laboratory" | "campus" | "custom";
+export type KnowledgeCardType =
+  | "project"
+  | "laboratory"
+  | "campus"
+  | "custom"
+  | "university";
 
 export const CARD_STATUSES = ["approved", "pending", "rejected"] as const;
 
 export type CardStatus = (typeof CARD_STATUSES)[number];
 
 export const cardStatusLabels: Record<CardStatus, string> = {
-  approved: "В каноне",
+  approved: "Утверждена",
   pending: "На подтверждении",
   rejected: "Отклонена",
 };
@@ -239,6 +244,8 @@ type KnowledgeCardBase = {
   reviewComment?: string;
   participantApprovals?: string[];
   editRequests?: CardEditRequest[];
+  approvedSnapshot?: KnowledgeCard;
+  requiredApprovalUniversityIds?: string[];
 };
 
 export type ProjectCard = KnowledgeCardBase & {
@@ -298,20 +305,44 @@ export type CustomCard = KnowledgeCardBase & {
   customFields: Record<string, CustomFieldValue>;
 };
 
+export type StructuredMetric = {
+  id: string;
+  label: string;
+  value: number;
+  unit: string;
+  year: number;
+  kind: "actual" | "plan";
+  evidenceUrl: string;
+  verifiedAt: string;
+  owner: string;
+};
+
+export type UniversityCard = KnowledgeCardBase & {
+  type: "university";
+  universityId: string;
+  structuredMetrics: StructuredMetric[];
+};
+
 export type KnowledgeCard =
-  ProjectCard | LaboratoryCard | CampusCard | CustomCard;
+  | ProjectCard
+  | LaboratoryCard
+  | CampusCard
+  | CustomCard
+  | UniversityCard;
 
 export type KnowledgeCardDraft =
   | Omit<ProjectCard, "id" | "createdAt" | "updatedAt">
   | Omit<LaboratoryCard, "id" | "createdAt" | "updatedAt">
   | Omit<CampusCard, "id" | "createdAt" | "updatedAt">
-  | Omit<CustomCard, "id" | "createdAt" | "updatedAt">;
+  | Omit<CustomCard, "id" | "createdAt" | "updatedAt">
+  | Omit<UniversityCard, "id" | "createdAt" | "updatedAt">;
 
 export const knowledgeCardTypeLabels: Record<KnowledgeCardType, string> = {
   project: "Проект / продукт",
   laboratory: "Лаборатория / объект",
   campus: "Паспорт кампуса",
   custom: "Пользовательская карточка",
+  university: "Паспорт вуза",
 };
 
 export function getCardTypeLabel(
@@ -340,18 +371,58 @@ export function isCardApproved(card: KnowledgeCard): boolean {
   return getCardStatus(card) === "approved";
 }
 
+export function getApprovedVersion(card: KnowledgeCard): KnowledgeCard | null {
+  if (isCardApproved(card)) return card;
+  return card.approvedSnapshot && isCardApproved(card.approvedSnapshot)
+    ? card.approvedSnapshot
+    : null;
+}
+
+function pickFields<T, K extends keyof T>(record: T, fields: K[]): Pick<T, K> {
+  return Object.fromEntries(fields.map((key) => [key, record[key]])) as Pick<T, K>;
+}
+
+/** Only these fields belong to a published card or its public snapshot. */
+export function cardContent(card: KnowledgeCard): KnowledgeCard {
+  const base = pickFields(card, [
+    "id", "title", "folderId", "owners", "referenceDescription", "stopFormula",
+    "createdAt", "updatedAt", "status",
+  ]);
+  switch (card.type) {
+    case "project":
+      return { ...base, ...pickFields(card, ["type", "sphere", "initiatorUniversityId", "coExecutors", "industrialPartner", "readinessStage", "contour", "confirmedFigures", "isJoint", "participantUniversityIds"]) };
+    case "laboratory":
+      return { ...base, ...pickFields(card, ["type", "affiliation", "partner", "head", "placementStatus", "placementDetails", "workDirections", "equipment", "confirmedIndicators"]) };
+    case "campus":
+      return { ...base, ...pickFields(card, ["type", "campusMetrics", "tariffs", "legalEntities", "stopList"]) };
+    case "custom":
+      return { ...base, ...pickFields(card, ["type", "customTypeId", "customFields"]) };
+    case "university":
+      return { ...base, ...pickFields(card, ["type", "universityId", "structuredMetrics"]) };
+  }
+}
+
+export function getPublicApprovedCard(card: KnowledgeCard): KnowledgeCard | null {
+  const approved = getApprovedVersion(card);
+  return approved && cardContent(approved);
+}
+
+export function getRequiredUniversityApprovals(card: KnowledgeCard): string[] {
+  return (
+    card.requiredApprovalUniversityIds ??
+    (isJointProject(card) ? card.participantUniversityIds : [])
+  );
+}
+
 export function getParticipantApprovals(card: KnowledgeCard): string[] {
-  if (!isJointProject(card)) return [];
+  if (!getRequiredUniversityApprovals(card).length) return [];
 
   return card.participantApprovals ?? [];
 }
 
 export function isJointFullyApproved(card: KnowledgeCard): boolean {
-  if (!isJointProject(card)) return true;
-
-  const approvals = new Set(getParticipantApprovals(card));
-
-  return card.participantUniversityIds.every((id) => approvals.has(id));
+  const approvals = new Set(card.participantApprovals ?? []);
+  return getRequiredUniversityApprovals(card).every((id) => approvals.has(id));
 }
 
 export function getPendingEditRequests(card: KnowledgeCard): CardEditRequest[] {
@@ -488,14 +559,34 @@ export function isJointReferenceForFolder(
 
 const seedTimestamp = "2026-11-13T09:00:00.000Z";
 
+// Empty passports establish scope only. Figures must be entered from evidence.
+export const universityPassportSeeds: UniversityCard[] = universities.map(
+  (university) => ({
+    id: `university-${university.id}`,
+    type: "university",
+    universityId: university.id,
+    title: `Паспорт вуза: ${university.shortName}`,
+    folderId: folderIds.subfolder(university.id, "passport"),
+    owners: [university.fullName],
+    referenceDescription: university.fullName,
+    stopFormula:
+      "Квоты и показатели вуза проверяются только по его собственным данным с годом, статусом факт/план и документом. Общую вместимость кампуса нельзя выдавать за квоту вуза.",
+    structuredMetrics: [],
+    status: "approved",
+    createdAt: seedTimestamp,
+    updatedAt: seedTimestamp,
+  })
+);
+
 export const knowledgeSeedCards: KnowledgeCard[] = [
+  ...universityPassportSeeds,
   {
     id: "campus-passport",
     type: "campus",
     title: "Паспорт кампуса «Южный Урал» (CAMPUS-PASS-001)",
     folderId: folderIds.campus,
     owners: [
-      "Администратор канона",
+      "Координатор",
       "Сергей Иванов, АНО «РИОН»",
       "Наталья Григорьева, Минобрнауки Челябинской области",
       "Виктор Козлов, ООО «ЧКК»",
@@ -619,7 +710,8 @@ export const knowledgeSeedCards: KnowledgeCard[] = [
   {
     id: "project-susu-pish-machines",
     type: "project",
-    title: "Спецтехника ПИШ «Сердце Урала» (коммунальная машина и дистанционный погрузчик)",
+    title:
+      "Спецтехника ПИШ «Сердце Урала» (коммунальная машина и дистанционный погрузчик)",
     folderId: folderIds.subfolder("susu", "products"),
     owners: ["Анна Смирнова, ЮУрГУ"],
     sphere: "Машиностроение и спецтехника",
@@ -968,7 +1060,8 @@ export const knowledgeSeedCards: KnowledgeCard[] = [
     folderId: folderIds.subfolder("midis", "infrastructure"),
     owners: ["Мария Лебедева, МИДиС"],
     affiliation: "МИДиС",
-    partner: "ГК «Голос» (будущая лаборатория в УНК); ранее проработка с ГК inSmart",
+    partner:
+      "ГК «Голос» (будущая лаборатория в УНК); ранее проработка с ГК inSmart",
     head: "Мария Лебедева",
     placementStatus: "active",
     placementDetails:

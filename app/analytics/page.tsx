@@ -1,7 +1,8 @@
+import "../data-workspaces.css";
+
 import { AnalyticsWorkspace } from "@/components/analytics/analytics-workspace";
-import { isStorageWritable } from "@/lib/db";
-import { mockKnowledgeCards } from "@/lib/mock-data";
-import { ensureKnowledgeSeed, getCanonicalKnowledgeCards } from "@/lib/models";
+import { getStorageMode } from "@/lib/db";
+import { getCanonicalKnowledgeCards } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
 
@@ -9,20 +10,17 @@ async function getCardsCount(): Promise<{
   cardsCount: number;
   dbAvailable: boolean;
 }> {
-  if (await isStorageWritable()) {
-    try {
-      await ensureKnowledgeSeed();
-      const cards = await getCanonicalKnowledgeCards();
-      return { cardsCount: cards.length, dbAvailable: true };
-    } catch (error) {
-      console.error("Не удалось загрузить карточки для аналитики:", error);
-    }
+  const mode = await getStorageMode();
+  try {
+    const cards = await getCanonicalKnowledgeCards();
+    return {
+      cardsCount: cards.length,
+      dbAvailable: mode === "dynamodb" || mode === "local-json",
+    };
+  } catch (error) {
+    console.error("Не удалось загрузить карточки для аналитики:", error);
+    return { cardsCount: 0, dbAvailable: false };
   }
-
-  return {
-    cardsCount: mockKnowledgeCards.length,
-    dbAvailable: false,
-  };
 }
 
 export default async function AnalyticsPage() {

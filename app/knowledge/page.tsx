@@ -1,18 +1,24 @@
+import "../data-workspaces.css";
+
+import { BookOpenCheck } from "lucide-react";
+import Link from "next/link";
+
 import { KnowledgeBase } from "@/components/knowledge/knowledge-base";
-import { canSeeCard, type SessionUser } from "@/lib/auth";
+import { visibleKnowledgeCards, type SessionUser } from "@/lib/auth";
 import { getSessionUser } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   ensureKnowledgeSeed,
   getAllCardTypes,
   getAllKnowledgeCards,
-  getCustomCardCounts,
+  customCardCounts,
 } from "@/lib/models";
 import { mockCustomCardTypes, mockKnowledgeCards } from "@/lib/mock-data";
-import type {
-  CardTypeDefinition,
-  CardTypeWithStats,
-  KnowledgeCard,
+import {
+  getPublicApprovedCard,
+  type CardTypeDefinition,
+  type CardTypeWithStats,
+  type KnowledgeCard,
 } from "@/lib/knowledge";
 
 export const dynamic = "force-dynamic";
@@ -32,15 +38,15 @@ async function getKnowledgeData(user: SessionUser | null): Promise<{
   if (await isStorageWritable()) {
     try {
       await ensureKnowledgeSeed();
-      const [cards, types, counts] = await Promise.all([
+      const [cards, types] = await Promise.all([
         getAllKnowledgeCards(),
         getAllCardTypes(),
-        getCustomCardCounts(),
       ]);
 
+      const visible = visibleKnowledgeCards(user, cards);
       return {
-        cards: cards.filter((card) => canSeeCard(user, card)),
-        customTypes: withStats(types, counts),
+        cards: visible,
+        customTypes: withStats(types, customCardCounts(visible)),
         dbAvailable: true,
       };
     } catch (error) {
@@ -49,7 +55,7 @@ async function getKnowledgeData(user: SessionUser | null): Promise<{
   }
 
   return {
-    cards: mockKnowledgeCards.filter((card) => canSeeCard(user, card)),
+    cards: visibleKnowledgeCards(user, mockKnowledgeCards),
     customTypes: withStats(mockCustomCardTypes, {}),
     dbAvailable: false,
   };
@@ -58,7 +64,13 @@ async function getKnowledgeData(user: SessionUser | null): Promise<{
 export default async function KnowledgePage({
   searchParams,
 }: {
-  searchParams: Promise<{ card?: string; action?: string; folder?: string }>;
+  searchParams: Promise<{
+    card?: string;
+    action?: string;
+    folder?: string;
+    q?: string;
+    version?: string;
+  }>;
 }) {
   const user = await getSessionUser();
   const [{ cards, customTypes, dbAvailable }, params] = await Promise.all([
@@ -66,15 +78,40 @@ export default async function KnowledgePage({
     searchParams,
   ]);
 
+  const approvedOnly = params.version === "approved";
   return (
-    <KnowledgeBase
-      initialCards={cards}
-      initialCustomTypes={customTypes}
-      initialCardId={params.card ?? null}
-      initialAction={params.action ?? null}
-      initialFolderId={params.folder ?? null}
-      dbAvailable={dbAvailable}
-      currentUser={user}
-    />
+    <>
+      {approvedOnly ? (
+        <div className="atlas-wrap data-index-version">
+          <p>
+            <BookOpenCheck className="size-4" aria-hidden="true" />
+            Утверждённая версия из источника
+          </p>
+          {params.card ? (
+            <Link href={`/knowledge?card=${encodeURIComponent(params.card)}`}>
+              Открыть карточку в справочнике
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+      <KnowledgeBase
+        key={JSON.stringify(params)}
+        initialQuery={params.q ?? ""}
+        initialCards={
+          approvedOnly
+            ? cards.flatMap((card) => {
+                const approved = getPublicApprovedCard(card);
+                return approved ? [approved] : [];
+              })
+            : cards
+        }
+        initialCustomTypes={customTypes}
+        initialCardId={params.card ?? null}
+        initialAction={approvedOnly ? null : (params.action ?? null)}
+        initialFolderId={params.folder ?? null}
+        dbAvailable={dbAvailable}
+        currentUser={approvedOnly ? null : user}
+      />
+    </>
   );
 }

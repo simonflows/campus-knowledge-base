@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { canManageTypes } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   countKnowledgeCardsByCustomType,
@@ -66,6 +66,9 @@ async function getAdminDeniedResponse() {
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   const denied = await getAdminDeniedResponse();
 
   if (denied) return denied;
@@ -149,7 +152,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 }
 
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   const denied = await getAdminDeniedResponse();
 
   if (denied) return denied;

@@ -1,60 +1,25 @@
+import { isIP } from "node:net";
 import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { cookies } from "next/headers";
 
-import { getDemoAccount, toSessionUser, type SessionUser } from "./auth";
+import type { SessionUser } from "./auth";
+import { demoLoginEnabled, getSessionIdentity } from "./pilot-auth";
 
-export const SESSION_COOKIE = "campus-canon-session";
-export const LEGACY_SESSION_COOKIE = "__Host-vibecraft-session";
-
+export const SESSION_COOKIE = "__Host-vibecraft-session";
+export const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
 export const sessionCookieOptions = {
   httpOnly: true,
   sameSite: "lax" as const,
-  secure: process.env.FORCE_SECURE_COOKIE === "true",
+  secure: true,
   path: "/",
+  maxAge: SESSION_LIFETIME_SECONDS,
 };
+const demoRuntime = globalThis as typeof globalThis & { campusDemoSigningKey?: Buffer };
 
-const SECRET_FILE_PATH = path.join(
-  process.cwd(),
-  ".data",
-  "session-secret.key"
-);
-let cachedGeneratedSecret: string | null = null;
-
-function getSessionSecret(): string {
-  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16) {
-    return process.env.SESSION_SECRET;
-  }
-
-  if (cachedGeneratedSecret) {
-    return cachedGeneratedSecret;
-  }
-
-  try {
-    const existing = fs.readFileSync(SECRET_FILE_PATH, "utf8").trim();
-    if (/^[0-9a-f]{64}$/i.test(existing)) {
-      cachedGeneratedSecret = existing;
-      return cachedGeneratedSecret;
-    }
-  } catch {
-    // Key file not created yet — generate a random CSPRNG secret below.
-  }
-
-  const generated = crypto.randomBytes(32).toString("hex");
-  cachedGeneratedSecret = generated;
-
-  try {
-    fs.mkdirSync(path.dirname(SECRET_FILE_PATH), { recursive: true });
-    fs.writeFileSync(SECRET_FILE_PATH, `${generated}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  } catch {
-    // Read-only filesystem fallback still keeps per-process CSPRNG secret in memory.
-  }
-
-  return generated;
+function signingKey() {
+  const configured = process.env.SESSION_SECRET;
+  if (configured && configured.length >= 32) return configured;
+  return demoLoginEnabled() && process.env.NODE_ENV !== "production" ? (demoRuntime.campusDemoSigningKey ??= crypto.randomBytes(32)) : null;
 }
 
 const LOGIN_WINDOW_MS = 5 * 60 * 1000;
@@ -64,13 +29,25 @@ const failedLoginBuckets = new Map<
   { count: number; resetAt: number }
 >();
 
-export function getClientIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded) {
-    const first = forwarded.split(",")[0]?.trim();
-    if (first) return first;
+let nextLoginCleanup = 0;
+
+function loginBucketKey(key: string, now: number) {
+  if (now >= nextLoginCleanup) {
+    for (const [bucket, failure] of failedLoginBuckets) {
+      if (now >= failure.resetAt) failedLoginBuckets.delete(bucket);
+    }
+    nextLoginCleanup = now + 60_000;
   }
-  return request.headers.get("x-real-ip")?.trim() || "local";
+  // The account directory already bounds the number of account buckets.
+  if (key.startsWith("account:") || key === "unknown-account" || failedLoginBuckets.has(key)) return key;
+  return failedLoginBuckets.size >= 4096 ? "overflow" : key;
+}
+
+export function getClientIp(request: Request): string | null {
+  // Enable only behind an ingress that overwrites client-supplied forwarding headers.
+  if (process.env.CAMPUS_TRUST_PROXY !== "true") return null;
+  const address = request.headers.get("x-forwarded-for")?.split(",").at(-1)?.trim();
+  return address && isIP(address) ? address : null;
 }
 
 export function checkLoginRateLimit(key: string): {
@@ -78,11 +55,12 @@ export function checkLoginRateLimit(key: string): {
   retryAfterSeconds: number;
 } {
   const now = Date.now();
-  const entry = failedLoginBuckets.get(key);
+  const bucket = loginBucketKey(key, now);
+  const entry = failedLoginBuckets.get(bucket);
   if (!entry) return { allowed: true, retryAfterSeconds: 0 };
 
   if (now >= entry.resetAt) {
-    failedLoginBuckets.delete(key);
+    failedLoginBuckets.delete(bucket);
     return { allowed: true, retryAfterSeconds: 0 };
   }
 
@@ -98,18 +76,10 @@ export function checkLoginRateLimit(key: string): {
 
 export function recordFailedLogin(key: string): void {
   const now = Date.now();
-  if (failedLoginBuckets.size > 1000) {
-    for (const [k, v] of failedLoginBuckets.entries()) {
-      if (now >= v.resetAt) failedLoginBuckets.delete(k);
-    }
-    if (failedLoginBuckets.size > 1000) {
-      failedLoginBuckets.clear();
-    }
-  }
-
-  const current = failedLoginBuckets.get(key);
+  const bucket = loginBucketKey(key, now);
+  const current = failedLoginBuckets.get(bucket);
   if (!current || now >= current.resetAt) {
-    failedLoginBuckets.set(key, {
+    failedLoginBuckets.set(bucket, {
       count: 1,
       resetAt: now + LOGIN_WINDOW_MS,
     });
@@ -124,69 +94,49 @@ export function clearLoginFailures(key: string): void {
 }
 
 export function verifySameOrigin(request: Request): boolean {
+  const site = request.headers.get("sec-fetch-site");
+  if (site === "cross-site") return false;
   const origin = request.headers.get("origin");
-  if (!origin) return true;
-  if (origin === "null") return false;
-
-  let originHost: string;
+  if (!origin) return !site || site === "same-origin" || site === "none";
   try {
-    originHost = new URL(origin).host.toLowerCase();
+    const supplied = new URL(origin);
+    if (!["http:", "https:"].includes(supplied.protocol) || supplied.origin !== origin) return false;
+    if (process.env.CAMPUS_PUBLIC_ORIGIN) {
+      return supplied.origin === new URL(process.env.CAMPUS_PUBLIC_ORIGIN).origin;
+    }
+    const destination = new URL(request.url);
+    const host = request.headers.get("host");
+    return supplied.protocol === destination.protocol && supplied.host === (host?.toLowerCase() ?? destination.host);
   } catch {
     return false;
   }
-
-  const forwardedHost = request.headers
-    .get("x-forwarded-host")
-    ?.split(",")[0]
-    ?.trim()
-    .toLowerCase();
-  const directHost = request.headers.get("host")?.trim().toLowerCase();
-  let urlHost = "";
-  try {
-    urlHost = new URL(request.url).host.toLowerCase();
-  } catch {
-    urlHost = "";
-  }
-
-  const allowedHosts = [forwardedHost, directHost, urlHost].filter(
-    (item): item is string => Boolean(item)
-  );
-  if (allowedHosts.length === 0) return false;
-
-  return allowedHosts.includes(originHost);
 }
 
-function computeSignature(accountId: string): string {
-  return crypto
-    .createHmac("sha256", getSessionSecret())
-    .update(accountId)
-    .digest("hex");
+function computeSignature(payload: string, binding: string) {
+  const key = signingKey();
+  if (!key) return null;
+  return crypto.createHmac("sha256", key).update(JSON.stringify([payload, binding])).digest("hex");
 }
 
-export function signSessionToken(accountId: string): string {
-  return `${accountId}.${computeSignature(accountId)}`;
+export function signSessionToken(id: string, now = Date.now()): string {
+  const identity = getSessionIdentity(id);
+  const expires = Math.floor(now / 1000) + SESSION_LIFETIME_SECONDS;
+  const payload = `v2.${id}.${expires}`;
+  const signature = identity && computeSignature(payload, identity.binding);
+  if (!signature) throw new Error("Настройте учётные записи и SESSION_SECRET");
+  return `${payload}.${signature}`;
 }
 
-export function verifySessionToken(
-  token: string | undefined | null
-): string | null {
-  if (!token) return null;
-
-  const dotIndex = token.lastIndexOf(".");
-  if (dotIndex <= 0) return null;
-
-  const accountId = token.slice(0, dotIndex);
-  const signature = token.slice(dotIndex + 1);
-  if (!accountId || !signature) return null;
-
-  const expected = computeSignature(accountId);
-  const sigBuf = Buffer.from(signature, "utf8");
-  const expBuf = Buffer.from(expected, "utf8");
-
-  if (sigBuf.length !== expBuf.length) return null;
-  if (!crypto.timingSafeEqual(sigBuf, expBuf)) return null;
-
-  return accountId;
+export function verifySessionToken(token?: string | null, now = Date.now()): string | null {
+  if (!token || token.length > 256) return null;
+  const match = /^v2\.([a-z0-9_-]+)\.(\d{1,12})\.([0-9a-f]{64})$/.exec(token);
+  if (!match) return null;
+  const [, id, expires, signature] = match;
+  if (Number(expires) <= Math.floor(now / 1000)) return null;
+  const identity = getSessionIdentity(id);
+  const expected = identity && computeSignature(`v2.${id}.${expires}`, identity.binding);
+  if (!expected || !crypto.timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"))) return null;
+  return id;
 }
 
 export function isAdminPinRequired(): boolean {
@@ -206,11 +156,6 @@ export function verifyAdminPin(pin: string | undefined): boolean {
 
 export async function getSessionUser(): Promise<SessionUser | null> {
   const store = await cookies();
-  const rawToken =
-    store.get(SESSION_COOKIE)?.value ??
-    store.get(LEGACY_SESSION_COOKIE)?.value;
-  const accountId = verifySessionToken(rawToken);
-  const account = getDemoAccount(accountId);
-
-  return account ? toSessionUser(account) : null;
+  const id = verifySessionToken(store.get(SESSION_COOKIE)?.value);
+  return id ? getSessionIdentity(id)?.user ?? null : null;
 }

@@ -2,10 +2,14 @@ import { universities } from "./data";
 import {
   CONTOURS,
   READINESS_STAGES,
+  getApprovedVersion,
+  getCardTypeLabel,
   getFolderPathLabel,
   getUniversityName,
   isJointProject,
+  knowledgeCardTypeLabels,
   placementStatusLabels,
+  type CardTypeDefinition,
   type Contour,
   type KnowledgeCard,
   type ReadinessStage,
@@ -26,7 +30,12 @@ export type AnalyticsFilter = {
   value: string;
 };
 
-export type AnalyticsCardType = "project" | "laboratory" | "campus";
+export type AnalyticsCardType =
+  | "project"
+  | "laboratory"
+  | "campus"
+  | "university"
+  | "custom";
 
 export type AnalyticsCardRow = {
   id: string;
@@ -221,6 +230,8 @@ function matchUniversityName(value: string, universityShortName: string) {
 }
 
 function cardUniversityIds(card: KnowledgeCard): string[] {
+  if (card.type === "university") return [card.universityId];
+
   if (card.type === "project") {
     const ids = new Set<string>([card.initiatorUniversityId]);
 
@@ -263,6 +274,11 @@ function cardPartner(card: KnowledgeCard): string {
 function cardFigures(card: KnowledgeCard): string[] {
   if (card.type === "project") return card.confirmedFigures;
   if (card.type === "laboratory") return card.confirmedIndicators;
+  if (card.type === "university")
+    return (card.structuredMetrics ?? []).map(
+      (metric) =>
+        `${metric.label}: ${metric.value} ${metric.unit} (${metric.year}, ${metric.kind === "actual" ? "факт" : "план"})`
+    );
   if (card.type === "campus")
     return card.campusMetrics.map(
       (metric) => `${metric.label}: ${metric.value}`
@@ -274,7 +290,7 @@ function cardStatus(card: KnowledgeCard): string {
   if (card.type === "project") return card.readinessStage;
   if (card.type === "laboratory")
     return placementStatusLabels[card.placementStatus];
-  return "Паспорт кампуса";
+  return getCardTypeLabel(card);
 }
 
 function cardContour(card: KnowledgeCard): {
@@ -298,23 +314,20 @@ function cardContour(card: KnowledgeCard): {
   return { label: "—", value: null };
 }
 
-function cardTypeLabel(card: KnowledgeCard): string {
-  if (card.type === "project") {
-    return card.isJoint ? "Совместный проект" : "Проект / продукт";
-  }
-  if (card.type === "laboratory") return "Лаборатория / объект";
-  return "Паспорт кампуса";
-}
-
-function toRow(card: KnowledgeCard): AnalyticsCardRow {
+function toRow(
+  card: KnowledgeCard,
+  customTypes: CardTypeDefinition[]
+): AnalyticsCardRow {
   const contour = cardContour(card);
   const universityIds = cardUniversityIds(card);
 
   return {
     id: card.id,
     title: card.title,
-    cardType: card.type === "custom" ? "campus" : card.type,
-    cardTypeLabel: cardTypeLabel(card),
+    cardType: card.type,
+    cardTypeLabel: isJointProject(card)
+      ? "Совместный проект"
+      : getCardTypeLabel(card, customTypes),
     industry: cardIndustryText(card) || "—",
     universities: universityIds.map(getUniversityName),
     partner: cardPartner(card) || "—",
@@ -324,7 +337,7 @@ function toRow(card: KnowledgeCard): AnalyticsCardRow {
     contourValue: contour.value,
     figures: cardFigures(card),
     folder: getFolderPathLabel(card.folderId),
-    sourceHref: `/knowledge?card=${card.id}`,
+    sourceHref: `/knowledge?card=${encodeURIComponent(card.id)}&version=approved`,
     isJoint: isJointProject(card),
   };
 }
@@ -335,36 +348,57 @@ type ParsedQuery = {
   industries: IndustryDefinition[];
   universityIds: string[];
   requirePartner: boolean;
+  partnerName: string | null;
+  customTypeIds: string[];
   stages: ReadinessStage[];
   contours: Contour[];
   jointOnly: boolean;
   unknownIndustry: string | null;
 };
 
-function detectCardTypes(query: string): Set<AnalyticsCardType> {
-  const wantsProjects = /проект|разработ|продукт/.test(query);
-  const wantsLaboratories = /лаборатор|инфраструктур|объект/.test(query);
-  const wantsCampus = /паспорт|общие параметры/.test(query);
+function detectCardTypes(
+  query: string,
+  hasCustomType: boolean
+): Set<AnalyticsCardType> {
   const types = new Set<AnalyticsCardType>();
-
-  if (wantsProjects) types.add("project");
-  if (wantsLaboratories) types.add("laboratory");
-  if (wantsCampus) types.add("campus");
-
+  if (hasCustomType) {
+    types.add("custom");
+    return types;
+  }
+  if (/проект|разработ|продукт/.test(query)) types.add("project");
+  if (/лаборатор|инфраструктур|объект/.test(query)) types.add("laboratory");
+  if (/паспорт[а-я]*\s+кампус|общие параметры/.test(query)) types.add("campus");
+  if (
+    /паспорт[а-я]*\s+(?:вуз|университет)|показател[а-я]*\s+(?:вуз|университет)/.test(
+      query
+    )
+  )
+    types.add("university");
   if (types.size === 0) {
     types.add("project");
     types.add("laboratory");
   }
-
   return types;
 }
 
-function parseQuery(rawQuery: string): ParsedQuery {
+function parseQuery(
+  rawQuery: string,
+  customTypes: CardTypeDefinition[]
+): ParsedQuery {
   const query = normalize(rawQuery);
   const filters: AnalyticsFilter[] = [];
-  const cardTypes = detectCardTypes(query);
+  const explicitCustomName = query.match(
+    /(?:^|\s)тип[а-я]*\s+[«"]([^"»]+)["»]/u
+  )?.[1];
+  const activeCustomTypes = explicitCustomName
+    ? customTypes.filter(
+        (type) => normalize(type.name) === normalize(explicitCustomName)
+      )
+    : [];
+  const cardTypes = detectCardTypes(query, Boolean(explicitCustomName));
+  const filterQuery = query.replace(/[«"][^"»]+["»]/gu, "");
   const industries = INDUSTRIES.filter((industry) =>
-    includesAny(query, industry.queryKeywords)
+    includesAny(filterQuery, industry.queryKeywords)
   );
   const universityIds = universities
     .filter((university) => {
@@ -373,19 +407,25 @@ function parseQuery(rawQuery: string): ParsedQuery {
       return names.some((name) => {
         const normalizedName = normalize(name);
         return (
-          query.includes(normalizedName) ||
+          filterQuery.includes(normalizedName) ||
           (name === university.fullName &&
-            normalizedName.split(/\s+/).every((part) => query.includes(part)))
+            normalizedName
+              .split(/\s+/)
+              .every((part) => filterQuery.includes(part)))
         );
       });
     })
     .map((university) => university.id);
-  const requirePartner = /партнер|партнёр|индустриальн/.test(query);
+  const requirePartner = /партнер|индустриальн/.test(filterQuery);
+  const partnerName =
+    query.match(
+      /партнер[а-я]*\s+(?:(?:ооо|пао|ао|гк)\s+)?[«"]([^"»]+)["»]/u
+    )?.[1] ?? null;
   const stages = READINESS_KEYWORDS.filter((item) =>
-    includesAny(query, item.keywords)
+    includesAny(filterQuery, item.keywords)
   ).map((item) => item.stage);
   const contours = CONTOUR_KEYWORDS.filter((item) =>
-    includesAny(query, item.keywords)
+    includesAny(filterQuery, item.keywords)
   ).map((item) => item.contour);
   const hasCampusContour =
     /контур[а-яёa-z]*\s+(?:в\s+)?кампус/.test(query) ||
@@ -400,8 +440,6 @@ function parseQuery(rawQuery: string): ParsedQuery {
   if (jointOnly) {
     cardTypes.clear();
     cardTypes.add("project");
-  } else {
-    cardTypes.delete("campus");
   }
 
   const sphereMention = query.match(
@@ -410,19 +448,16 @@ function parseQuery(rawQuery: string): ParsedQuery {
   const unknownIndustry =
     industries.length === 0 && sphereMention ? sphereMention[1].trim() : null;
 
-  const typeLabels: Record<AnalyticsCardType, string> = {
-    project: "Проект / продукт",
-    laboratory: "Лаборатория / объект",
-    campus: "Паспорт кампуса",
-  };
-
-  if (cardTypes.size > 0 && cardTypes.size < 3) {
-    filters.push({
-      key: "type",
-      label: "Тип карточки",
-      value: [...cardTypes].map((type) => typeLabels[type]).join(", "),
-    });
-  }
+  const activeTypeLabels = Array.from(cardTypes, (type) =>
+    type === "custom" && explicitCustomName
+      ? explicitCustomName
+      : knowledgeCardTypeLabels[type]
+  );
+  filters.push({
+    key: "type",
+    label: "Тип карточки",
+    value: activeTypeLabels.join(", "),
+  });
 
   industries.forEach((industry) => {
     filters.push({
@@ -452,7 +487,9 @@ function parseQuery(rawQuery: string): ParsedQuery {
     filters.push({
       key: "partner",
       label: "Партнёры",
-      value: "Только карточки с указанным партнёром",
+      value: partnerName
+        ? `Партнёр «${partnerName}»`
+        : "Только карточки с указанным партнёром",
     });
   }
 
@@ -478,6 +515,8 @@ function parseQuery(rawQuery: string): ParsedQuery {
     industries,
     universityIds,
     requirePartner,
+    partnerName,
+    customTypeIds: activeCustomTypes.map((type) => type.id),
     stages,
     contours,
     jointOnly,
@@ -486,7 +525,11 @@ function parseQuery(rawQuery: string): ParsedQuery {
 }
 
 function matchesQuery(card: KnowledgeCard, parsed: ParsedQuery): boolean {
-  if (card.type === "custom") return false;
+  if (
+    card.type === "custom" &&
+    !parsed.customTypeIds.includes(card.customTypeId)
+  )
+    return false;
   if (!parsed.cardTypes.has(card.type)) return false;
 
   if (parsed.unknownIndustry) return false;
@@ -509,7 +552,14 @@ function matchesQuery(card: KnowledgeCard, parsed: ParsedQuery): boolean {
     if (!hasUniversities) return false;
   }
 
-  if (parsed.requirePartner && !cardPartner(card)) return false;
+  const partner = normalize(cardPartner(card));
+  if (
+    parsed.requirePartner &&
+    (!partner || /^(?:[-—]+|нет|не указан[а-я]*|не применимо)$/.test(partner))
+  )
+    return false;
+  if (parsed.partnerName && !partner.includes(normalize(parsed.partnerName)))
+    return false;
 
   if (parsed.stages.length > 0) {
     if (card.type !== "project") return false;
@@ -536,7 +586,11 @@ function uniquePartners(values: string[]): string[] {
   values
     .filter((value) => Boolean(value) && value !== "—")
     .forEach((value) => {
-      const cleaned = value.replace(/\s*\([^)]*\)/g, "").split(";")[0]?.trim() ?? value;
+      const cleaned =
+        value
+          .replace(/\s*\([^)]*\)/g, "")
+          .split(";")[0]
+          ?.trim() ?? value;
       const key = normalize(cleaned).replace(/[«»"']/g, "");
       if (key && !seen.has(key)) {
         seen.set(key, cleaned);
@@ -563,18 +617,24 @@ function countBy<T extends string>(
 
 export function buildAnalyticsReport(
   rawQuery: string,
-  cards: KnowledgeCard[]
+  cards: KnowledgeCard[],
+  customTypes: CardTypeDefinition[] = []
 ): AnalyticsReport {
   const query = rawQuery.trim();
-  const parsed = parseQuery(query);
+  const parsed = parseQuery(query, customTypes);
   const matchedCards = cards
-    .filter((card) => matchesQuery(card, parsed))
+    .map(getApprovedVersion)
+    .filter(
+      (card): card is KnowledgeCard =>
+        card !== null && matchesQuery(card, parsed)
+    )
     .sort((a, b) => {
       const typeOrder: Record<KnowledgeCard["type"], number> = {
         project: 0,
         laboratory: 1,
         campus: 2,
         custom: 3,
+        university: 2,
       };
       const typeDelta = typeOrder[a.type] - typeOrder[b.type];
 
@@ -582,7 +642,7 @@ export function buildAnalyticsReport(
 
       return a.title.localeCompare(b.title, "ru");
     });
-  const rows = matchedCards.map(toRow);
+  const rows = matchedCards.map((card) => toRow(card, customTypes));
 
   const summary: AnalyticsSummary = {
     total: rows.length,
