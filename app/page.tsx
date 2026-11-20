@@ -1,63 +1,34 @@
 import { HomeDashboard } from "@/components/home-dashboard";
-import {
-  campusMetrics,
-  databaseUpdates,
-  heroStats,
-  legalEntities,
-  universities,
-} from "@/lib/data";
-import { isStorageWritable } from "@/lib/db";
-import { mockArticles, mockKnowledgeCards } from "@/lib/mock-data";
-import {
-  ensureArticleSeed,
-  ensureKnowledgeSeed,
-  getAllArticles,
-  getCanonicalKnowledgeCards,
-} from "@/lib/models";
-
+import { universities } from "@/lib/data";
+import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
+import { StorageUnavailable } from "@/components/storage-unavailable";
+import { getCanonicalKnowledgeCards } from "@/lib/models";
+import { canSeeCard } from "@/lib/auth";
+import { getSessionUser } from "@/lib/auth-server";
+import type { CampusCard } from "@/lib/knowledge";
 export const dynamic = "force-dynamic";
-
-async function getHomeCounts() {
-  if (await isStorageWritable()) {
-    try {
-      await Promise.all([ensureKnowledgeSeed(), ensureArticleSeed()]);
-      const [cards, articles] = await Promise.all([
-        getCanonicalKnowledgeCards(),
-        getAllArticles(),
-      ]);
-      return {
-        cardsCount: cards.length,
-        articlesCount: articles.length,
-      };
-    } catch (error) {
-      console.error("Не удалось загрузить счётчики для главной:", error);
-    }
-  }
-
-  return {
-    cardsCount: mockKnowledgeCards.length,
-    articlesCount: mockArticles.length,
-  };
-}
-
 export default async function HomePage() {
-  const { cardsCount, articlesCount } = await getHomeCounts();
-
-  const liveStats = heroStats.map((stat, index) => {
-    if (index === 0) return { ...stat, value: String(cardsCount) };
-    if (index === 1) return { ...stat, value: String(articlesCount) };
-    return stat;
-  });
-
+  const user = await getSessionUser();
+  const data = await Promise.all([
+    getCanonicalKnowledgeCards(),
+    getReadableStorageMode(),
+  ]).catch(() => null);
+  if (!data) return <StorageUnavailable title="Справочник кампуса" />;
+  const [cards, mode] = data;
+  const visible = cards.filter((card) => canSeeCard(user, card));
+  const passport =
+    visible.find(
+      (card): card is CampusCard =>
+        card.type === "campus" &&
+        card.id === "campus-passport" &&
+        (card.status ?? "approved") === "approved"
+    ) ?? null;
   return (
     <HomeDashboard
-      heroStats={liveStats}
-      cardsCount={cardsCount}
-      articlesCount={articlesCount}
-      campusMetrics={campusMetrics}
-      legalEntities={legalEntities}
+      passport={passport}
       universities={universities}
-      databaseUpdates={databaseUpdates}
+      cardsCount={visible.length}
+      live={mode !== "static-export"}
     />
   );
 }

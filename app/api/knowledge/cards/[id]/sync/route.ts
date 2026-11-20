@@ -1,15 +1,20 @@
 import { NextResponse } from "next/server";
 
-import { canEditCard } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canEditCard, visibleKnowledgeCard } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
-import { retryKnowledgeCardSync } from "@/lib/disk-sync-service";
+import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getCardStatus } from "@/lib/knowledge";
 import { getKnowledgeCardById } from "@/lib/models";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(_request: Request, context: RouteContext) {
+  if (!verifySameOrigin(_request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -18,6 +23,11 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   const user = await getSessionUser();
+  if (!user)
+    return NextResponse.json(
+      { error: "Войдите для повторной выгрузки" },
+      { status: 401 }
+    );
   const { id } = await context.params;
   const existing = await getKnowledgeCardById(id);
 
@@ -43,7 +53,7 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   try {
-    const card = await retryKnowledgeCardSync(id);
+    const card = await syncKnowledgeCardRecord(existing);
 
     if (!card) {
       return NextResponse.json(
@@ -52,8 +62,19 @@ export async function POST(_request: Request, context: RouteContext) {
       );
     }
 
-    return NextResponse.json(card);
+    return NextResponse.json(visibleKnowledgeCard(user, card));
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error:
+            "Редакция или попытка выгрузки изменилась. Обновите карточку и повторите.",
+        },
+        { status: 409 }
+      );
     console.error("Ошибка повторной выгрузки карточки на Диск:", error);
     return NextResponse.json(
       { error: "Не удалось повторить выгрузку карточки" },

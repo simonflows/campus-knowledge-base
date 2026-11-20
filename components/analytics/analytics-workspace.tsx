@@ -1,8 +1,14 @@
 "use client";
+import {
+  MastheadCount,
+  WorkspaceMasthead,
+} from "@/components/workspace-masthead";
+import { AnimatedNumber } from "@/components/motion/animated-number";
 
 import Link from "next/link";
 import { useState } from "react";
 import {
+  ArrowUpRight,
   BarChart3,
   Building2,
   ClipboardList,
@@ -18,7 +24,6 @@ import {
   Search,
   Table2,
   TriangleAlert,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -56,6 +61,7 @@ const examples = [
   "Сделай отчёт по взаимодействию вузов между собой в здравоохранении",
   "Покажи проекты ЮУрГУ в контуре ПИШ",
   "Собери лаборатории по цифровым технологиям",
+  "Покажи паспорт вуза ЮУрГУ",
 ];
 
 const summaryLabels = [
@@ -118,7 +124,7 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
   const { summary, cards } = report;
 
   return (
-    <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
+    <Card className="data-report-summary atlas-stagger-in">
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -131,10 +137,6 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
               контур. Каждое сведение ведёт к карточке-источнику.
             </CardDescription>
           </div>
-          <Badge variant="outline" className="gap-1 text-[11px]">
-            <Search className="size-3" />
-            Без домысливания
-          </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -147,21 +149,24 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <dl className="data-report-metrics">
           {summaryLabels.map((item) => (
-            <div
-              key={item.key}
-              className="rounded-2xl border bg-muted/30 px-3 py-2"
-            >
-              <div className="text-2xl font-bold tabular-nums">
-                {summary[item.key]}
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                {item.label}
-              </div>
+            <div key={item.key}>
+              <dt>{item.label}</dt>
+              <dd>
+                <AnimatedNumber value={summary[item.key]} />
+                <span className="data-report-track" aria-hidden="true">
+                  <i
+                    className="atlas-bar-grow"
+                    style={{
+                      inlineSize: `${summary.total > 0 ? (summary[item.key] / summary.total) * 100 : 0}%`,
+                    }}
+                  />
+                </span>
+              </dd>
             </div>
           ))}
-        </div>
+        </dl>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -598,138 +603,94 @@ export function AnalyticsWorkspace({
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-8 px-4 py-8 sm:py-10">
-      <section className="gradient-hero-vibrant relative isolate overflow-hidden rounded-[2rem] border border-white/70 px-6 py-8 shadow-sm sm:px-10 lg:px-12">
-        <div
-          aria-hidden
-          className="pattern-grid pointer-events-none absolute inset-0 opacity-[0.12]"
-        />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <Badge className="border-white/80 bg-white/75 text-primary hover:bg-white/75">
-              <BarChart3 className="h-3.5 w-3.5" />
-              Сборная аналитика по базе
+    <div className="atlas-wrap data-workspace data-analytics">
+      <WorkspaceMasthead
+        id="analytics-title"
+        icon={BarChart3}
+        title="Сводная аналитика"
+        description="Собирайте отчёты по отраслям, вузам и партнёрам. Из каждой строки можно открыть утверждённую карточку-источник."
+        note={
+          !dbAvailable && (
+            <Badge variant="outline" className="bg-amber-100 text-amber-900">
+              Статический режим: данные из стартового набора
             </Badge>
-            <div className="space-y-2">
-              <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-                Сводные отчёты по каноническим карточкам
-              </h1>
-              <p className="text-sm leading-relaxed text-foreground/70 sm:text-base">
-                Опишите запрос свободным текстом — система отберёт карточки
-                строго по полям: отрасль, вузы, партнёры, статус и контур.
-                Каждая цифра и факт в отчёте ведут к карточке-источнику, а при
-                отсутствии данных система прямо скажет об этом.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <ClipboardList className="h-3.5 w-3.5 text-primary" />
-                {cardsCount} карточек в базе
-              </Badge>
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <Table2 className="h-3.5 w-3.5 text-primary" />
-                Таблица и список
-              </Badge>
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <Copy className="h-3.5 w-3.5 text-primary" />
-                Копирование для отчёта
-              </Badge>
-              {!dbAvailable ? (
-                <Badge
-                  variant="secondary"
-                  className="gap-1 bg-amber-100 text-amber-800"
-                >
-                  Статический режим: данные из стартового набора
-                </Badge>
-              ) : null}
-            </div>
-          </div>
+          )
+        }
+      >
+        <MastheadCount count={cardsCount} label="карточек в базе" />
+      </WorkspaceMasthead>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Layers3 className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                отрасль
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Users className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">вузы</div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Network className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                партнёры
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <div className="data-report-grid">
+        <Card className="data-query-card">
+          <CardHeader>
+            <h2 className="data-panel-title">
+              <Search aria-hidden="true" />
+              Запрос к базе
+            </h2>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Label htmlFor="analytics-query" className="sr-only">
+              Запрос к базе
+            </Label>
+            <Textarea
+              id="analytics-query"
+              value={query}
+              onChange={(event) => handleQueryChange(event.target.value)}
+              placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
+              className="data-editor-field data-query-field"
+            />
 
-      <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
-        <CardHeader>
-          <CardTitle className="text-lg">Запрос к базе</CardTitle>
-          <CardDescription>
-            Например: «Собери все проекты взаимодействия вузов с индустриальными
-            партнёрами в сфере медицины».
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Label htmlFor="analytics-query" className="sr-only">
-            Запрос к базе
-          </Label>
-          <Textarea
-            id="analytics-query"
-            value={query}
-            onChange={(event) => handleQueryChange(event.target.value)}
-            placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
-            className="min-h-28 resize-y"
-          />
-
-          <div className="flex flex-wrap gap-2">
-            {examples.map((example) => (
+            <div className="data-action-row">
               <Button
-                key={example}
                 type="button"
-                variant="outline"
-                size="sm"
-                className="h-auto whitespace-normal py-1.5 text-left text-[11px] leading-snug"
-                onClick={() => handleQueryChange(example)}
+                onClick={requestAnalytics}
                 disabled={isLoading}
               >
-                {example}
+                {isLoading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Search className="size-4" />
+                )}
+                {isLoading ? "Собираем..." : "Собрать аналитику"}
               </Button>
+              <span className="text-xs text-muted-foreground">
+                Выборка детерминированная: система не придумывает карточки и
+                цифры, которых нет в базе.
+              </span>
+            </div>
+
+            {error ? (
+              <Alert variant="destructive">
+                <TriangleAlert className="size-4" />
+                <AlertTitle>Аналитика не собрана</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </CardContent>
+        </Card>
+        <aside
+          className="data-report-examples"
+          aria-labelledby="analytics-examples-title"
+        >
+          <h2 id="analytics-examples-title">Примеры запросов</h2>
+          <ul>
+            {examples.map((example) => (
+              <li key={example}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-pressed={query === example}
+                  onClick={() => handleQueryChange(example)}
+                  disabled={isLoading}
+                >
+                  <span>{example}</span>
+                  <ArrowUpRight aria-hidden="true" />
+                </Button>
+              </li>
             ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              onClick={requestAnalytics}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Search className="size-4" />
-              )}
-              {isLoading ? "Собираем..." : "Собрать аналитику"}
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              Выборка детерминированная: система не придумывает карточки и
-              цифры, которых нет в базе.
-            </span>
-          </div>
-
-          {error ? (
-            <Alert variant="destructive">
-              <TriangleAlert className="size-4" />
-              <AlertTitle>Аналитика не собрана</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-        </CardContent>
-      </Card>
+          </ul>
+        </aside>
+      </div>
 
       {report ? (
         report.cards.length === 0 ? (
@@ -770,6 +731,7 @@ export function AnalyticsWorkspace({
                         variant={view === "table" ? "secondary" : "ghost"}
                         size="sm"
                         className="gap-1.5"
+                        aria-pressed={view === "table"}
                         onClick={() => setView("table")}
                       >
                         <Table2 className="size-4" />
@@ -780,6 +742,7 @@ export function AnalyticsWorkspace({
                         variant={view === "list" ? "secondary" : "ghost"}
                         size="sm"
                         className="gap-1.5"
+                        aria-pressed={view === "list"}
                         onClick={() => setView("list")}
                       >
                         <List className="size-4" />

@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canEditCard, canRequestEdit, roleLabels } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canEditCard, canRequestEdit, roleLabels, visibleKnowledgeCard } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
-import type { CardEditRequest } from "@/lib/knowledge";
+import type { SessionUser } from "@/lib/auth";
+import type { CardEditRequest, KnowledgeCard } from "@/lib/knowledge";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
 import {
   editRequestCreateSchema,
@@ -12,7 +13,25 @@ import {
 
 type RouteContext = { params: Promise<{ id: string }> };
 
+async function saveRequests(card: KnowledgeCard, editRequests: CardEditRequest[], user: SessionUser, status = 200) {
+  try {
+    const updated = await setKnowledgeCardModeration(card.id, { editRequests }, card.updatedAt);
+    if (!updated) return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
+    return NextResponse.json(visibleKnowledgeCard(user, updated), {
+      status, headers: { "Cache-Control": "private, no-store" },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
+      return NextResponse.json({ error: "Карточка изменилась. Обновите страницу и повторите действие." }, { status: 409 });
+    }
+    return NextResponse.json({ error: "Не удалось сохранить запрос на правку" }, { status: 503 });
+  }
+}
+
 export async function POST(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -32,7 +51,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
   const card = await getKnowledgeCardById(id);
 
-  if (!card) {
+  if (!card || !visibleKnowledgeCard(user, card)) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
@@ -82,14 +101,13 @@ export async function POST(request: NextRequest, context: RouteContext) {
     status: "open",
   };
 
-  const updated = await setKnowledgeCardModeration(id, {
-    editRequests: [...(card.editRequests ?? []), editRequest],
-  });
-
-  return NextResponse.json(updated, { status: 201 });
+  return saveRequests(card, [...(card.editRequests ?? []), editRequest], user, 201);
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -109,7 +127,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
   const card = await getKnowledgeCardById(id);
 
-  if (!card) {
+  if (!card || !visibleKnowledgeCard(user, card)) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
@@ -183,9 +201,5 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     };
   });
 
-  const updated = await setKnowledgeCardModeration(id, {
-    editRequests: nextRequests,
-  });
-
-  return NextResponse.json(updated);
+  return saveRequests(card, nextRequests, user);
 }

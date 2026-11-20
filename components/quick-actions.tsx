@@ -29,7 +29,7 @@ const quickActions: QuickAction[] = [
     title: "Проверить черновик",
     tag: "Стоп-лист · 66",
     description:
-      "Сверить текст с паспортом кампуса и автоматически переписать по канону.",
+      "Сверить текст с паспортом кампуса и автоматически переписать по официальным данным.",
     icon: ScanText,
     tone: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200",
     ringTone: "hover:border-emerald-300/80 hover:bg-emerald-50/20",

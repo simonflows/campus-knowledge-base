@@ -1,11 +1,13 @@
-# Production Dockerfile for Yandex Cloud Serverless Container
-# This Dockerfile is optimized for production deployment
+# Production image for the Next.js app.
 
 FROM node:24-alpine AS builder
 
 WORKDIR /app
 
-COPY package*.json ./
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_DEMO_MODE=false
+
+COPY package.json package-lock.json ./
 
 RUN npm ci
 
@@ -13,7 +15,7 @@ COPY . .
 
 RUN mkdir -p public
 
-RUN npm run build
+RUN npm run build && mkdir -p .next/cache
 
 # Production stage
 FROM node:24-alpine AS runner
@@ -22,23 +24,27 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_DEMO_MODE=false
+ENV NPM_CONFIG_CACHE=/tmp/npm
 
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
 
-COPY --from=builder --chown=nextjs:nodejs /app/package*.json ./
+COPY --from=builder --chown=nextjs:nodejs /app/package.json /app/package-lock.json ./
+# The runtime uses tsx for deployment checks and database migration.
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/next.config.ts ./
+COPY --from=builder --chown=nextjs:nodejs /app/next.config.ts /app/tsconfig.json ./
 COPY --from=builder --chown=nextjs:nodejs /app/lib ./lib
 COPY --from=builder --chown=nextjs:nodejs /app/scripts ./scripts
+COPY --from=builder --chown=nextjs:nodejs /app/deploy/preflight.ts ./deploy/
 
-USER nextjs
+USER 1001:1001
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8080/api/health', (r) => r.statusCode === 200 ? process.exit(0) : process.exit(1))"
+HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r => { process.exitCode = r.ok ? 0 : 1 }).catch(() => { process.exitCode = 1 })"]
 
-CMD ["npx", "next", "start", "-p", "8080"]
+CMD ["node", "node_modules/next/dist/bin/next", "start", "-H", "0.0.0.0", "-p", "8080"]

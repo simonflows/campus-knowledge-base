@@ -1,24 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { buildAnalyticsReport } from "@/lib/analytics";
-import { isStorageWritable } from "@/lib/db";
-import type { KnowledgeCard } from "@/lib/knowledge";
-import { mockKnowledgeCards } from "@/lib/mock-data";
-import { ensureKnowledgeSeed, getCanonicalKnowledgeCards } from "@/lib/models";
+import { getAllCardTypes, getCanonicalKnowledgeCards } from "@/lib/models";
 import { analyticsQuerySchema } from "@/lib/validation/analytics";
-
-async function loadCards(): Promise<KnowledgeCard[]> {
-  if (await isStorageWritable()) {
-    try {
-      await ensureKnowledgeSeed();
-      return await getCanonicalKnowledgeCards();
-    } catch (error) {
-      console.error("Не удалось загрузить карточки для аналитики:", error);
-    }
-  }
-
-  return mockKnowledgeCards;
-}
 
 export async function POST(request: NextRequest) {
   let body: unknown;
@@ -45,16 +30,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  try {
-    const cards = await loadCards();
-    const report = buildAnalyticsReport(parsed.data.query, cards);
-
-    return NextResponse.json(report);
-  } catch (error) {
-    console.error("Ошибка сборки аналитики:", error);
-    return NextResponse.json(
-      { error: "Не удалось собрать аналитику по базе" },
-      { status: 500 }
-    );
-  }
+  const data = await Promise.all([
+    getCanonicalKnowledgeCards(), getAllCardTypes(),
+  ]).catch(() => null);
+  if (!data) return unavailableStorageResponse();
+  const [cards, types] = data;
+  return NextResponse.json(buildAnalyticsReport(parsed.data.query, cards, types));
 }

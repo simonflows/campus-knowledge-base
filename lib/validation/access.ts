@@ -1,7 +1,8 @@
 import { z } from "zod";
 
 export const loginSchema = z.object({
-  accountId: z.string().trim().min(1, "Выберите демонстрационный аккаунт"),
+  accountId: z.string().trim().min(1, "Введите логин").max(64),
+  accessKey: z.string().max(100).optional(),
   pin: z.string().trim().max(100).optional(),
 });
 

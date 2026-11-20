@@ -1,16 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canConfirmJointParticipation, canModerate } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canConfirmJointParticipation, canModerate, visibleKnowledgeCard } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
-import { isJointFullyApproved, isJointProject } from "@/lib/knowledge";
+import {
+  isJointFullyApproved,
+  getRequiredUniversityApprovals,
+} from "@/lib/knowledge";
 import { moderationActionSchema } from "@/lib/validation/access";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function POST(request: NextRequest, context: RouteContext) {
+async function handlePost(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -73,11 +81,15 @@ export async function POST(request: NextRequest, context: RouteContext) {
     const approvals = Array.from(
       new Set([...(card.participantApprovals ?? []), user.universityId])
     );
-    const updated = await setKnowledgeCardModeration(id, {
-      participantApprovals: approvals,
-    });
+    const updated = await setKnowledgeCardModeration(
+      id,
+      {
+        participantApprovals: approvals,
+      },
+      card.updatedAt
+    );
 
-    return NextResponse.json(updated);
+    return updated ? NextResponse.json(visibleKnowledgeCard(user, updated)) : NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
   if (!canModerate(user)) {
@@ -89,14 +101,14 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   if (
     action === "approve" &&
-    isJointProject(card) &&
+    getRequiredUniversityApprovals(card).length > 0 &&
     !isJointFullyApproved(card)
   ) {
     return NextResponse.json(
       {
         error:
           "Совместный проект нельзя одобрить до подтверждения обоих вузов-участников",
-        missingUniversityIds: card.participantUniversityIds.filter(
+        missingUniversityIds: getRequiredUniversityApprovals(card).filter(
           (universityId) =>
             !(card.participantApprovals ?? []).includes(universityId)
         ),
@@ -105,12 +117,16 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const updated = await setKnowledgeCardModeration(id, {
-    status: action === "approve" ? "approved" : "rejected",
-    reviewedBy: user.name,
-    reviewedAt: new Date().toISOString(),
-    reviewComment: comment ?? "",
-  });
+  const updated = await setKnowledgeCardModeration(
+    id,
+    {
+      status: action === "approve" ? "approved" : "rejected",
+      reviewedBy: user.name,
+      reviewedAt: new Date().toISOString(),
+      reviewComment: comment ?? "",
+    },
+    card.updatedAt
+  );
 
   if (!updated) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
@@ -122,8 +138,30 @@ export async function POST(request: NextRequest, context: RouteContext) {
       return updated;
     });
 
-    return NextResponse.json(synced);
+    return NextResponse.json(visibleKnowledgeCard(user, synced));
   }
 
-  return NextResponse.json(updated);
+  return NextResponse.json(visibleKnowledgeCard(user, updated));
+}
+
+export async function POST(request: NextRequest, context: RouteContext) {
+  try {
+    return await handlePost(request, context);
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error: "Карточка изменилась. Обновите её и повторите подтверждение.",
+        },
+        { status: 409 }
+      );
+    console.error("Ошибка подтверждения карточки:", error);
+    return NextResponse.json(
+      { error: "Не удалось сохранить подтверждение" },
+      { status: 500 }
+    );
+  }
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { universities } from "@/lib/data";
 
 import {
   CONTOURS,
@@ -12,8 +13,38 @@ import {
 const text = z.string().trim().min(1, "Заполните поле");
 const longText = z.string().trim().min(1, "Заполните поле").max(10_000);
 const textList = z.array(text).default([]);
+const ownerIds = z.array(text.max(80)).max(2000)
+  .refine(ids => new Set(ids).size === ids.length, "Владельцы не должны повторяться")
+  .optional();
+
+export const evidenceUrlSchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .url("Укажите ссылку на документ")
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, "Документ должен иметь безопасную HTTPS-ссылку без логина и пароля");
+
+export const structuredMetricSchema = z.object({
+  id: text.max(80),
+  label: text.max(200),
+  value: z.number().finite().nonnegative(),
+  unit: text.max(80),
+  year: z.number().int().min(1900).max(2200),
+  kind: z.enum(["actual", "plan"]),
+  evidenceUrl: evidenceUrlSchema,
+  verifiedAt: z.iso.date(),
+  owner: text.max(200),
+});
 
 const baseCardSchema = z.object({
+  ownerIds,
   title: text.max(200),
   folderId: text,
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -68,6 +99,15 @@ const campusCardSchema = baseCardSchema.extend({
   tariffs: z.array(campusTariffSchema).min(1),
   legalEntities: z.array(campusLegalEntitySchema).min(1),
   stopList: z.array(text).min(1),
+});
+
+const universityCardSchema = baseCardSchema.extend({
+  type: z.literal("university"),
+  universityId: text.refine(
+    (id) => universities.some((university) => university.id === id),
+    "Выберите вуз"
+  ),
+  structuredMetrics: z.array(structuredMetricSchema).max(100).default([]),
 });
 
 export const customCardFieldInputSchema = z
@@ -131,6 +171,7 @@ export const cardTypeUpdateSchema = z
 export type CardTypeInput = z.infer<typeof cardTypeInputSchema>;
 
 const customCardSchema = z.object({
+  ownerIds,
   type: z.literal("custom"),
   customTypeId: text,
   title: text.max(200),
@@ -141,12 +182,52 @@ const customCardSchema = z.object({
   customFields: z.record(z.string(), z.unknown()).default({}),
 });
 
-export const knowledgeCardInputSchema = z.discriminatedUnion("type", [
-  projectCardSchema,
-  laboratoryCardSchema,
-  campusCardSchema,
-  customCardSchema,
-]);
+export const knowledgeCardInputSchema = z
+  .discriminatedUnion("type", [
+    projectCardSchema,
+    laboratoryCardSchema,
+    campusCardSchema,
+    customCardSchema,
+    universityCardSchema,
+  ])
+  .superRefine((card, ctx) => {
+    if (card.type === "university") {
+      if (card.folderId !== `01_universities/${card.universityId}/passport`) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["folderId"],
+          message: "Паспорт должен храниться в папке своего вуза",
+        });
+      }
+      const keys = card.structuredMetrics.map(
+        (metric) =>
+          `${metric.label.toLowerCase().trim()}|${metric.unit.toLowerCase().trim()}|${metric.year}|${metric.kind}`
+      );
+      if (
+        new Set(keys).size !== keys.length ||
+        new Set(card.structuredMetrics.map((metric) => metric.id)).size !==
+          card.structuredMetrics.length
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["structuredMetrics"],
+          message: "Показатель, единица, год и статус должны быть уникальны",
+        });
+      }
+    }
+    if (
+      card.type === "project" &&
+      card.isJoint &&
+      (new Set(card.participantUniversityIds).size < 2 ||
+        !card.participantUniversityIds.includes(card.initiatorUniversityId))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["participantUniversityIds"],
+        message: "Укажите минимум два разных вуза и включите инициатора",
+      });
+    }
+  });
 
 export type KnowledgeCardInput = z.infer<typeof knowledgeCardInputSchema>;
 

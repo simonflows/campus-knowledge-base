@@ -1,9 +1,12 @@
 "use client";
+import {
+  MastheadCount,
+  WorkspaceMasthead,
+} from "@/components/workspace-masthead";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
-  BadgeCheck,
   BookOpenCheck,
   CheckCircle2,
   CircleAlert,
@@ -33,7 +36,6 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import {
   Empty,
@@ -59,6 +61,8 @@ import {
   type FactCheckResult,
   type FactCheckSummary,
 } from "@/lib/fact-check";
+import { replaceCheckedFragment } from "@/lib/fact-check-edit";
+import { factCheckInputSchema } from "@/lib/validation/fact-check";
 import { cn } from "@/lib/utils";
 
 type RewriteCheck = {
@@ -192,12 +196,26 @@ function CheckpointChips({
   );
 }
 
-function FindingCard({ finding }: { finding: FactCheckFinding }) {
+function FindingCard({
+  finding,
+  onReplace,
+  busy,
+  index = 0,
+}: {
+  finding: FactCheckFinding;
+  onReplace: (finding: FactCheckFinding, replacement: string) => void;
+  busy: boolean;
+  index?: number;
+}) {
+  const [replacement, setReplacement] = useState("");
   const style = levelStyles[finding.level];
   const Icon = style.icon;
 
   return (
-    <div className={cn("rounded-2xl border p-4", style.card)}>
+    <div
+      className={cn("atlas-stagger-item rounded-2xl border p-4", style.card)}
+      style={{ "--stagger-i": index } as CSSProperties}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-start gap-3">
           <span
@@ -220,16 +238,43 @@ function FindingCard({ finding }: { finding: FactCheckFinding }) {
             <p className="mt-2 text-sm font-semibold">{finding.title}</p>
           </div>
         </div>
-        <Link
-          href={`/knowledge?card=${finding.sourceCardId}`}
-          className={cn(
-            buttonVariants({ variant: "outline", size: "sm" }),
-            "gap-1.5 text-xs"
+        <div className="flex flex-wrap gap-2">
+          {finding.sourceUrl && (
+            <a
+              href={finding.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              <ExternalLink data-icon="inline-start" />
+              Первоисточник
+            </a>
           )}
-        >
-          <ExternalLink className="size-3.5" />
-          Карточка-источник
-        </Link>
+          {!finding.sourceCardId && (
+            <Link
+              href={`/requests?${new URLSearchParams({ q: `Прошу уточнить факт: ${finding.title}. Фрагмент: ${finding.quote ?? ""}` }).toString()}`}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              Запросить подтверждение у вуза
+            </Link>
+          )}
+          {finding.sourceCardId && (
+            <Link
+              href={`/knowledge?card=${encodeURIComponent(finding.sourceCardId)}&version=approved`}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              Официальная карточка
+            </Link>
+          )}
+          {finding.sourceCardId && (
+            <Link
+              href={`/knowledge?${new URLSearchParams({ card: finding.sourceCardId, action: "request", finding: finding.title, quote: finding.quote ?? "" }).toString()}#edit-request`}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              Оспорить и приложить источник
+            </Link>
+          )}
+        </div>
       </div>
 
       {finding.quote ? (
@@ -249,14 +294,45 @@ function FindingCard({ finding }: { finding: FactCheckFinding }) {
         <p className="mt-1 text-sm leading-relaxed">{finding.suggestion}</p>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <FileText className="size-3.5 shrink-0" />
-        <span className="font-medium text-foreground">
-          {finding.sourceCardTitle}
-        </span>
-        <span aria-hidden>·</span>
-        <span>{finding.sourceFolder}</span>
-      </div>
+      {finding.sourceCardId ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          {finding.sourceCardTitle} · {finding.sourceFolder}
+        </p>
+      ) : (
+        <p className="mt-3 text-sm text-muted-foreground">
+          Официальный источник не найден. Уточните сведения перед публикацией.
+        </p>
+      )}
+      {finding.level !== "green" && finding.quote && (
+        <form
+          className="mt-4 flex flex-col gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onReplace(finding, replacement);
+          }}
+        >
+          <label
+            htmlFor={`replacement-${finding.id}`}
+            className="text-sm font-medium"
+          >
+            Исправить только этот фрагмент
+          </label>
+          <Textarea
+            id={`replacement-${finding.id}`}
+            value={replacement}
+            onChange={(event) => setReplacement(event.target.value)}
+            placeholder="Введите проверенную формулировку…"
+            maxLength={20000}
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={busy || !replacement.trim()}
+          >
+            Заменить фрагмент и проверить снова
+          </Button>
+        </form>
+      )}
     </div>
   );
 }
@@ -272,6 +348,9 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
   const [isChecking, setIsChecking] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
   const [filter, setFilter] = useState<LevelFilter>("all");
+  const requestRevision = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const visibleFindings = useMemo(() => {
@@ -285,6 +364,10 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
   const hasYellow = (result?.summary.yellow ?? 0) > 0;
 
   const resetOutput = () => {
+    requestRevision.current += 1;
+    abortRef.current?.abort();
+    setIsChecking(false);
+    setIsRewriting(false);
     setResult(null);
     setRewrite(null);
     setRewriteCheck(null);
@@ -297,14 +380,14 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
     setText(value);
     setFileName(null);
 
-    if (result || rewrite) resetOutput();
+    resetOutput();
   };
 
   const handlePreset = (preset: FactCheckPreset) => {
     setText(preset.text);
     setFileName(null);
     resetOutput();
-    toast(`Загружен пресет: ${preset.label}`, {
+    toast(`Загружен пример: ${preset.label}`, {
       description: preset.description,
     });
   };
@@ -324,7 +407,10 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
       return;
     }
 
+    resetOutput();
+    const revision = requestRevision.current;
     const content = await file.text();
+    if (revision !== requestRevision.current) return;
 
     if (!content.trim()) {
       toast.error("Файл пустой");
@@ -337,13 +423,20 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
     toast.success("Файл загружен", { description: file.name });
   };
 
-  const requestFactCheck = async (mode: "check" | "rewrite") => {
+  const requestFactCheck = async (mode: "check" | "rewrite", draft = text) => {
     if (isChecking || isRewriting) return;
-    if (text.trim().length < 20) {
-      toast.error("Вставьте черновик длиной хотя бы 20 символов");
+    const parsed = factCheckInputSchema.safeParse({ text: draft, mode });
+    if (!parsed.success) {
+      toast.error(
+        parsed.error.issues[0]?.message ?? "Проверьте длину черновика"
+      );
       return;
     }
 
+    const revision = ++requestRevision.current;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     if (mode === "check") {
       setIsChecking(true);
       setError(null);
@@ -359,12 +452,14 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
       const response = await fetch("/api/fact-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.trim(), mode }),
+        body: JSON.stringify({ text: draft, mode }),
+        signal: controller.signal,
       });
       const data = (await response
         .json()
         .catch(() => null)) as FactCheckResponse | null;
 
+      if (revision !== requestRevision.current) return;
       if (!response.ok || !data) {
         const message =
           data?.error ??
@@ -380,6 +475,19 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
         return;
       }
 
+      const leadingSpace = draft.length - draft.trimStart().length;
+      if (leadingSpace > 0)
+        data.findings = data.findings.map((finding) => ({
+          ...finding,
+          quoteStart:
+            finding.quoteStart == null
+              ? undefined
+              : finding.quoteStart + leadingSpace,
+          quoteEnd:
+            finding.quoteEnd == null
+              ? undefined
+              : finding.quoteEnd + leadingSpace,
+        }));
       setResult(data);
       setFilter("all");
 
@@ -389,9 +497,9 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
         setRewriteError(data.rewriteError ?? null);
 
         if (!data.rewrite) {
-          toast.error("Не удалось переписать текст по канону");
+          toast.error("Не удалось переписать текст по официальным данным");
         } else if (data.rewriteCheck?.isClean) {
-          toast.success("Текст переписан по канону", {
+          toast.success("Текст переписан по официальным данным", {
             description: "Красных и жёлтых замечаний не осталось.",
           });
         }
@@ -404,13 +512,17 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
         });
       }
     } catch {
+      if (controller.signal.aborted || revision !== requestRevision.current)
+        return;
       const message =
         "Сервис проверки недоступен. Проверьте соединение и попробуйте ещё раз.";
       setError(message);
       toast.error(message);
     } finally {
-      setIsChecking(false);
-      setIsRewriting(false);
+      if (revision === requestRevision.current) {
+        setIsChecking(false);
+        setIsRewriting(false);
+      }
     }
   };
 
@@ -442,7 +554,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
         ...section.chunks.flatMap((chunk) => [chunk.content, ""]),
       ]),
       "---",
-      `Источники канона: ${rewrite.sourceCardTitles.join("; ")}`,
+      `Официальные источники: ${rewrite.sourceCardTitles.join("; ")}`,
     ].join("\n");
 
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
@@ -456,81 +568,30 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-8 px-4 py-8 sm:py-10">
-      <section className="gradient-hero-vibrant relative isolate overflow-hidden rounded-[2rem] border border-white/70 px-6 py-8 shadow-sm sm:px-10 lg:px-12">
-        <div
-          aria-hidden
-          className="pattern-grid pointer-events-none absolute inset-0 opacity-[0.12]"
-        />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <Badge className="border-white/80 bg-white/75 text-primary hover:bg-white/75">
-              <ScanText className="h-3.5 w-3.5" />
-              Проверка текста на искажения фактов
-            </Badge>
-            <div className="space-y-2">
-              <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-                Шесть контрольных точек канона
-              </h1>
-              <p className="text-sm leading-relaxed text-foreground/70 sm:text-base">
-                Вставьте черновик или загрузите текстовый файл — система сверит
-                его с каноническими карточками и покажет красные, жёлтые и
-                зелёные замечания со ссылками на источники и готовыми
-                формулировками для правки.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <BookOpenCheck className="h-3.5 w-3.5 text-primary" />
-                {cardsCount} карточек в базе
-              </Badge>
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <BadgeCheck className="h-3.5 w-3.5 text-primary" />
-                Правила SEO и GEO для переписывания
-              </Badge>
-            </div>
-          </div>
+    <div className="atlas-wrap data-workspace data-fact">
+      <WorkspaceMasthead
+        id="fact-check-title"
+        icon={ShieldCheck}
+        title="Проверка фактов"
+        description="Сверьте черновик с официальными карточками и получите замечания со ссылками на источники."
+      >
+        <MastheadCount count={cardsCount} label="карточек в базе" />
+      </WorkspaceMasthead>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <div className="text-2xl font-bold text-red-600">1</div>
-              <div className="text-[11px] text-muted-foreground">красный</div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <div className="text-2xl font-bold text-amber-600">2</div>
-              <div className="text-[11px] text-muted-foreground">жёлтый</div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <div className="text-2xl font-bold text-emerald-600">3</div>
-              <div className="text-[11px] text-muted-foreground">зелёный</div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {checkpoints.map(([key, label]) => (
-          <div
-            key={key}
-            className="flex items-center gap-2 rounded-xl border bg-card px-3 py-2 text-xs shadow-sm"
-          >
-            <CheckCircle2 className="size-3.5 shrink-0 text-primary" />
-            <span className="leading-snug">{label}</span>
-          </div>
-        ))}
-      </section>
-
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
+      <div className="data-fact-grid">
+        <Card className="data-draft-card">
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <CardTitle className="text-lg">Черновик текста</CardTitle>
+                <h2 className="data-panel-title">
+                  <FileText aria-hidden="true" />
+                  Черновик текста
+                </h2>
                 <CardDescription>
                   Вставьте материал целиком или загрузите файл .txt / .md.
                 </CardDescription>
               </div>
-              <Badge variant="outline" className="gap-1 text-[11px]">
+              <Badge variant="outline" className="data-char-count">
                 <Layers3 className="size-3" />
                 {text.trim().length} символов
               </Badge>
@@ -545,7 +606,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
               value={text}
               onChange={(event) => handleTextChange(event.target.value)}
               placeholder="Вставьте готовый текст или черновик статьи. Проверка найдёт искажения авторства, статуса, контуров, названий, площадей и неподтверждённые цифры."
-              className="min-h-64 resize-y"
+              className="data-editor-field"
             />
 
             {fileName ? (
@@ -567,7 +628,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
               }}
             />
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="data-action-row">
               <Button
                 type="button"
                 onClick={() => requestFactCheck("check")}
@@ -596,13 +657,13 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                 disabled={isChecking || isRewriting}
               >
                 <ClipboardCheck className="size-4" />
-                Пример из ТЗ
+                Пример текста
               </Button>
             </div>
 
-            <div className="space-y-2 rounded-2xl border bg-muted/25 p-3">
+            <div className="data-check-examples">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Быстрые пресеты реальных ошибок из PDF-аудита (66 кейсов)
+                Примеры текстов для проверки
               </p>
               <div className="grid gap-2 sm:grid-cols-3">
                 {FACT_CHECK_PRESETS.map((preset) => (
@@ -611,7 +672,8 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                     type="button"
                     disabled={isChecking || isRewriting}
                     onClick={() => handlePreset(preset)}
-                    className="flex flex-col items-start gap-1 rounded-xl border bg-background p-2.5 text-left transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:opacity-50"
+                    className="data-check-example"
+                    aria-pressed={text === preset.text}
                   >
                     <span className="text-xs font-semibold leading-snug">
                       {preset.label}
@@ -624,7 +686,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 rounded-xl bg-muted/40 p-3">
+            <div className="data-rewrite-actions">
               <Button
                 type="button"
                 variant="secondary"
@@ -636,11 +698,13 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                 ) : (
                   <Wand2 className="size-4" />
                 )}
-                {isRewriting ? "Переписываем..." : "Переписать по канону"}
+                {isRewriting
+                  ? "Переписываем..."
+                  : "Переписать по официальным данным"}
               </Button>
               <span className="text-xs text-muted-foreground">
                 Исправленный текст по правилам SEO и GEO: первые 1000 знаков,
-                H1–H3 и чанки.
+                заголовки и смысловые фрагменты.
               </span>
             </div>
 
@@ -654,99 +718,138 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
           </CardContent>
         </Card>
 
-        <Card className="h-fit rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
-          <CardHeader>
-            <CardTitle className="text-lg">Итог проверки</CardTitle>
-            <CardDescription>
-              Красный уровень блокирует публикацию до правки.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {result ? (
-              <>
-                <div className="grid grid-cols-3 gap-2">
-                  {(["red", "yellow", "green"] as FactCheckLevel[]).map(
-                    (level) => {
-                      const styles = levelStyles[level];
-                      return (
-                        <div
-                          key={level}
-                          className={cn(
-                            "rounded-xl border p-3 text-center",
-                            styles.card
-                          )}
-                        >
-                          <div className="text-2xl font-bold">
-                            {result.summary[level]}
+        <aside className="data-fact-output">
+          <Card className="data-fact-summary">
+            <CardHeader>
+              <h2 className="data-panel-title">
+                <ScanText aria-hidden="true" />
+                Итог проверки
+              </h2>
+              <CardDescription>
+                Красный уровень блокирует публикацию до правки.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3" aria-live="polite">
+              {result ? (
+                <>
+                  <div className="data-level-counts">
+                    {(["red", "yellow", "green"] as FactCheckLevel[]).map(
+                      (level) => {
+                        const styles = levelStyles[level];
+                        return (
+                          <div
+                            key={level}
+                            className={cn("data-level-count", styles.card)}
+                          >
+                            <div className="text-2xl font-bold">
+                              {result.summary[level]}
+                            </div>
+                            <div className="text-[11px] capitalize">
+                              {levelLabels[level].toLowerCase()}
+                            </div>
                           </div>
-                          <div className="text-[11px] capitalize">
-                            {levelLabels[level].toLowerCase()}
-                          </div>
-                        </div>
-                      );
-                    }
-                  )}
-                </div>
-
-                <div
-                  className={cn(
-                    "rounded-xl p-3 text-sm",
-                    hasRed
-                      ? "bg-red-100 text-red-800"
-                      : hasYellow
-                        ? "bg-amber-100 text-amber-900"
-                        : "bg-emerald-100 text-emerald-800"
-                  )}
-                >
-                  <div className="flex items-center gap-2 font-semibold">
-                    {hasRed ? (
-                      <ShieldAlert className="size-4" />
-                    ) : hasYellow ? (
-                      <ShieldQuestion className="size-4" />
-                    ) : (
-                      <ShieldCheck className="size-4" />
+                        );
+                      }
                     )}
-                    {hasRed
-                      ? "Публикация запрещена до правки"
-                      : hasYellow
-                        ? "Нужно уточнить спорные факты"
-                        : "Текст подтверждён базой"}
                   </div>
-                  <p className="mt-1 text-xs leading-relaxed">
-                    {hasRed
-                      ? `Исправьте ${result.summary.red} красное замечание, затем проверьте текст повторно.`
-                      : hasYellow
-                        ? `Уточните или удалите ${result.summary.yellow} неподтверждённую цифру.`
-                        : "Красных и жёлтых замечаний нет — можно готовить материал к публикации."}
-                  </p>
-                </div>
 
-                <Separator />
-                <p className="text-xs text-muted-foreground">
-                  Проверено {result.checkedChars} символов по{" "}
-                  {result.checkpoints.length} контрольным точкам.
-                </p>
-              </>
-            ) : (
-              <Empty className="border-0 p-4">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <ScanText className="size-4" />
-                  </EmptyMedia>
-                  <EmptyTitle>Проверка ещё не запускалась</EmptyTitle>
-                  <EmptyDescription>
-                    Вставьте текст и нажмите «Проверить текст». Замечания
-                    появятся здесь с уровнями и ссылками на карточки.
-                  </EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
+                  <div
+                    className={cn(
+                      "rounded-xl p-3 text-sm",
+                      hasRed
+                        ? "bg-red-100 text-red-800"
+                        : hasYellow
+                          ? "bg-amber-100 text-amber-900"
+                          : result.summary.green > 0
+                            ? "bg-emerald-100 text-emerald-800"
+                            : "bg-muted text-muted-foreground"
+                    )}
+                  >
+                    <div className="flex items-center gap-2 font-semibold">
+                      {hasRed ? (
+                        <ShieldAlert className="size-4" />
+                      ) : hasYellow ? (
+                        <ShieldQuestion className="size-4" />
+                      ) : (
+                        <ShieldCheck className="size-4" />
+                      )}
+                      {hasRed
+                        ? "Публикация запрещена до правки"
+                        : hasYellow
+                          ? "Нужно уточнить спорные факты"
+                          : result.summary.green > 0
+                            ? "Найденные факты подтверждены"
+                            : "Проверяемые факты не найдены"}
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed">
+                      {hasRed
+                        ? `Исправьте ${result.summary.red} красное замечание, затем проверьте текст повторно.`
+                        : hasYellow
+                          ? `Проверьте неподтверждённые сведения и приложите официальный источник.`
+                          : "Проверка охватывает только распознанные факты. Остальные сведения нужно сверить отдельно."}
+                    </p>
+                  </div>
+
+                  <Separator />
+                  <p className="text-xs text-muted-foreground">
+                    Проверено {result.checkedChars} символов по{" "}
+                    {result.checkpoints.length} контрольным точкам.
+                  </p>
+                </>
+              ) : (
+                <Empty className="data-fact-empty">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <ScanText className="size-4" />
+                    </EmptyMedia>
+                    <EmptyTitle>Проверка ещё не запускалась</EmptyTitle>
+                    <EmptyDescription>
+                      Вставьте текст и нажмите «Проверить текст». Замечания
+                      появятся здесь с уровнями и ссылками на карточки.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
+              )}
+            </CardContent>
+          </Card>
+          <details className="data-fact-checkpoints">
+            <summary>
+              Контрольные точки <span>{checkpoints.length}</span>
+            </summary>
+            <ul>
+              {checkpoints.map(([key, label]) => (
+                <li key={key}>
+                  <CheckCircle2 aria-hidden="true" />
+                  {label}
+                </li>
+              ))}
+            </ul>
+          </details>
+          <details className="data-fact-checkpoints">
+            <summary>Уровни замечаний</summary>
+            <dl className="data-fact-legend">
+              <div data-level="red">
+                <dt>Красный</dt>
+                <dd>
+                  Противоречие официальным данным. Публикация запрещена до
+                  правки.
+                </dd>
+              </div>
+              <div data-level="yellow">
+                <dt>Жёлтый</dt>
+                <dd>Нет подтверждения в базе. Уточните факт и источник.</dd>
+              </div>
+              <div data-level="green">
+                <dt>Зелёный</dt>
+                <dd>Факт подтверждён официальной карточкой.</dd>
+              </div>
+            </dl>
+          </details>
+        </aside>
       </div>
 
       {result ? (
-        <section className="space-y-4">
+        <section className="atlas-stagger-in space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-heading text-xl font-semibold">
@@ -769,6 +872,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                     type="button"
                     size="sm"
                     variant={filter === item.value ? "default" : "outline"}
+                    aria-pressed={filter === item.value}
                     onClick={() => setFilter(item.value)}
                     className="text-xs"
                   >
@@ -786,8 +890,34 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
 
           {visibleFindings.length > 0 ? (
             <div className="space-y-3">
-              {visibleFindings.map((finding) => (
-                <FindingCard key={finding.id} finding={finding} />
+              {visibleFindings.map((finding, index) => (
+                <FindingCard
+                  key={finding.id}
+                  finding={finding}
+                  index={index}
+                  busy={isChecking || isRewriting}
+                  onReplace={(target, replacement) => {
+                    const quote = target.quote;
+                    if (!quote || !replacement.trim()) return;
+                    const next = replaceCheckedFragment(
+                      text,
+                      quote,
+                      replacement,
+                      target.quoteStart,
+                      target.quoteEnd
+                    );
+                    if (next === null) {
+                      toast.error(
+                        "Фрагмент неоднозначен или изменён. Исправьте его в черновике и повторите проверку."
+                      );
+                      return;
+                    }
+                    setText(next);
+                    setFileName(null);
+                    resetOutput();
+                    void requestFactCheck("check", next);
+                  }}
+                />
               ))}
             </div>
           ) : (
@@ -812,10 +942,10 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <h2 className="font-heading text-xl font-semibold">
-                Текст, переписанный по канону
+                Текст, переписанный по официальным данным
               </h2>
               <p className="text-xs text-muted-foreground">
-                Первые 1000 знаков, структура H1–H3 и самодостаточные чанки.
+                Первые 1000 знаков, структура H1–H3 и смысловые фрагменты.
               </p>
             </div>
             {rewrite ? (
@@ -823,18 +953,18 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                 {rewriteCheck ? (
                   <Badge
                     className={cn(
-                      rewriteCheck.isClean
+                      rewriteCheck.isClean && rewriteCheck.summary.green > 0
                         ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100"
                         : "bg-amber-100 text-amber-800 hover:bg-amber-100"
                     )}
                   >
-                    {rewriteCheck.isClean ? (
+                    {rewriteCheck.isClean && rewriteCheck.summary.green > 0 ? (
                       <ShieldCheck className="size-3" />
                     ) : (
                       <ShieldQuestion className="size-3" />
                     )}
-                    {rewriteCheck.isClean
-                      ? "100% чистый канон · 0 красных · 0 жёлтых"
+                    {rewriteCheck.isClean && rewriteCheck.summary.green > 0
+                      ? "Распознанные факты проверены · 0 красных · 0 жёлтых"
                       : `Красных: ${rewriteCheck.summary.red}, жёлтых: ${rewriteCheck.summary.yellow}`}
                   </Badge>
                 ) : null}
@@ -929,7 +1059,7 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
                     >
                       <FileText className="size-3.5 shrink-0 text-muted-foreground" />
                       <Link
-                        href={`/knowledge?card=${cardId}`}
+                        href={`/knowledge?card=${encodeURIComponent(cardId)}&version=approved`}
                         className="font-medium underline-offset-4 hover:underline"
                       >
                         {rewrite.sourceCardTitles[index] ?? cardId}

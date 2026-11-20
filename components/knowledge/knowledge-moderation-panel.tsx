@@ -57,7 +57,9 @@ export function KnowledgeModerationPanel({
         }
       );
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         toast.error(
@@ -75,7 +77,9 @@ export function KnowledgeModerationPanel({
 
       onCardUpdated(data as KnowledgeCard);
       toast.success(
-        action === "approve" ? "Черновик добавлен в канон" : "Черновик отклонён"
+        action === "approve"
+          ? "Черновик добавлен в утверждённую базу"
+          : "Черновик отклонён"
       );
     } catch {
       toast.error("Ошибка сети при модерации карточки");
@@ -85,7 +89,7 @@ export function KnowledgeModerationPanel({
   };
 
   return (
-    <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-amber-200/80">
+    <Card className="data-index-review">
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2 font-heading text-xl">
@@ -97,9 +101,9 @@ export function KnowledgeModerationPanel({
           </Badge>
         </div>
         <CardDescription>
-          Новые карточки от PR-команд и владельцев не попадают в канон, пока
-          координатор их не одобрит. Совместный проект требует подтверждения
-          обоих вузов-участников.
+          Новые карточки от PR-команд и владельцев не попадают в утверждённую
+          базу, пока координатор их не одобрит. Совместный проект требует
+          подтверждения обоих вузов-участников.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -189,7 +193,7 @@ export function KnowledgeModerationPanel({
               {!ready ? (
                 <p className="mt-2 text-xs text-amber-900">
                   Нужно подтверждение второго вуза-участника, прежде чем
-                  добавлять проект в канон.
+                  добавлять проект в утверждённую базу.
                 </p>
               ) : null}
             </div>

@@ -1,10 +1,11 @@
 node_modules
 npm-debug.log
 .next
+.next-campus-demo
 out
 .env
-.env.local
-.env*.local
+.env.*
+.data
 .git
 .gitignore
 README.md
@@ -13,3 +14,7 @@ README.md
 .vercel
 .idea
 .vscode
+
+# Local browser audit evidence
+.taste-skill/
+.playwright-cli/

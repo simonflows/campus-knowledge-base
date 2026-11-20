@@ -1,204 +1,172 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Link from "next/link";
+import { ArrowUpRight, Database } from "lucide-react";
 import "./globals.css";
-import { cn } from "@/lib/utils";
-import {
-  Building2,
-  GraduationCap,
-  ShieldCheck,
-  Sparkles,
-} from "lucide-react";
 import { BridgeProvider } from "@/components/bridge-provider";
 import { UserMenu } from "@/components/auth/user-menu";
 import { HeaderNav } from "@/components/navigation/header-nav";
+import { CampusBrand } from "@/components/navigation/campus-brand";
+import { PageContent } from "@/components/navigation/page-content";
+import { AmbientBackdrop } from "@/components/motion/ambient-backdrop";
 import { SystemStatusBar } from "@/components/system/system-status-bar";
 import { Toaster } from "@/components/ui/sonner";
-import { getAlibabaAiConfig } from "@/lib/alibaba-ai";
+import { getIntegrationStatus } from "@/lib/integration-status";
 import { getSessionUser } from "@/lib/auth-server";
 import { universities } from "@/lib/data";
+import { campusServices } from "@/lib/campus-services";
+import { demoLoginEnabled } from "@/lib/pilot-auth";
+import { countIncomingRequests } from "@/lib/information-requests-models";
 import { getStorageMode } from "@/lib/db";
-import { getYandexAiConfig } from "@/lib/yandex-ai";
-import { isYandexDiskConfigured } from "@/lib/yandex-disk";
+import { getLocalStoreReadProblem } from "@/lib/local-store";
+import { getTrustedPreviewOrigin } from "@/lib/bridge/config";
 
-const appName = "Канон кампуса «Южный Урал»";
-
+const appName = "Справочник кампуса «Южный Урал»";
+const description =
+  "Карточки семи университетов-резидентов Челябинской области, паспорт кампуса, проверка фактов и редактор публикаций.";
 export const metadata: Metadata = {
-  title: `${appName} — Единая база знаний 7 вузов`,
-  description:
-    "Единый канонический источник фактов, SEO/GEO-редактор, фактчекер (66 кейсов аудита) и полигон Yandex AI Studio / Alibaba Cloud для Межуниверситетского кампуса мирового уровня «Южный Урал».",
+  title: appName,
+  description,
+  openGraph: { title: appName, description, type: "website", locale: "ru_RU" },
+  other: { "page-type": "software", "site-kind": "software" },
 };
+export const viewport: Viewport = { themeColor: "#102332" };
 
 export default async function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+}: Readonly<{ children: React.ReactNode }>) {
+  const assetBase = process.env.BASE_PATH || "";
+  const previewOrigin = getTrustedPreviewOrigin(
+    process.env.NODE_ENV,
+    process.env.CAMPUS_PREVIEW_ORIGIN
+  );
   const [user, storageMode] = await Promise.all([
     getSessionUser(),
     getStorageMode(),
   ]);
+  const localReadProblem =
+    process.env.CAMPUS_LOCAL_DEMO === "true" &&
+    process.env.NODE_ENV !== "production"
+      ? await getLocalStoreReadProblem()
+      : null;
+  let incomingCount = 0;
+  if (user?.universityId && storageMode === "dynamodb") {
+    try {
+      incomingCount = await countIncomingRequests(user);
+    } catch {
+      /* The requests table may still be waiting for migration. */
+    }
+  }
   const initialStatus = {
+    incomingRequests: incomingCount,
     storageMode,
-    yandexAi: getYandexAiConfig(),
-    alibabaAi: getAlibabaAiConfig(),
-    yandexDisk: { configured: isYandexDiskConfigured() },
-    fz152Compliant: true,
+    ...getIntegrationStatus(),
   };
-
+  const sections = campusServices();
   return (
-    <html lang="ru" className={cn("font-sans")}>
-      <body className="antialiased min-h-screen bg-background flex flex-col">
-        <BridgeProvider />
-        <header className="sticky top-0 z-50 w-full border-b border-border/80 bg-background/85 backdrop-blur-lg">
-          <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-4">
-            <Link
-              href="/"
-              className="group flex shrink-0 items-center gap-2.5 transition-opacity hover:opacity-90"
-            >
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl gradient-hero text-white shadow-sm ring-1 ring-primary/20">
-                <Sparkles className="h-4 w-4" />
-              </div>
-              <div className="flex min-w-0 flex-col">
-                <span className="truncate text-sm font-bold tracking-tight sm:text-[15px]">
-                  {appName}
-                </span>
-                <span className="hidden text-[10px] font-medium uppercase tracking-wider text-muted-foreground sm:block">
-                  Single Source of Truth · 7 вузов
-                </span>
-              </div>
+    <html
+      suppressHydrationWarning
+      lang="ru"
+      data-type="software"
+      data-ground="sky"
+      data-radius="soft"
+      data-buttons="solid"
+      data-motion="auto"
+      className="font-sans"
+    >
+      <head>
+        <link rel="stylesheet" href={`${assetBase}/atlas/motion/motion.css`} />
+      </head>
+      <body className="flex min-h-screen flex-col antialiased">
+        <AmbientBackdrop />
+        <a className="skip atlas-skip" href="#main-content">
+          Перейти к содержимому
+        </a>
+        {previewOrigin && (
+          <BridgeProvider trustedOrigin={previewOrigin} basePath={assetBase} />
+        )}
+        <header className="nav atlas-header">
+          <div className="wrap atlas-wrap atlas-header-row">
+            <Link className="brand" href="/" aria-label={`${appName}, главная`}>
+              <CampusBrand />
             </Link>
-
-            <HeaderNav />
-
-            <div className="ml-auto flex shrink-0 items-center gap-2">
-              <SystemStatusBar initialStatus={initialStatus} />
+            <HeaderNav incomingCount={incomingCount} />
+            <div className="atlas-controls">
+              <SystemStatusBar
+                showIntegrationStatus={
+                  process.env.NODE_ENV !== "production" && demoLoginEnabled()
+                }
+                initialStatus={initialStatus}
+              />
               <UserMenu initialUser={user} />
             </div>
           </div>
         </header>
 
-        <main className="flex-1">{children}</main>
-
-        <footer className="mt-16 border-t border-border/80 bg-card/70">
-          <div className="mx-auto max-w-7xl px-4 py-10">
-            <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1.4fr]">
-              <div className="space-y-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg gradient-hero text-white">
-                    <Sparkles className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold tracking-tight">{appName}</p>
-                    <p className="text-[11px] text-muted-foreground">
-                      Паспорт CAMPUS-PASS-001 · г. Челябинск
-                    </p>
-                  </div>
-                </div>
-                <p className="max-w-md text-xs leading-relaxed text-muted-foreground">
-                  Единый источник достоверных фактов о строительстве,
-                  лабораториях, продуктовых программах и совместных проектах
-                  семи университетов-резидентов кампуса мирового уровня.
+        {storageMode !== "dynamodb" && (
+          <div className="atlas-mode" role="status">
+            <div className="wrap atlas-wrap">
+              <Database size={14} aria-hidden="true" />
+              <span>
+                {localReadProblem
+                  ? `${localReadProblem} Запись отключена.`
+                  : storageMode === "local-json"
+                    ? "Локальное демо. Совместная редактура и межвузовские запросы доступны с общей базой."
+                    : storageMode === "static-export"
+                      ? "Демонстрационные примеры. Сохранение отключено."
+                      : "Общая база недоступна. Сохранение отключено."}
+              </span>
+            </div>
+          </div>
+        )}
+        <PageContent>{children}</PageContent>
+        <footer className="atlas-footer closing">
+          <div className="wrap atlas-wrap">
+            <div className="atlas-footer-grid">
+              <div>
+                <Link href="/">
+                  <CampusBrand />
+                </Link>
+                <p>
+                  Межуниверситетский кампус мирового уровня «Южный Урал»
+                  <br />
+                  Челябинская область
                 </p>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-800 ring-1 ring-emerald-200">
-                    <ShieldCheck className="h-3 w-3 text-emerald-600" />
-                    Единый стандарт данных 7 вузов
-                  </span>
-                  <span className="inline-flex items-center gap-1 rounded-full bg-primary/5 px-2.5 py-1 text-[11px] font-medium text-primary ring-1 ring-primary/15">
-                    <Building2 className="h-3 w-3" />
-                    АНО «РИОН» · ООО «ЧКК» · Минобрнауки ЧО
-                  </span>
-                </div>
               </div>
-
-              <div className="space-y-3">
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Модули системы
-                </p>
-                <ul className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                  <li>
-                    <Link
-                      href="/knowledge"
-                      className="text-foreground/80 transition-colors hover:text-primary"
-                    >
-                      База знаний (18 карточек)
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href="/editor"
-                      className="text-foreground/80 transition-colors hover:text-primary"
-                    >
-                      Умный SEO/GEO-редактор
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href="/check"
-                      className="text-foreground/80 transition-colors hover:text-primary"
-                    >
-                      Фактчекинг (66 кейсов)
-                    </Link>
-                  </li>
-                  <li>
-                    <Link
-                      href="/analytics"
-                      className="text-foreground/80 transition-colors hover:text-primary"
-                    >
-                      Сборная аналитика
-                    </Link>
-                  </li>
-                  {isDemoMode ? (
-                    <li>
-                      <Link
-                        href="/comparison"
-                        className="text-foreground/80 transition-colors hover:text-primary"
-                      >
-                        Архитектура и полигон ИИ
-                      </Link>
+              <div>
+                <h2>Разделы справочника</h2>
+                <ul>
+                  {sections.map(({ href, title }) => (
+                    <li key={href}>
+                      <Link href={href}>{title}</Link>
                     </li>
-                  ) : null}
-                  <li>
-                    <Link
-                      href="/login"
-                      className="text-foreground/80 transition-colors hover:text-primary"
-                    >
-                      Роли и доступ вузов
-                    </Link>
-                  </li>
+                  ))}
                 </ul>
               </div>
-
-              <div className="space-y-3">
-                <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  <GraduationCap className="h-3.5 w-3.5 text-primary" />
-                  Семь равноправных вузов-резидентов
-                </p>
-                <div className="flex flex-wrap gap-1.5">
+              <div>
+                <h2>Университеты-резиденты</h2>
+                <ul>
                   {universities.map((u) => (
-                    <Link
-                      key={u.id}
-                      href={`/knowledge?folder=01_universities/${u.id}`}
-                      className="rounded-lg border bg-background px-2.5 py-1 text-xs font-medium text-foreground/85 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary"
-                    >
-                      {u.shortName}
-                    </Link>
+                    <li key={u.id}>
+                      <Link
+                        href={`/knowledge?folder=${encodeURIComponent(`01_universities/${u.id}`)}`}
+                      >
+                        {u.shortName}
+                        <ArrowUpRight size={12} aria-hidden="true" />
+                      </Link>
+                    </li>
                   ))}
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Нажмите на любой университет, чтобы открыть его папку в каноне.
-                </p>
+                </ul>
               </div>
             </div>
-
-            <div className="mt-8 flex flex-col items-center justify-between gap-2 border-t pt-5 text-xs text-muted-foreground sm:flex-row">
-              <span>© {new Date().getFullYear()} {appName}</span>
-              <span>Челябинская область · Координация инфополя в ИИ и СМИ</span>
+            <div className="atlas-copyright">
+              <span>
+                © {new Date().getFullYear()} {appName}
+              </span>
+              <span>г. Челябинск</span>
             </div>
           </div>
         </footer>
-        <Toaster richColors position="top-right" />
+        <Toaster richColors position="top-right" offset={{ top: 96 }} />
       </body>
     </html>
   );

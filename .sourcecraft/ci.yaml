@@ -3,8 +3,26 @@ tokens:
     service_connection: vibecraft-service-connection
     scope: org
 
+on:
+  push:
+    - workflows: [quality]
+  pull_request:
+    - workflows: [quality]
 
 workflows:
+  quality:
+    tasks:
+      - name: quality
+        cubes:
+          - name: checks
+            image: docker.io/library/node:24
+            script:
+              - npm ci
+              - npm run check
+              - npm run check:backlog
+              - node --import tsx --test deploy/preflight.test.ts
+              - npm run test:offline
+              - npm run build
   deploy:
     tasks:
       - name: deploy

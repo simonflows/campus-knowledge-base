@@ -7,12 +7,15 @@ import {
   getUniversityById,
   getUniversityFullName,
   getUniversityName,
+  getApprovedVersion,
+  type UniversityCard,
   placementStatusLabels,
   type CampusCard,
   type KnowledgeCard,
   type LaboratoryCard,
   type ProjectCard,
 } from "./knowledge";
+import { universities } from "./data";
 
 export const FACT_CHECK_CHECKPOINTS = {
   campus: "Общие параметры кампуса",
@@ -38,7 +41,7 @@ export const levelLabels: Record<FactCheckLevel, string> = {
 export const levelDescriptions: Record<FactCheckLevel, string> = {
   red: "Прямое искажение — публикация запрещена до правки",
   yellow: "Нет подтверждения в базе — требуется уточнение",
-  green: "Подтверждено канонической карточкой",
+  green: "Факт подтверждён официальной карточкой",
 };
 
 export type FactCheckFinding = {
@@ -50,9 +53,12 @@ export type FactCheckFinding = {
   quote: string;
   explanation: string;
   suggestion: string;
-  sourceCardId: string;
-  sourceCardTitle: string;
-  sourceFolder: string;
+  sourceCardId: string | null;
+  sourceCardTitle: string | null;
+  sourceFolder: string | null;
+  sourceUrl?: string | null;
+  quoteStart?: number;
+  quoteEnd?: number;
 };
 
 export type FactCheckSummary = {
@@ -76,6 +82,7 @@ export type FactCheckResult = {
   checkpoints: FactCheckCheckpointSummary[];
   canPublish: boolean;
   checkedChars: number;
+  coverage: "confirmed" | "partial" | "unverified";
 };
 
 export type CanonicalRewriteChunk = {
@@ -223,25 +230,35 @@ function isCardReferenced(
   return nonTitleMatches.length >= 2;
 }
 
+function isSentenceBoundary(text: string, index: number): boolean {
+  if (
+    !/[.!?]/.test(text[index]) ||
+    (index + 1 < text.length && !/\s/.test(text[index + 1]))
+  )
+    return false;
+  if (
+    text[index] === "." &&
+    /(?:тыс|кв|г|гг|гост|корп|уч|млн|млрд|авг|сент|эт|студ)\.$/i.test(
+      text.slice(Math.max(0, index - 8), index + 1)
+    )
+  )
+    return false;
+  return true;
+}
+
 function sentenceAt(text: string, index: number): string {
   let start = 0;
   let end = text.length;
 
   for (let i = index; i >= 0; i -= 1) {
-    if (
-      /[.!?]/.test(text[i]) &&
-      (i + 1 >= text.length || /\s/.test(text[i + 1]))
-    ) {
+    if (isSentenceBoundary(text, i)) {
       start = i + 1;
       break;
     }
   }
 
   for (let i = index; i < text.length; i += 1) {
-    if (
-      /[.!?]/.test(text[i]) &&
-      (i + 1 >= text.length || /\s/.test(text[i + 1]))
-    ) {
+    if (isSentenceBoundary(text, i)) {
       end = i + 1;
       break;
     }
@@ -326,26 +343,109 @@ const AUDIT_CATEGORY_TO_CHECKPOINT: Record<
   unverified_metrics: "figures",
 };
 
-function isCanonicalCampusArea(sqm: number): boolean {
-  // Общая площадь объектов: 121.8 - 123 тыс. м²; жилая часть: 68 - 70 тыс. м²; УНК: 40 - 40.306 тыс. м²; участки: 58.8 тыс. м²
-  return (
-    (sqm >= 120_000 && sqm <= 123_500) ||
-    (sqm >= 68_000 && sqm <= 72_000) ||
-    (sqm >= 40_000 && sqm <= 40_400) ||
-    Math.abs(sqm - 58_800) <= 200
+function isOfficialCampusMeasure(
+  card: CampusCard,
+  kind: "area" | "cost" | "places",
+  value: number,
+  claim: string
+): boolean {
+  let sources: string[] = [];
+  if (kind === "area") {
+    const metric = card.campusMetrics.find((item) =>
+      /площад/i.test(item.label)
+    );
+    if (!metric) return false;
+    const noteParts = metric.note.split(/[,;](?!\d)/);
+    const specific = /земл|участ/i.test(claim)
+      ? /земл|участ/i
+      : /жилая|жилой|жил[а-яё]*\s+част/i.test(claim)
+        ? /жилая|жилой/i
+        : /(?<![а-яё])унк(?![а-яё])|учебно[- ]научн/i.test(claim)
+          ? /унк|учебно[- ]научн/i
+          : null;
+    sources = specific
+      ? noteParts.filter((part) => specific.test(part))
+      : [metric.value];
+  } else if (kind === "cost") {
+    sources = card.campusMetrics
+      .filter((metric) => /стоим|инвест|грант/i.test(metric.label))
+      .flatMap((metric) => [metric.value, metric.note]);
+  } else {
+    const queue = /перв|(?<!\d)1[- ]?я/i.test(claim)
+      ? "first"
+      : /втор|(?<!\d)2[- ]?я/i.test(claim)
+        ? "second"
+        : null;
+    if (queue) {
+      const markers = Array.from(
+        card.referenceDescription.matchAll(/(1|2|3)[- ]?я\s+очеред[а-яё]*/gi)
+      );
+      const markerIndex = markers.findIndex(
+        (match) => resolveQueue(match[1]) === queue
+      );
+      if (markerIndex >= 0)
+        sources = [
+          card.referenceDescription.slice(
+            markers[markerIndex].index,
+            markers[markerIndex + 1]?.index ?? card.referenceDescription.length
+          ),
+        ];
+    } else
+      sources = card.campusMetrics
+        .filter((metric) => /вместимость/i.test(metric.label))
+        .flatMap((metric) => [metric.value, metric.note]);
+  }
+  const unit =
+    kind === "area"
+      ? "(?:м²|м2|кв\\.?\\s*м(?:етр[а-яё]*)?)"
+      : kind === "cost"
+        ? "млрд"
+        : "мест[а-яё]*";
+  const pattern = new RegExp(
+    `(\\d[\\d \u00a0.,]*?)(?:[–—-](\\d[\\d \u00a0.,]*?))?\\s*(тыс\\.?\\s*)?${unit}`,
+    "gi"
+  );
+  return sources.some((source) =>
+    Array.from(source.matchAll(pattern)).some((match) => {
+      const multiplier = kind === "area" && match[3] ? 1000 : 1;
+      const low = parseNumeric(match[1]) * multiplier;
+      const high = parseNumeric(match[2] ?? match[1]) * multiplier;
+      return value >= low && value <= high;
+    })
   );
 }
 
-const CANONICAL_COST_VALUES_BLN = [16.7, 16.75, 21.1, 34.6, 9.13, 7.9, 1.23, 4];
-
-function isCanonicalCampusCost(bln: number): boolean {
-  return CANONICAL_COST_VALUES_BLN.some((valid) => Math.abs(bln - valid) <= 0.05);
+function campusMeasureContext(draft: string, index: number): string {
+  const clause = claimClause(draft, index);
+  const prefix = draft.slice(Math.max(0, index - 220), index);
+  const marker = Array.from(
+    prefix.matchAll(
+      /(?:[123][- ]?я|перв[а-яё]*|втор[а-яё]*|трет[а-яё]*)(?:\s+(?:очеред[а-яё]*|этап[а-яё]*)|\s*(?=\())/gi
+    )
+  ).at(-1);
+  return marker &&
+    !/[.!?]\s+[А-ЯЁ]/.test(prefix.slice(marker.index! + marker[0].length))
+    ? `${marker[0]} ${clause}`
+    : clause;
 }
 
-const CANONICAL_CAMPUS_PLACES = [336, 3064, 3100, 3400, 5000];
-
-function isCanonicalCampusPlaces(value: number): boolean {
-  return CANONICAL_CAMPUS_PLACES.some((valid) => Math.abs(value - valid) <= 10);
+function officialQueueYears(
+  card: CampusCard,
+  queue: "first" | "second" | "third"
+): number[] {
+  const markers = Array.from(
+    card.referenceDescription.matchAll(/([123])[- ]?я\s+очеред[а-яё]*/gi)
+  );
+  const index = markers.findIndex((match) => resolveQueue(match[1]) === queue);
+  if (index < 0) return [];
+  return Array.from(
+    card.referenceDescription
+      .slice(
+        markers[index].index,
+        markers[index + 1]?.index ?? card.referenceDescription.length
+      )
+      .matchAll(/\b(?:19|20|21)\d{2}\b/g)
+  ).map((match) => Number(match[0]));
 }
 
 const singleAuthorPatterns: RegExp[] = [
@@ -371,12 +471,16 @@ function isContourSentence(sentence: string): boolean {
       sentence
     ) ||
     /передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*/i.test(sentence) ||
-    /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(sentence)
+    /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(
+      sentence
+    )
   );
 }
 
 function contourInSentence(sentence: string): string | null {
-  if (/(?:пиш|передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*)/i.test(sentence)) {
+  if (
+    /(?:пиш|передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*)/i.test(sentence)
+  ) {
     return "ПИШ";
   }
 
@@ -384,7 +488,11 @@ function contourInSentence(sentence: string): string | null {
     return "УМНОЦ";
   }
 
-  if (/собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(sentence)) {
+  if (
+    /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(
+      sentence
+    )
+  ) {
     return "собственный проект вуза";
   }
 
@@ -408,41 +516,66 @@ function universityMentioned(universityId: string, draft: string): boolean {
   );
 }
 
-function collectConfirmedNumbers(cards: KnowledgeCard[]): Set<string> {
-  const sources: string[] = [];
+const noSource = {
+  sourceCardId: null,
+  sourceCardTitle: null,
+  sourceFolder: null,
+  sourceUrl: null,
+};
 
-  cards.forEach((card) => {
-    sources.push(card.title, card.referenceDescription);
+/** Scope at the claim, never at the whole document. Commas in decimals stay intact. */
+function claimClause(text: string, index: number): string {
+  const separatorAt = (position: number) =>
+    /[;\n]/.test(text[position]) ||
+    isSentenceBoundary(text, position) ||
+    (text[position] === "," && !/\d/.test(text[position + 1] ?? ""));
+  let start = index;
+  let end = index;
+  while (start > 0 && !separatorAt(start - 1)) start--;
+  while (end < text.length && !separatorAt(end)) end++;
+  return text.slice(start, end).trim();
+}
 
-    if (card.type === "project") {
-      sources.push(...card.confirmedFigures);
-    }
+function universitiesIn(value: string): string[] {
+  return universities
+    .filter((university) => universityMentioned(university.id, value))
+    .map((university) => university.id);
+}
 
-    if (card.type === "laboratory") {
-      sources.push(...card.confirmedIndicators, card.placementDetails);
-    }
+function scopedUniversity(draft: string, index: number): string | null {
+  const clause = claimClause(draft, index);
+  const ids = universitiesIn(clause);
+  if (ids.length === 1) return ids[0];
+  // A statement naming several universities cannot assign one university's number.
+  return null;
+}
 
-    if (card.type === "campus") {
-      sources.push(
-        ...card.campusMetrics.flatMap((metric) => [metric.value, metric.note]),
-        ...card.tariffs.map((tariff) => tariff.value)
-      );
-    }
-  });
+function isCampusClaim(draft: string, index: number): boolean {
+  const clause = claimClause(draft, index);
+  const sentence = sentenceAt(draft, index);
+  return (
+    universitiesIn(clause).length === 0 &&
+    (/кампус|(?<![а-яё])унк(?![а-яё])|учебно[- ]научн|гостини[цч]|очеред|этап|земл/i.test(
+      clause
+    ) ||
+      (universitiesIn(sentence).length === 0 &&
+        /кампус|(?<![а-яё])унк(?![а-яё])|учебно[- ]научн|гостини[цч]/i.test(
+          sentence
+        )))
+  );
+}
 
-  const numbers = new Set<string>();
+function unitRoot(value: string): string {
+  return normalize(value)
+    .split(" ")
+    .map((token) => token.slice(0, 5))
+    .join(" ");
+}
 
-  sources.forEach((source) => {
-    const matches = source.match(/\d[\d\s]*/g) ?? [];
-
-    matches.forEach((match) => {
-      const key = match.replace(/\D/g, "");
-
-      if (key) numbers.add(key);
-    });
-  });
-
-  return numbers;
+function sameUnit(unit: string, claim: string): boolean {
+  const roots = unitRoot(unit).split(" ").filter(Boolean);
+  const claimRoots = new Set(unitRoot(claim).split(" "));
+  return roots.length > 0 && roots.every((root) => claimRoots.has(root));
 }
 
 type FindingInput = Omit<FactCheckFinding, "id" | "checkpointLabel">;
@@ -490,9 +623,17 @@ export function checkFactText(
   draft: string,
   cards: KnowledgeCard[]
 ): FactCheckResult {
+  cards = cards
+    .map(getApprovedVersion)
+    .filter((card): card is KnowledgeCard => card !== null);
   const findings: FactCheckFinding[] = [];
   const normalizedDraft = normalize(draft);
   const draftRoots = new Set(tokenRoots(draft));
+  const exactDescriptionCard = cards.find(
+    (card) =>
+      normalize(card.referenceDescription).length > 40 &&
+      normalize(card.referenceDescription) === normalizedDraft
+  );
   const referencedCards = cards.filter((card) =>
     isCardReferenced(card, draftRoots, normalizedDraft)
   );
@@ -674,7 +815,9 @@ export function checkFactText(
       // Если в предложении явно названы конкретные проекты, проверяем контур только для них
       if (
         matchingProjectsInSentence.length > 0 &&
-        !matchingProjectsInSentence.some((candidate) => candidate.id === project.id)
+        !matchingProjectsInSentence.some(
+          (candidate) => candidate.id === project.id
+        )
       ) {
         return;
       }
@@ -710,7 +853,7 @@ export function checkFactText(
     while ((areaMatch = areaRegex.exec(draft)) !== null) {
       const sentence = sentenceAt(draft, areaMatch.index);
 
-      if (!/кампус|унк|учебно[- ]научн|гостиниц|земл/i.test(sentence)) continue;
+      if (!isCampusClaim(draft, areaMatch.index)) continue;
 
       const value = parseNumeric(areaMatch[1] ?? "");
       const multiplied = areaMatch[2] ? value * 1000 : value;
@@ -721,19 +864,28 @@ export function checkFactText(
       if (seenAreas.has(key)) continue;
       seenAreas.add(key);
 
-      if (!isCanonicalCampusArea(multiplied)) {
+      if (
+        !isOfficialCampusMeasure(
+          campusCard,
+          "area",
+          multiplied,
+          claimClause(draft.slice(0, areaMatch.index + 1), areaMatch.index)
+        )
+      ) {
         findings.push(
           createFinding({
             level: "red",
             checkpoint: "campus",
             title: "Площадь кампуса не совпадает с паспортом",
             quote: sentence,
-            explanation:
-              "По каноническому паспорту общая площадь объектов кампуса «Южный Урал» составляет 121,8–123 тыс. м² (жилая часть — 68–70 тыс. м², УНК — 40,3 тыс. м² / 40 306 м², земельные участки — 58,8 тыс. м²). В черновике указано " +
-              formatArea(multiplied) +
-              " — это устаревшая или неточная цифра.",
+            explanation: `Показатель ${formatArea(multiplied)} не совпадает с соответствующей площадью в утверждённой версии паспорта: ${campusCard.campusMetrics
+              .filter((metric) => /площад/i.test(metric.label))
+              .map(
+                (metric) => `${metric.label}: ${metric.value}. ${metric.note}`
+              )
+              .join("; ")}`,
             suggestion:
-              "Укажите канонические значения из паспорта CAMPUS-PASS-001: 121,8–123 тыс. м² (объекты), 40,3 тыс. м² (УНК), 58,8 тыс. м² (участки).",
+              "Используйте показатель соответствующего объекта из паспорта; общая, жилая, земельная площадь и площадь УНК различаются.",
             ...sourceFromCard(campusCard),
           })
         );
@@ -746,19 +898,32 @@ export function checkFactText(
     while ((costMatch = costRegex.exec(draft)) !== null) {
       const sentence = sentenceAt(draft, costMatch.index);
 
-      if (!/(?:кампус|стоимост|грант|инвестиц|бюджет)/i.test(sentence)) continue;
+      if (!isCampusClaim(draft, costMatch.index)) continue;
 
       const value = parseNumeric(costMatch[1] ?? "");
 
-      if (Number.isFinite(value) && !isCanonicalCampusCost(value)) {
+      if (
+        Number.isFinite(value) &&
+        !isOfficialCampusMeasure(
+          campusCard,
+          "cost",
+          value,
+          claimClause(draft, costMatch.index)
+        )
+      ) {
         findings.push(
           createFinding({
             level: "red",
             checkpoint: "campus",
-            title: "Стоимость или объём финансирования не совпадает с паспортом",
+            title:
+              "Стоимость или объём финансирования не совпадает с паспортом",
             quote: sentence,
-            explanation:
-              "В паспорте зафиксированы исходная концессия 2022 г. (16,75 млрд ₽), совокупные инвестиции до 34,6 млрд ₽ (21,1 млрд ₽ промежуточно) и капитальный грант 9,13 млрд ₽ (7,9 млрд фед. + 1,23 млрд рег.). В черновике указано другое значение.",
+            explanation: `В утверждённом паспорте: ${campusCard.campusMetrics
+              .filter((metric) => /стоим|инвест|грант/i.test(metric.label))
+              .map(
+                (metric) => `${metric.label}: ${metric.value}. ${metric.note}`
+              )
+              .join("; ")}. В черновике другое значение.`,
             suggestion:
               "Уточните сумму с привязкой к году расчёта и структуре финансирования по паспорту CAMPUS-PASS-001.",
             ...sourceFromCard(campusCard),
@@ -767,27 +932,40 @@ export function checkFactText(
       }
     }
 
-    const placesRegex = /(\d[\d\s.,]*)\s*(?:учебн[а-яё]*\s+|жилых\s+)?мест[а-яё]*/gi;
+    const placesRegex =
+      /(\d[\d\s.,]*)\s*(?:учебн[а-яё]*\s+|жилых\s+)?мест[а-яё]*/gi;
     let placesMatch: RegExpExecArray | null;
 
     while ((placesMatch = placesRegex.exec(draft)) !== null) {
       const sentence = sentenceAt(draft, placesMatch.index);
 
-      if (!/кампус|гостиниц|очеред|этап|прожив/i.test(sentence)) continue;
+      if (!isCampusClaim(draft, placesMatch.index)) continue;
 
       const value = parseNumeric(placesMatch[1] ?? "");
 
-      if (Number.isFinite(value) && !isCanonicalCampusPlaces(value)) {
+      if (
+        Number.isFinite(value) &&
+        !isOfficialCampusMeasure(
+          campusCard,
+          "places",
+          value,
+          campusMeasureContext(draft, placesMatch.index)
+        )
+      ) {
         findings.push(
           createFinding({
             level: "red",
             checkpoint: "campus",
             title: "Число мест не совпадает с паспортом кампуса",
             quote: sentence,
-            explanation:
-              "В паспорте кампуса: 336 мест (1-я очередь), 3 064 места (2-я очередь), 3 400 мест для проживания в 8 гостиницах и 5 000 обучающихся. В черновике указано другое число.",
+            explanation: `В утверждённом паспорте: ${campusCard.campusMetrics
+              .filter((metric) => /вместимость|этап/i.test(metric.label))
+              .map(
+                (metric) => `${metric.label}: ${metric.value}. ${metric.note}`
+              )
+              .join("; ")}. В черновике другое число мест.`,
             suggestion:
-              "Укажите канонические цифры: 3 400 мест для проживания в 8 гостиницах (336 + 3 064) и 5 000 обучающихся.",
+              "Укажите число мест соответствующей очереди или общую вместимость по паспорту. Численность обучающихся — отдельный показатель.",
             ...sourceFromCard(campusCard),
           })
         );
@@ -799,6 +977,7 @@ export function checkFactText(
     let queueMatch: RegExpExecArray | null;
 
     while ((queueMatch = queueRegex.exec(draft)) !== null) {
+      if (!isCampusClaim(draft, queueMatch.index)) continue;
       // «3 очереди» / «3 этапа» во множественном числе — это общее количество очередей, а не 3-я очередь
       if (
         /^(?:2|3)\s+(?:очереди|этапа)(?![а-яёa-z0-9])/i.test(queueMatch[0]) ||
@@ -812,9 +991,7 @@ export function checkFactText(
       const queue = resolveQueue(queueMatch[1] ?? "");
       const year = Number.parseInt(queueMatch[2] ?? "", 10);
       const isValid =
-        (queue === "first" && year === 2024) ||
-        (queue === "second" && year === 2026) ||
-        (queue === "third" && (year === 2027 || year === 2028));
+        queue && officialQueueYears(campusCard, queue).includes(year);
 
       if (!queue || !Number.isFinite(year) || isValid) {
         continue;
@@ -826,10 +1003,9 @@ export function checkFactText(
           checkpoint: "campus",
           title: "Срок очереди кампуса не совпадает с паспортом",
           quote: sentenceAt(draft, queueMatch.index),
-          explanation:
-            "В паспорте кампуса 1-я очередь сдана в августе 2024 г., 2-я очередь открыта в сентябре 2026 г., 3-я очередь (УНК) завершается в конце 2027 г. (полный запуск — 2028 г.). В черновике указан другой срок.",
+          explanation: `Указанный срок отсутствует у этой очереди в утверждённом паспорте. Подтверждённые годы: ${officialQueueYears(campusCard, queue).join(", ") || "не заданы"}.`,
           suggestion:
-            "Исправьте сроки по канону: 1-й этап — август 2024, 2-й этап — сентябрь 2026, 3-й этап (УНК) — конец 2027 / 2028 год.",
+            "Уточните очередь, вид срока (строительство/полный запуск) и год по паспорту.",
           ...sourceFromCard(campusCard),
         })
       );
@@ -851,58 +1027,164 @@ export function checkFactText(
           quote: sentenceAt(draft, nameMatch.index),
           explanation:
             "Официальное название объекта — Межуниверситетский кампус мирового уровня «Южный Урал». В черновике использовано другое название.",
-          suggestion:
-            "Замените название на официальное: кампус «Южный Урал».",
+          suggestion: "Замените название на официальное: кампус «Южный Урал».",
           ...sourceFromCard(campusCard),
         })
       );
     }
   }
 
-  const confirmedNumbers = collectConfirmedNumbers(cards);
   const figureRegex =
-    /(\d[\d\s]{0,12})\s+((?:[а-яё]{3,}\s+){0,2})(врач[а-яё]*|человек[а-яё]*|студент[а-яё]*|участник[а-яё]*|пациент[а-яё]*|школ[а-яё]*|наставник[а-яё]*|специалист[а-яё]*|команд[а-яё]*|прототип[а-яё]*|модул[а-яё]*|проект[а-яё]*|мест[а-яё]*|преподавател[а-яё]*|сотрудник[а-яё]*|аспирант[а-яё]*)/gi;
+    /(\d[\d\s.,]{0,12})\s+((?:[а-яё]{3,}\s+){0,2})(врач[а-яё]*|человек[а-яё]*|студент[а-яё]*|участник[а-яё]*|пациент[а-яё]*|школ[а-яё]*|наставник[а-яё]*|специалист[а-яё]*|команд[а-яё]*|прототип[а-яё]*|модул[а-яё]*|проект[а-яё]*|мест[а-яё]*|преподавател[а-яё]*|сотрудник[а-яё]*|аспирант[а-яё]*)/gi;
   const seenFigures = new Set<string>();
   let figureMatch: RegExpExecArray | null;
 
   while ((figureMatch = figureRegex.exec(draft)) !== null) {
     const rawNumber = figureMatch[1] ?? "";
-    const key = rawNumber.replace(/\D/g, "");
+    const key = `${figureMatch.index}:${rawNumber}`;
 
-    if (!key || confirmedNumbers.has(key) || seenFigures.has(key)) continue;
+    if (seenFigures.has(key)) continue;
 
     seenFigures.add(key);
 
     const quote = sentenceAt(draft, figureMatch.index);
-    const sourceCard = primaryProject ?? referencedLabs[0] ?? campusCard;
-    const confirmedList =
-      primaryProject?.confirmedFigures.join("; ") ??
-      referencedLabs[0]?.confirmedIndicators.join("; ") ??
-      "проверенные показатели карточки";
+    const clause = claimClause(draft, figureMatch.index);
+    const universityId = scopedUniversity(draft, figureMatch.index);
+    const universityIds = universitiesIn(clause);
+    const localRoots = new Set(tokenRoots(quote));
+    const genericRoots = new Set([
+      "вирту",
+      "лабор",
+      "проек",
+      "цифро",
+      "центр",
+      "платф",
+      "систе",
+      "техно",
+      "промы",
+    ]);
+    const localCards = cards.filter(
+      (card) =>
+        (card.type === "project" || card.type === "laboratory") &&
+        (termMatches(card.title, localRoots) ||
+          card.id === exactDescriptionCard?.id ||
+          (referencedCards.some((reference) => reference.id === card.id) &&
+            tokenRoots(card.title).some(
+              (root) => !genericRoots.has(root) && localRoots.has(root)
+            )))
+    );
+    const universityCard =
+      universityId && localCards.length === 0
+        ? cards.find(
+            (card): card is UniversityCard =>
+              card.type === "university" && card.universityId === universityId
+          )
+        : null;
+    const campusScope =
+      isCampusClaim(draft, figureMatch.index) ||
+      (universityIds.length === 0 &&
+        Boolean(
+          campusCard?.campusMetrics.some((metric) =>
+            normalize(clause).includes(normalize(metric.label))
+          )
+        ));
+    const sourceCard =
+      localCards.length === 1
+        ? localCards[0]
+        : localCards.length > 1
+          ? null
+          : universityIds.length > 0
+            ? universityCard
+            : campusScope
+              ? campusCard
+              : null;
+    const value = parseNumeric(rawNumber);
+    const unit = figureMatch[3] ?? "";
+    const years = clause.match(/\b(?:19|20|21)\d{2}\b/g) ?? [];
+    const year = years.length === 1 ? Number(years[0]) : null;
+    const kind = /план|будет|будут|предстоит|предусмотр|к\s+\d{4}/i.test(clause)
+      ? "plan"
+      : "actual";
+
+    if (universityCard) {
+      const candidates = universityCard.structuredMetrics.filter(
+        (metric) => metric.year === year && sameUnit(metric.unit, unit)
+      );
+      const samePeriod = candidates.filter((metric) => metric.kind === kind);
+      const metric =
+        samePeriod.length === 1
+          ? samePeriod[0]
+          : candidates.length === 1
+            ? candidates[0]
+            : null;
+      if (metric) {
+        const matches = metric.value === value && metric.kind === kind;
+        findings.push(
+          createFinding({
+            level: matches ? "green" : "red",
+            checkpoint: "figures",
+            title: matches
+              ? "Показатель вуза подтверждён"
+              : "Показатель вуза противоречит официальной карточке",
+            quote,
+            explanation: `${getUniversityName(universityCard.universityId)}: ${metric.label} — ${metric.value} ${metric.unit}, ${metric.year}, ${metric.kind === "plan" ? "план" : "факт"}. Проверено ${metric.verifiedAt}; ответственный: ${metric.owner}.`,
+            suggestion: matches
+              ? "Сохраните год, статус и ссылку на документ."
+              : "Уточните число, год и статус факт/план по документу в карточке этого вуза.",
+            ...sourceFromCard(universityCard),
+            sourceUrl: metric.evidenceUrl,
+          })
+        );
+        continue;
+      }
+    } else if (sourceCard) {
+      // Legacy free-text figures can support only the matching unit in this entity.
+      const sources = [
+        sourceCard.referenceDescription,
+        ...(sourceCard.type === "project"
+          ? sourceCard.confirmedFigures
+          : sourceCard.type === "laboratory"
+            ? sourceCard.confirmedIndicators
+            : sourceCard.type === "campus"
+              ? sourceCard.campusMetrics.flatMap((metric) => [
+                  metric.value,
+                  metric.note,
+                ])
+              : []),
+      ];
+      const confirmed = sources.some((source) =>
+        Array.from(source.matchAll(new RegExp(figureRegex.source, "gi"))).some(
+          (match) =>
+            sameUnit(unit, match[3] ?? "") && parseNumeric(match[1]) === value
+        )
+      );
+      if (confirmed) continue;
+      // A direct contradiction already owns this numeric claim.
+      if (
+        findings.some(
+          (finding) =>
+            finding.level === "red" &&
+            finding.sourceCardId === sourceCard.id &&
+            finding.quote === quote
+        )
+      )
+        continue;
+    }
 
     findings.push(
       createFinding({
         level: "yellow",
         checkpoint: "figures",
-        title: "Цифра не подтверждена канонической карточкой",
+        title: "Цифра не подтверждена официальными данными",
         quote,
         explanation:
           "Метрики «" +
           figureMatch[0].trim() +
-          "» нет в подтверждённых показателях карточек. Без подтверждения публиковать число нельзя.",
-        suggestion:
-          "Удалите число или подтвердите его в карточке. В карточке-источнике подтверждены: " +
-          confirmedList +
-          ".",
-        ...(sourceCard
-          ? sourceFromCard(sourceCard)
-          : campusCard
-            ? sourceFromCard(campusCard)
-            : {
-                sourceCardId: "campus-passport",
-                sourceCardTitle: "Паспорт кампуса «Южный Урал»",
-                sourceFolder: "00_Кампус_общие_параметры",
-              }),
+          "» нет в подтверждённых показателях этой сущности за указанный период. Число из другой карточки не является подтверждением.",
+        suggestion: universityIds.length
+          ? "Укажите вуз, год и статус факт/план; добавьте показатель с документом в паспорт этого вуза."
+          : "Уточните сущность, период и единицу измерения; добавьте официальный источник.",
+        ...(sourceCard ? sourceFromCard(sourceCard) : noSource),
       })
     );
   }
@@ -923,8 +1205,8 @@ export function checkFactText(
     }
 
     const checkpoint = AUDIT_CATEGORY_TO_CHECKPOINT[rule.category];
-    const targetCard =
-      cards.find((card) => card.id === rule.sourceCardId) ?? campusCard;
+    const targetCard = cards.find((card) => card.id === rule.sourceCardId);
+    if (!targetCard) continue;
     const matchQuote = sentenceAt(draft, match.index);
 
     if (
@@ -941,7 +1223,10 @@ export function checkFactText(
     // Избегаем дублирования одной и той же ошибки встроенной проверкой и правилом аудита
     const duplicate = findings.find((existing) => {
       if (existing.title.includes("аудит:")) return false;
-      if (existing.level !== rule.severity || existing.checkpoint !== checkpoint) {
+      if (
+        existing.level !== rule.severity ||
+        existing.checkpoint !== checkpoint
+      ) {
         return false;
       }
       const existingQuote = normalizeQuoteForCompare(existing.quote);
@@ -968,13 +1253,7 @@ export function checkFactText(
         quote: matchQuote,
         explanation: rule.wrongClaimDescription,
         suggestion: rule.canonicalCorrection,
-        ...(targetCard
-          ? sourceFromCard(targetCard)
-          : {
-              sourceCardId: rule.sourceCardId,
-              sourceCardTitle: "Паспорт кампуса «Южный Урал» (CAMPUS-PASS-001)",
-              sourceFolder: "00_Кампус_общие_параметры",
-            }),
+        ...sourceFromCard(targetCard),
       })
     );
   }
@@ -1019,8 +1298,7 @@ export function checkFactText(
   }
 
   const geographyMatched =
-    normalizedDraft.includes("челябинск") ||
-    normalizedDraft.includes("южный урал");
+    /кампус/i.test(draft) && normalizedDraft.includes("челябинск");
 
   if (geographyMatched) {
     const geographyCard =
@@ -1044,6 +1322,48 @@ export function checkFactText(
     }
   }
 
+  if (findings.length === 0) {
+    const exactCard = cards.find(
+      (card) =>
+        normalize(card.referenceDescription).length > 40 &&
+        normalize(card.referenceDescription) === normalizedDraft
+    );
+    findings.push(
+      exactCard
+        ? createFinding({
+            level: "green",
+            checkpoint: "names",
+            title: "Описание совпадает с официальной карточкой",
+            quote: draft.trim(),
+            explanation:
+              "Текст полностью совпадает с утверждённым описанием карточки.",
+            suggestion: "Сохраните ссылку на официальную карточку.",
+            ...sourceFromCard(exactCard),
+          })
+        : createFinding({
+            level: "yellow",
+            checkpoint: "figures",
+            title: "Подтверждение не найдено",
+            quote: draft.trim(),
+            explanation:
+              "Для текста не найден проверяемый факт в официальных карточках. Отсутствие найденных противоречий не подтверждает текст.",
+            suggestion:
+              "Уточните предмет проверки и добавьте официальный источник.",
+            ...noSource,
+          })
+    );
+  }
+  for (const finding of findings) {
+    const offset = draft.indexOf(finding.quote);
+    if (
+      offset >= 0 &&
+      finding.quote &&
+      draft.indexOf(finding.quote, offset + 1) < 0
+    ) {
+      finding.quoteStart = offset;
+      finding.quoteEnd = offset + finding.quote.length;
+    }
+  }
   const deduped = Array.from(
     new Map(findings.map((finding) => [finding.id, finding])).values()
   );
@@ -1063,7 +1383,13 @@ export function checkFactText(
     findings: sorted,
     summary,
     checkpoints: buildCheckpointSummaries(sorted),
-    canPublish: summary.red === 0,
+    canPublish: summary.red === 0 && summary.yellow === 0 && summary.green > 0,
+    coverage:
+      summary.red || summary.yellow
+        ? summary.green
+          ? "partial"
+          : "unverified"
+        : "confirmed",
     checkedChars: draft.trim().length,
   };
 }
@@ -1276,7 +1602,9 @@ function buildCampusRewrite(campus: CampusCard): CanonicalRewrite {
         {
           id: "campus-metrics-1",
           content: campus.campusMetrics
-            .map((metric) => `${metric.label}: ${metric.value} (${metric.note})`)
+            .map(
+              (metric) => `${metric.label}: ${metric.value} (${metric.note})`
+            )
             .join(". "),
         },
         {
@@ -1325,6 +1653,9 @@ export function buildCanonicalRewrite(
   draft: string,
   cards: KnowledgeCard[]
 ): CanonicalRewrite | null {
+  cards = cards
+    .map(getApprovedVersion)
+    .filter((card): card is KnowledgeCard => card !== null);
   const normalizedDraft = normalize(draft);
   const draftRoots = new Set(tokenRoots(draft));
   const referencedCards = cards.filter((card) =>
@@ -1364,7 +1695,12 @@ export function buildCanonicalRewrite(
     return buildLabRewrite(lab, campus);
   }
 
-  if (campus) {
+  if (
+    campus &&
+    (universitiesIn(draft).length === 0 ||
+      (universitiesIn(sentenceAt(draft, 0)).length === 0 &&
+        /кампус/i.test(sentenceAt(draft, 0))))
+  ) {
     return buildCampusRewrite(campus);
   }
 

@@ -13,6 +13,10 @@ import {
   UserCheck,
   XCircle,
 } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { z } from "zod";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +35,7 @@ import {
   getCardStatus,
   getParticipantApprovals,
   getPendingEditRequests,
+  getRequiredUniversityApprovals,
   getUniversityName,
   isJointFullyApproved,
   isJointProject,
@@ -63,7 +68,15 @@ export function KnowledgeCardAccessPanel({
   onCardUpdated,
   onEdit,
 }: KnowledgeCardAccessPanelProps) {
-  const [message, setMessage] = useState("");
+  const params = useSearchParams();
+  const context =
+    params.get("action") === "request" && params.get("card") === card.id;
+  const [message, setMessage] = useState(() =>
+    context
+      ? `Оспариваю результат проверки: ${params.get("finding") ?? ""}\nФрагмент: «${params.get("quote") ?? ""}»\nОбоснование: `
+      : ""
+  );
+  const [evidenceUrl, setEvidenceUrl] = useState("");
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   const status = getCardStatus(card);
@@ -71,7 +84,8 @@ export function KnowledgeCardAccessPanel({
   const canRequest = canRequestEdit(currentUser, card);
   const canConfirm = canConfirmJointParticipation(currentUser, card);
   const canApprove = canModerate(currentUser) && status === "pending";
-  const joint = isJointProject(card);
+  const requiredUniversityIds = getRequiredUniversityApprovals(card);
+  const joint = isJointProject(card) || requiredUniversityIds.length > 0;
   const approvals = getParticipantApprovals(card);
   const openRequests = getPendingEditRequests(card);
   const editRequests = card.editRequests ?? [];
@@ -79,6 +93,26 @@ export function KnowledgeCardAccessPanel({
   const handleSendRequest = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (busyAction !== null) return;
+    const parsed = z
+      .object({
+        message: z.string().trim().min(10).max(1600),
+        evidenceUrl: z.union([
+          z.literal(""),
+          z
+            .url()
+            .refine(
+              (value) => value.startsWith("https://"),
+              "Нужна HTTPS-ссылка"
+            ),
+        ]),
+      })
+      .safeParse({ message, evidenceUrl });
+    if (!parsed.success) {
+      toast.error(
+        parsed.error.issues[0]?.message ?? "Проверьте запрос и ссылку"
+      );
+      return;
+    }
     setBusyAction("request");
 
     try {
@@ -87,11 +121,15 @@ export function KnowledgeCardAccessPanel({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: message.trim() }),
+          body: JSON.stringify({
+            message: `${parsed.data.message}${parsed.data.evidenceUrl ? `\nИсточник: ${parsed.data.evidenceUrl}` : ""}`,
+          }),
         }
       );
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         toast.error(
@@ -133,7 +171,9 @@ export function KnowledgeCardAccessPanel({
         }
       );
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         toast.error(
@@ -152,7 +192,7 @@ export function KnowledgeCardAccessPanel({
       onCardUpdated(data as KnowledgeCard);
 
       if (action === "approve") {
-        toast.success("Карточка одобрена и добавлена в канон");
+        toast.success("Карточка одобрена и добавлена в утверждённую базу");
       } else if (action === "reject") {
         toast.success("Карточка отклонена");
       } else {
@@ -187,7 +227,9 @@ export function KnowledgeCardAccessPanel({
         }
       );
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         toast.error(
@@ -238,7 +280,7 @@ export function KnowledgeCardAccessPanel({
           </div>
           <p className="text-sm leading-relaxed text-muted-foreground">
             {currentUser?.role === "admin"
-              ? "Администратор канона: можно редактировать любую карточку, модерировать черновики и общие параметры кампуса."
+              ? "Администратор базы: можно редактировать любую карточку, модерировать черновики и общие параметры кампуса."
               : canEdit
                 ? "Вы владелец карточки: правки сохраняются от вашего имени."
                 : "Только просмотр. Чужую утверждённую карточку нельзя изменить — отправьте запрос владельцу."}
@@ -247,7 +289,12 @@ export function KnowledgeCardAccessPanel({
 
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {canEdit ? (
-            <Button type="button" className="h-10 flex-1 sm:h-8 sm:flex-none" onClick={onEdit} disabled={!dbAvailable}>
+            <Button
+              type="button"
+              className="h-10 flex-1 sm:h-8 sm:flex-none"
+              onClick={onEdit}
+              disabled={!dbAvailable}
+            >
               <Edit3 className="h-4 w-4" />
               Редактировать карточку
             </Button>
@@ -289,8 +336,8 @@ export function KnowledgeCardAccessPanel({
       {status === "rejected" ? (
         <p className="rounded-xl bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive ring-1 ring-destructive/20">
           Карточка отклонена
-          {card.reviewedBy ? ` (${card.reviewedBy})` : ""}. В канон она не
-          попадает.
+          {card.reviewedBy ? ` (${card.reviewedBy})` : ""}. В утверждённую базу
+          она не попадает.
         </p>
       ) : null}
 
@@ -301,7 +348,7 @@ export function KnowledgeCardAccessPanel({
             Подтверждение вузов-участников
           </div>
           <div className="flex flex-wrap gap-2">
-            {card.participantUniversityIds.map((universityId) => {
+            {requiredUniversityIds.map((universityId) => {
               const confirmed = approvals.includes(universityId);
 
               return (
@@ -340,8 +387,8 @@ export function KnowledgeCardAccessPanel({
           ) : null}
           {!isJointFullyApproved(card) ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
-              Совместный проект не попадёт в канон, пока его не подтвердят оба
-              вуза-участника.
+              Совместный проект не попадёт в утверждённую базу, пока его не
+              подтвердят оба вуза-участника.
             </p>
           ) : (
             <p className="text-xs leading-relaxed text-emerald-800">
@@ -351,8 +398,30 @@ export function KnowledgeCardAccessPanel({
         </div>
       ) : null}
 
+      {context && (!canRequest || !dbAvailable) && (
+        <div
+          id="edit-request"
+          className="rounded-xl border p-4 text-sm"
+          role="status"
+        >
+          {!currentUser ? (
+            <p>
+              Чтобы оспорить результат и приложить источник,{" "}
+              <Link href="/login" className="text-primary underline">
+                войдите в аккаунт
+              </Link>
+              .
+            </p>
+          ) : !dbAvailable ? (
+            "Запросы временно недоступны: нет подключения к базе."
+          ) : (
+            "Ваша роль не позволяет отправить запрос на правку этой карточки."
+          )}
+        </div>
+      )}
       {canRequest && dbAvailable ? (
         <form
+          id="edit-request"
           onSubmit={handleSendRequest}
           className="space-y-2 rounded-2xl bg-muted/40 p-3 ring-1 ring-border/50"
         >
@@ -361,13 +430,13 @@ export function KnowledgeCardAccessPanel({
             Запрос на правку владельцу
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
-            <Input
+            <Textarea
               aria-label="Текст запроса на правку"
-              className="h-10 sm:h-8"
+              className="min-h-28"
               value={message}
               onChange={(event) => setMessage(event.target.value)}
               placeholder="Что нужно изменить и почему"
-              maxLength={2_000}
+              maxLength={1600}
             />
             <Button
               type="submit"
@@ -378,6 +447,18 @@ export function KnowledgeCardAccessPanel({
               Отправить
             </Button>
           </div>
+          <label htmlFor="request-evidence" className="text-sm font-medium">
+            Ссылка на подтверждающий источник
+          </label>
+          <Input
+            id="request-evidence"
+            name="evidenceUrl"
+            type="url"
+            value={evidenceUrl}
+            onChange={(event) => setEvidenceUrl(event.target.value)}
+            placeholder="https://…"
+            maxLength={350}
+          />
           <p className="text-[11px] text-muted-foreground">
             Запрос придёт владельцу карточки комментарием и не изменит карточку
             в обход автора.
@@ -415,7 +496,9 @@ export function KnowledgeCardAccessPanel({
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="break-words font-medium">{request.authorName}</span>
+                    <span className="break-words font-medium">
+                      {request.authorName}
+                    </span>
                     <span className="text-xs text-muted-foreground">
                       {request.authorRole} · {request.authorOrganization}
                     </span>

@@ -1,8 +1,15 @@
 "use client";
+import { WorkspaceMasthead } from "@/components/workspace-masthead";
+import { AnimatedNumber } from "@/components/motion/animated-number";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import {
+  ArrowUpRight,
   BookOpen,
+  FileText,
+  FlaskConical,
+  GraduationCap,
+  Layers3,
   ChevronDown,
   ChevronUp,
   FolderOpen,
@@ -18,6 +25,12 @@ import {
   X,
 } from "lucide-react";
 
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  searchKnowledgeCards,
+  getSearchFragment,
+} from "@/lib/knowledge-search";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,8 +39,8 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
+import { getFolderDisplayName, getFolderDisplayPath } from "./folder-labels";
 import { KnowledgeCardDetail } from "@/components/knowledge/knowledge-card-detail";
 import { KnowledgeCardForm } from "@/components/knowledge/knowledge-card-form";
 import { KnowledgeModerationPanel } from "@/components/knowledge/knowledge-moderation-panel";
@@ -38,6 +51,7 @@ import {
   canManageTypes,
   canModerate,
   roleShortLabels,
+  type CardOwnerCandidate,
   type SessionUser,
 } from "@/lib/auth";
 import { diskSyncStatusLabels } from "@/lib/disk-sync";
@@ -49,9 +63,7 @@ import {
   getCardStatus,
   getCardsForFolder,
   getCardTypeLabel,
-  getFolderPathLabel,
   getUniversityFullName,
-  getUniversityName,
   isJointProject,
   isJointReferenceForFolder,
   placementStatusLabels,
@@ -62,14 +74,24 @@ import {
 } from "@/lib/knowledge";
 import { cn } from "@/lib/utils";
 
+const cardIcons: Record<KnowledgeCardType, typeof FileText> = {
+  campus: Layers3,
+  custom: FileText,
+  laboratory: FlaskConical,
+  project: FolderOpen,
+  university: GraduationCap,
+};
+
 type KnowledgeBaseProps = {
   initialCards: KnowledgeCard[];
   initialCustomTypes: CardTypeWithStats[];
   initialCardId?: string | null;
   initialAction?: string | null;
   initialFolderId?: string | null;
+  initialQuery?: string;
   dbAvailable: boolean;
   currentUser: SessionUser | null;
+  ownerCandidates?: CardOwnerCandidate[];
 };
 
 export function KnowledgeBase({
@@ -78,9 +100,13 @@ export function KnowledgeBase({
   initialCardId,
   initialAction,
   initialFolderId,
+  initialQuery = "",
   dbAvailable,
   currentUser,
+  ownerCandidates,
 }: KnowledgeBaseProps) {
+  const router = useRouter();
+  const params = useSearchParams();
   const [cards, setCards] = useState<KnowledgeCard[]>(initialCards);
   const [customTypes, setCustomTypes] =
     useState<CardTypeWithStats[]>(initialCustomTypes);
@@ -106,8 +132,10 @@ export function KnowledgeBase({
   const [showConstructor, setShowConstructor] = useState(false);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [isMobileTreeOpen, setIsMobileTreeOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [typeFilter, setTypeFilter] = useState<"all" | KnowledgeCardType>("all");
+  const [searchQuery, setSearchQuery] = useState(initialQuery);
+  const [typeFilter, setTypeFilter] = useState<"all" | KnowledgeCardType>(
+    "all"
+  );
   const [statusFilter, setStatusFilter] = useState<"all" | CardStatus>("all");
 
   const tree = useMemo(() => buildKnowledgeTree(customTypes), [customTypes]);
@@ -122,45 +150,11 @@ export function KnowledgeBase({
       return getCardsForFolder(selectedFolderId, cards, tree);
     }
 
-    const q = searchQuery.trim().toLowerCase().replace(/ё/g, "е");
-
-    return cards.filter((card) => {
-      if (typeFilter !== "all" && card.type !== typeFilter) return false;
-      if (statusFilter !== "all" && getCardStatus(card) !== statusFilter) {
-        return false;
-      }
-      if (!q) return true;
-
-      const haystackParts: string[] = [
-        card.id,
-        card.title,
-        card.referenceDescription,
-        card.stopFormula,
-        card.owners.join(" "),
-        getFolderPathLabel(card.folderId, tree),
-      ];
-      if (card.type === "project") {
-        haystackParts.push(
-          card.sphere,
-          card.industrialPartner,
-          card.contour,
-          card.readinessStage,
-          getUniversityName(card.initiatorUniversityId),
-          ...card.coExecutors,
-          ...card.participantUniversityIds.map(getUniversityName)
-        );
-      } else if (card.type === "laboratory") {
-        haystackParts.push(
-          card.affiliation,
-          card.partner,
-          card.head,
-          card.placementDetails,
-          ...card.workDirections
-        );
-      }
-      const haystack = haystackParts.join(" ").toLowerCase().replace(/ё/g, "е");
-      return haystack.includes(q);
-    });
+    return searchKnowledgeCards(cards, searchQuery).filter(
+      (card) =>
+        (typeFilter === "all" || card.type === typeFilter) &&
+        (statusFilter === "all" || getCardStatus(card) === statusFilter)
+    );
   }, [
     hasGlobalFilter,
     selectedFolderId,
@@ -214,6 +208,14 @@ export function KnowledgeBase({
   };
 
   const handleOpenCard = (cardId: string) => {
+    const previous = new URLSearchParams(params.toString());
+    previous.delete("card");
+    if (searchQuery) previous.set("q", searchQuery);
+    window.history.replaceState(null, "", `/knowledge?${previous.toString()}`);
+    const next = new URLSearchParams(previous.toString());
+    next.set("card", cardId);
+    if (searchQuery) next.set("q", searchQuery);
+    router.push(`/knowledge?${next.toString()}`, { scroll: false });
     setSelectedCardId(cardId);
     setEditingCardId(null);
     setShowForm(false);
@@ -271,85 +273,54 @@ export function KnowledgeBase({
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-6 px-3 py-6 sm:space-y-8 sm:px-4 sm:py-10">
-      <section className="gradient-hero-vibrant relative isolate overflow-hidden rounded-[2rem] border border-white/70 px-4 py-6 shadow-sm sm:px-10 sm:py-8 lg:px-12">
-        <div
-          aria-hidden
-          className="pattern-grid pointer-events-none absolute inset-0 opacity-[0.12]"
-        />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="border-white/80 bg-white/75 text-primary hover:bg-white/75">
-                <BookOpen className="h-3.5 w-3.5" />
-                Каноническая база знаний
-              </Badge>
-              {currentUser ? (
-                <Badge
-                  variant="secondary"
-                  className="gap-1.5 bg-white/80 text-foreground"
-                >
-                  <ShieldCheck className="h-3.5 w-3.5 text-primary" />
-                  {roleShortLabels[currentUser.role]}
-                </Badge>
-              ) : (
-                <Badge
-                  variant="secondary"
-                  className="gap-1.5 bg-white/80 text-muted-foreground"
-                >
-                  <LockKeyhole className="h-3.5 w-3.5" />
-                  Гостевой просмотр
-                </Badge>
-              )}
+    <div className="atlas-wrap data-workspace data-index">
+      <WorkspaceMasthead
+        id="knowledge-title"
+        icon={BookOpen}
+        title="База знаний"
+        description="Общие параметры кампуса, вузы-резиденты и совместные проекты."
+      >
+        <div className="data-index-meta">
+          <dl className="data-index-stats">
+            <div>
+              <dt>Карточки</dt>
+              <dd>
+                <AnimatedNumber value={cards.length} />
+              </dd>
             </div>
-            <div className="space-y-2">
-              <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-                Дерево базы знаний
-              </h1>
-              <p className="text-sm leading-relaxed text-foreground/70 sm:text-base">
-                Общие параметры кампуса, папки семи вузов-резидентов и
-                совместные проекты. Каждая карточка хранит проверенные факты,
-                эталонное описание и стоп-формулу для ИИ.
-              </p>
+            <div>
+              <dt>Вузы</dt>
+              <dd>
+                <AnimatedNumber value={7} />
+              </dd>
             </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
-            <div className="rounded-2xl bg-white/80 px-2 py-3 text-center ring-1 ring-white/90 sm:px-4">
-              <div className="font-heading text-xl font-bold sm:text-2xl">
-                {cards.length}
-              </div>
-              <div className="text-[11px] leading-tight text-muted-foreground">
-                карточек
-              </div>
+            <div>
+              <dt>Совместные проекты</dt>
+              <dd>
+                <AnimatedNumber value={jointCount} />
+              </dd>
             </div>
-            <div className="rounded-2xl bg-white/80 px-2 py-3 text-center ring-1 ring-white/90 sm:px-4">
-              <div className="font-heading text-xl font-bold sm:text-2xl">
-                7
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                вузов-резидентов
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-2 py-3 text-center ring-1 ring-white/90 sm:px-4">
-              <div className="font-heading text-xl font-bold sm:text-2xl">
-                {jointCount}
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                совместных
-              </div>
-            </div>
-          </div>
+          </dl>
+          <span className="data-index-role">
+            {currentUser ? (
+              <ShieldCheck aria-hidden="true" />
+            ) : (
+              <LockKeyhole aria-hidden="true" />
+            )}
+            {currentUser
+              ? roleShortLabels[currentUser.role]
+              : "Гостевой просмотр"}
+          </span>
         </div>
-      </section>
+      </WorkspaceMasthead>
 
-      <div className="grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[330px_minmax(0,1fr)]">
-        <aside className="lg:sticky lg:top-20 lg:self-start">
+      <div className="data-index-grid">
+        <aside className="data-index-sidebar">
           <div className="mb-3 lg:hidden">
             <Button
               type="button"
               variant="outline"
-              className="h-10 w-full justify-between rounded-2xl"
+              className="data-index-mobile-tree w-full justify-between"
               aria-expanded={isMobileTreeOpen}
               aria-controls="knowledge-tree-panel"
               onClick={() => setIsMobileTreeOpen((open) => !open)}
@@ -357,7 +328,10 @@ export function KnowledgeBase({
               <span className="flex items-center gap-2 truncate">
                 <FolderTree className="h-4 w-4 shrink-0 text-primary" />
                 <span className="truncate">
-                  Папка: {selectedFolder?.name ?? "Выбрать"}
+                  Папка:{" "}
+                  {selectedFolder
+                    ? getFolderDisplayName(selectedFolder)
+                    : "Выбрать"}
                 </span>
               </span>
               {isMobileTreeOpen ? (
@@ -370,7 +344,7 @@ export function KnowledgeBase({
           <Card
             id="knowledge-tree-panel"
             className={cn(
-              "rounded-3xl border-0 py-4 shadow-sm ring-1 ring-foreground/10",
+              "data-index-tree",
               !isMobileTreeOpen && "hidden lg:block"
             )}
           >
@@ -382,14 +356,14 @@ export function KnowledgeBase({
                 onSelect={handleSelectFolder}
               />
             </CardContent>
-            <div className="mx-4 mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
+            <div className="data-index-note">
               Объектов со статусом «Планируется к открытию в УНК кампуса»:{" "}
               {plannedLabCount}.
             </div>
           </Card>
         </aside>
 
-        <section className="min-w-0 space-y-5">
+        <section className="data-index-results min-w-0 space-y-5">
           {canModerateCards ? (
             <KnowledgeModerationPanel
               cards={pendingCards}
@@ -404,6 +378,7 @@ export function KnowledgeBase({
               customTypes={customTypes}
               dbAvailable={dbAvailable}
               currentUser={currentUser}
+              ownerCandidates={ownerCandidates}
               initialCard={editingCard}
               onCreated={handleCreated}
               onUpdated={handleCardSaved}
@@ -417,7 +392,15 @@ export function KnowledgeBase({
               tree={tree}
               dbAvailable={dbAvailable}
               currentUser={currentUser}
-              onBack={() => setSelectedCardId(null)}
+              onBack={() => {
+                const next = new URLSearchParams(params.toString());
+                next.delete("card");
+                next.delete("action");
+                next.delete("quote");
+                next.delete("finding");
+                router.push(`/knowledge?${next.toString()}`, { scroll: false });
+                setSelectedCardId(null);
+              }}
               onOpenFolder={handleSelectFolder}
               onEdit={() => setEditingCardId(selectedCard.id)}
               onCardUpdated={handleCardUpdated}
@@ -425,30 +408,35 @@ export function KnowledgeBase({
             />
           ) : (
             <>
-              <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
+              <Card className="data-index-toolbar">
                 <CardHeader className="gap-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="outline" className="text-[11px]">
-                          <FolderOpen className="h-3 w-3" />
+                      {(hasGlobalFilter || selectedFolderId.includes("/")) && (
+                        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                          {hasGlobalFilter ? (
+                            <Search
+                              aria-hidden="true"
+                              className="size-3 shrink-0"
+                            />
+                          ) : (
+                            <FolderOpen
+                              aria-hidden="true"
+                              className="size-3 shrink-0"
+                            />
+                          )}
                           {hasGlobalFilter
-                            ? "Поиск по всей базе"
-                            : selectedFolder?.kind === "joint"
-                              ? "Общая папка"
-                              : "Папка базы"}
-                        </Badge>
-                        <span className="break-words text-[11px] text-muted-foreground">
-                          {hasGlobalFilter
-                            ? `Найдено по всей базе (${cards.length} всего)`
-                            : getFolderPathLabel(selectedFolderId, tree)}
-                        </span>
-                      </div>
-                      <CardTitle className="font-heading text-xl tracking-tight break-words sm:text-2xl">
+                            ? "Во всех папках"
+                            : getFolderDisplayPath(selectedFolderId, tree)}
+                        </p>
+                      )}
+                      <h2 className="font-heading text-xl font-semibold tracking-tight break-words sm:text-2xl">
                         {hasGlobalFilter
                           ? "Результаты поиска и фильтрации"
-                          : (selectedFolder?.name ?? "База знаний")}
-                      </CardTitle>
+                          : selectedFolder
+                            ? getFolderDisplayName(selectedFolder)
+                            : "База знаний"}
+                      </h2>
                       <CardDescription>
                         {hasGlobalFilter
                           ? "Показаны карточки из всех папок базы, соответствующие фильтрам."
@@ -472,6 +460,14 @@ export function KnowledgeBase({
                             : "Конструктор типов"}
                         </Button>
                       ) : null}
+                      {hasGlobalFilter && (
+                        <Link
+                          href={`/requests?${new URLSearchParams({ q: `Нужны сведения по запросу: ${searchQuery}` }).toString()}`}
+                          className="text-primary underline underline-offset-4"
+                        >
+                          Запросить данные у другого вуза
+                        </Link>
+                      )}
                       {canAddCard ? (
                         <Button
                           type="button"
@@ -491,7 +487,9 @@ export function KnowledgeBase({
 
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Badge variant="secondary">
-                      {folderCards.length} карточек
+                      {hasGlobalFilter
+                        ? `Найдено: ${folderCards.length} из ${cards.length}`
+                        : `Карточки: ${folderCards.length}`}
                     </Badge>
                     {!hasGlobalFilter && selectedFolder?.universityId ? (
                       <span>
@@ -500,14 +498,16 @@ export function KnowledgeBase({
                     ) : null}
                   </div>
 
-                  <div className="grid gap-2 pt-1 sm:grid-cols-[minmax(0,1fr)_165px_165px]">
+                  <div className="data-index-search">
                     <div className="relative">
                       <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
+                        aria-label="Поиск по официальным данным"
+                        name="q"
+                        type="search"
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
                         placeholder="Поиск по названию, вузу, партнёру, ID..."
-                        aria-label="Сквозной поиск по карточкам"
                         className="h-10 pl-9 pr-8"
                       />
                       {searchQuery ? (
@@ -515,7 +515,7 @@ export function KnowledgeBase({
                           type="button"
                           onClick={() => setSearchQuery("")}
                           aria-label="Очистить поиск"
-                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                          className="data-index-clear text-muted-foreground hover:text-foreground"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
@@ -532,9 +532,10 @@ export function KnowledgeBase({
                       }
                       className="h-10 rounded-md border border-input bg-background px-3 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
-                      <option value="all">Все типы карточек</option>
+                      <option value="all">Все типы</option>
                       <option value="project">Проекты и продукты</option>
                       <option value="laboratory">Лаборатории</option>
+                      <option value="university">Паспорт вуза</option>
                       <option value="campus">Паспорт кампуса</option>
                       <option value="custom">Пользовательские</option>
                     </select>
@@ -550,7 +551,7 @@ export function KnowledgeBase({
                       className="h-10 rounded-md border border-input bg-background px-3 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <option value="all">Любой статус</option>
-                      <option value="approved">В каноне</option>
+                      <option value="approved">Утверждена</option>
                       <option value="pending">На подтверждении</option>
                       <option value="rejected">Отклонена</option>
                     </select>
@@ -594,6 +595,7 @@ export function KnowledgeBase({
                   customTypes={customTypes}
                   dbAvailable={dbAvailable}
                   currentUser={currentUser}
+                  ownerCandidates={ownerCandidates}
                   defaultFolderId={selectedFolderId}
                   onCreated={handleCreated}
                   onCancel={() => setShowForm(false)}
@@ -608,11 +610,14 @@ export function KnowledgeBase({
                     </div>
                     <div className="space-y-1">
                       <p className="text-sm font-medium">
-                        В этой папке пока нет карточек
+                        {hasGlobalFilter
+                          ? "Ничего не найдено"
+                          : "В этой папке пока нет карточек"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        Добавьте карточку выбранного типа или создайте новый тип
-                        в конструкторе.
+                        {hasGlobalFilter
+                          ? "Попробуйте другое название, число или снимите фильтры."
+                          : "Добавьте карточку выбранного типа или создайте новый тип в конструкторе."}
                       </p>
                     </div>
                     {canAddCard ? (
@@ -629,112 +634,127 @@ export function KnowledgeBase({
                     ) : (
                       <p className="text-xs text-muted-foreground">
                         Создавать карточки могут владельцы, PR-команды вузов,
-                        АНО «РИОН», ООО «ЧКК» и администратор канона.
+                        АНО «РИОН», ООО «ЧКК» и администратор базы.
                       </p>
                     )}
                   </CardContent>
                 </Card>
               ) : (
-                <div className="grid gap-4">
-                  {folderCards.map((card) => {
+                <div className="data-index-records">
+                  {folderCards.map((card, index) => {
                     const isReference = isJointReferenceForFolder(
                       card,
                       selectedFolderId
                     );
 
+                    const Icon = cardIcons[card.type];
+
                     return (
                       <Card
                         key={card.id}
-                        className="card-hover rounded-2xl border-0 py-0 shadow-sm ring-1 ring-foreground/10"
+                        className="data-index-record atlas-stagger-item"
+                        style={{ "--stagger-i": index } as CSSProperties}
                       >
                         <button
                           type="button"
+                          aria-label={`Открыть карточку: ${card.title}`}
                           onClick={() => handleOpenCard(card.id)}
-                          className="flex w-full min-w-0 flex-col gap-3 rounded-2xl p-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-primary sm:p-5"
+                          className="data-index-record-link"
                         >
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge variant="secondary">
-                              {getCardTypeLabel(card, customTypes)}
-                            </Badge>
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                getCardStatus(card) === "approved" &&
-                                  "border-emerald-200 text-emerald-700",
-                                getCardStatus(card) === "pending" &&
-                                  "border-amber-300 text-amber-700",
-                                getCardStatus(card) === "rejected" &&
-                                  "border-destructive/30 text-destructive"
-                              )}
-                            >
-                              {cardStatusLabels[getCardStatus(card)]}
-                            </Badge>
-                            {card.type === "project" ? (
-                              <Badge variant="outline">
-                                {card.readinessStage}
+                          <div className="data-record-glyph">
+                            <Icon aria-hidden="true" />
+                          </div>
+                          <div className="data-record-content">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="secondary">
+                                {getCardTypeLabel(card, customTypes)}
                               </Badge>
-                            ) : null}
-                            {card.type === "laboratory" ? (
-                              <Badge
-                                className={cn(
-                                  card.placementStatus === "planned"
-                                    ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
-                                    : "bg-emerald-100 text-emerald-700 hover:bg-emerald-100"
-                                )}
-                              >
-                                {placementStatusLabels[card.placementStatus]}
-                              </Badge>
-                            ) : null}
-                            {isJointProject(card) ? (
-                              <Badge className="bg-primary/10 text-primary hover:bg-primary/10">
-                                <Handshake className="h-3 w-3" />
-                                Совместный проект
-                              </Badge>
-                            ) : null}
-                            {isReference ? (
-                              <Badge
-                                variant="outline"
-                                className="border-primary/30 text-primary"
-                              >
-                                <Link2 className="h-3 w-3" />
-                                Ссылка на общую карточку
-                              </Badge>
-                            ) : null}
-                            {card.diskSync ? (
                               <Badge
                                 variant="outline"
                                 className={cn(
-                                  card.diskSync.status === "synced" &&
+                                  getCardStatus(card) === "approved" &&
                                     "border-emerald-200 text-emerald-700",
-                                  card.diskSync.status === "failed" &&
-                                    "border-amber-300 text-amber-700"
+                                  getCardStatus(card) === "pending" &&
+                                    "border-amber-300 text-amber-700",
+                                  getCardStatus(card) === "rejected" &&
+                                    "border-destructive/30 text-destructive"
                                 )}
                               >
-                                {diskSyncStatusLabels[card.diskSync.status]}
+                                {cardStatusLabels[getCardStatus(card)]}
                               </Badge>
-                            ) : null}
-                          </div>
+                              {card.type === "project" ? (
+                                <Badge variant="outline">
+                                  {card.readinessStage}
+                                </Badge>
+                              ) : null}
+                              {card.type === "laboratory" ? (
+                                <Badge
+                                  className={cn(
+                                    card.placementStatus === "planned"
+                                      ? "bg-amber-100 text-amber-700 hover:bg-amber-100"
+                                      : "bg-emerald-100 text-emerald-700 hover:bg-emerald-100"
+                                  )}
+                                >
+                                  {placementStatusLabels[card.placementStatus]}
+                                </Badge>
+                              ) : null}
+                              {isJointProject(card) ? (
+                                <Badge className="bg-primary/10 text-primary hover:bg-primary/10">
+                                  <Handshake className="h-3 w-3" />
+                                  Совместный проект
+                                </Badge>
+                              ) : null}
+                              {isReference ? (
+                                <Badge
+                                  variant="outline"
+                                  className="border-primary/30 text-primary"
+                                >
+                                  <Link2 className="h-3 w-3" />
+                                  Ссылка на общую карточку
+                                </Badge>
+                              ) : null}
+                              {card.diskSync ? (
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    card.diskSync.status === "synced" &&
+                                      "border-emerald-200 text-emerald-700",
+                                    card.diskSync.status === "failed" &&
+                                      "border-amber-300 text-amber-700"
+                                  )}
+                                >
+                                  {diskSyncStatusLabels[card.diskSync.status]}
+                                </Badge>
+                              ) : null}
+                            </div>
 
-                          <div className="space-y-1">
-                            <h3 className="font-heading text-lg font-semibold leading-snug break-words">
-                              {card.title}
-                            </h3>
-                            <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
-                              {card.referenceDescription ||
-                                "Карточка пользовательского типа: заполните поля, заданные администратором канона."}
-                            </p>
-                          </div>
+                            <div className="space-y-1">
+                              <h2 className="data-record-title">
+                                {card.title}
+                              </h2>
+                              <p className="line-clamp-2 text-sm leading-relaxed text-muted-foreground">
+                                {(searchQuery
+                                  ? getSearchFragment(card, searchQuery)
+                                  : card.referenceDescription) ||
+                                  "Карточка пользовательского типа: заполните поля, заданные администратором базы."}
+                              </p>
+                            </div>
 
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
-                            <span className="inline-flex min-w-0 items-center gap-1.5 break-words">
-                              <Users className="h-3.5 w-3.5" />
-                              {card.owners.join(" · ")}
-                            </span>
-                            <span className="inline-flex items-center gap-1.5">
-                              <FolderTree className="h-3.5 w-3.5" />
-                              {getFolderPathLabel(card.folderId, tree)}
-                            </span>
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                              <span className="inline-flex min-w-0 items-center gap-1.5 break-words">
+                                <Users className="h-3.5 w-3.5 shrink-0" />
+                                {card.owners.join(" · ")}
+                              </span>
+                              <span className="inline-flex min-w-0 items-center gap-1.5">
+                                <FolderTree className="h-3.5 w-3.5 shrink-0" />
+                                {getFolderDisplayPath(card.folderId, tree)}
+                              </span>
+                            </div>
                           </div>
+                          <ArrowUpRight
+                            className="data-record-arrow"
+                            aria-hidden="true"
+                          />
                         </button>
                       </Card>
                     );

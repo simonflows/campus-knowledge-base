@@ -3,9 +3,13 @@ import type { NextConfig } from "next";
 const basePath =
   process.env.BASE_PATH !== undefined ? process.env.BASE_PATH : "";
 const isDevelopment = process.env.NODE_ENV === "development";
+const isFullLocalDemo = process.env.CAMPUS_FULL_LOCAL_DEMO === "true";
 
 const nextConfig: NextConfig = {
   output: process.env.OUTPUT_MODE === "export" ? "export" : undefined,
+  ...(isFullLocalDemo && {
+    distDir: ".next-campus-demo",
+  }),
 
   ...(isDevelopment && {
     async headers() {
@@ -20,6 +24,14 @@ const nextConfig: NextConfig = {
             },
           ],
         },
+        ...(isFullLocalDemo
+          ? [
+              {
+                source: "/api/health",
+                headers: [{ key: "X-Campus-Full-Local-Demo", value: "1" }],
+              },
+            ]
+          : []),
       ];
     },
   }),
@@ -39,9 +51,7 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   reactStrictMode: true,
-  typescript: {
-    ignoreBuildErrors: true,
-  },
+  ...(isFullLocalDemo && { typescript: { tsconfigPath: "tsconfig.demo.json" } }),
   experimental: {
     serverSourceMaps: false,
     turbopackSourceMaps: false,

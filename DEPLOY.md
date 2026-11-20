@@ -11,7 +11,7 @@
 3. [Базовая защита операционной системы и SSH](#3-базовая-защита-операционной-системы-и-ssh)
 4. [Настройка межсетевого экрана (UFW) и Fail2ban](#4-настройка-межсетевого-экрана-ufw-и-fail2ban)
 5. [Установка проекта и настройка боевого окружения](#5-установка-проекта-и-настройка-боевого-окружения)
-6. [Запуск приложения (Systemd или Docker)](#6-запуск-приложения-systemd-или-docker)
+6. [Запуск приложения через Docker Compose](#6-запуск-приложения-через-docker-compose)
 7. [Настройка веб-сервера Nginx и базовых защит](#7-настройка-веб-сервера-nginx-и-базовых-защит)
 8. [Выпуск и установка SSL/TLS сертификата](#8-выпуск-и-установка-ssltls-сертификата)
 9. [Регламент проверки после запуска и резервное копирование](#9-регламент-проверки-после-запуска-и-резервное-копирование)
@@ -31,10 +31,10 @@
         ▼
 [ Веб-сервер Nginx ]      (TLS 1.2/1.3, HSTS, Rate Limit, лимит тела 2 МБ)
         │
-        ▼  проксирование только внутри хоста (127.0.0.1:3050 или 127.0.0.1:8080)
+        ▼  проксирование только внутри хоста (127.0.0.1:8080)
 [ Приложение Next.js 16 ] (непривилегированный пользователь, проверка Origin и HMAC-кук)
         │
-        ├──► Локальное хранилище (.data/local-store.json) или Yandex Database (YDB)
+        ├──► Yandex Database (YDB), Document API
         ├──► Yandex AI Studio API (исходящий HTTPS 443, контур РФ)
         └──► Яндекс Диск REST API (исходящий HTTPS 443, авторезервирование .md и .csv)
 ```
@@ -42,7 +42,7 @@
 ### Минимальные системные требования
 - **ОС**: Ubuntu 22.04 LTS / 24.04 LTS, Debian 12 или отечественные дистрибутивы (РЕД ОС, Astra Linux).
 - **Ресурсы**: 2 vCPU, 4 ГБ ОЗУ, 25 ГБ SSD.
-- **Среда выполнения**: Node.js 24 LTS (или Docker Engine 26+ при контейнерном запуске).
+- **Среда выполнения**: Docker Engine 28.0+ с Docker Compose 2.30+. Node.js 24 входит в образ.
 - **Доменное имя**: A-запись домена (например, `canon.campus74.ru`), направленная на публичный IP-адрес сервера.
 
 ---
@@ -51,10 +51,10 @@
 
 Базовая прикладная безопасность и контейнеризация **уже встроены в код проекта**:
 - Защита сессионных кук криптоподписью `HMAC-SHA256` с флагами `HttpOnly` / `SameSite=Lax` / `Secure` ([lib/auth-server.ts](lib/auth-server.ts)).
-- Проверка заголовков `Origin` / `Host` на всех изменяющих запросах (CSRF-защита), ПИН-код администратора (`ADMIN_ACCESS_PIN`), матрица ролей и прав 7 вузов.
+- Проверка заголовков `Origin` / `Host` на всех изменяющих запросах (CSRF-защита), индивидуальные ключи сотрудников, матрица ролей и прав 7 вузов.
 - Серверное ограничение частоты запросов (`rate-limit`) на чувствительных эндпоинтах.
 - Санитайзер персональных данных (152-ФЗ) и SSRF-фильтр внешних URL ([lib/alibaba-ai.ts](lib/alibaba-ai.ts)).
-- Эндпоинт диагностики состояния ([app/api/health/route.ts](app/api/health/route.ts)), шаблон окружения ([.env.example](.env.example)), производственный [Dockerfile](Dockerfile) (непривилегированный пользователь `nextjs`, `UID 1001`, встроенный `HEALTHCHECK`) и [docker-compose.yml](docker-compose.yml).
+- Эндпоинт диагностики состояния ([app/api/health/route.ts](app/api/health/route.ts)), шаблон окружения ([.env.example](.env.example)), производственные [Dockerfile](Dockerfile) и [Compose](deploy/compose.prod.yml). Контейнер запускает процесс с `UID 1001` и проверяет HTTP-ответ через `HEALTHCHECK`.
 
 Ниже описаны именно **внешние серверные шаги**, которые выполняются один раз на самой виртуальной машине при выводе сервиса в интернет по HTTPS (UFW, Fail2ban, SSH, Nginx, сертификат Let's Encrypt или УЦ РФ).
 
@@ -62,23 +62,17 @@
 
 ## 3. Базовая защита операционной системы и SSH
 
-### 3.1. Обновление системы и создание сервисного пользователя
-Все команды настройки выполняются от имени `root` или через `sudo`. Приложение не должно работать от имени `root`.
+### 3.1. Обновление системы и учётная запись администратора
+
+Войдите по SSH под существующим администратором ВМ. Это пользователь, которого облако создало при передаче публичного ключа. В отдельном сеансе убедитесь, что `sudo id -u` выводит `0`. Команды настройки ниже выполняются через `sudo` или в полученной через него оболочке администратора. Процесс приложения запускается отдельным непривилегированным пользователем внутри контейнера.
 
 ```bash
 apt update && apt full-upgrade -y
-apt install -y curl git ufw fail2ban nginx certbot python3-certbot-nginx unattended-upgrades
-
-# Создание пользователя для управления сервером (если ещё не создан)
-adduser --disabled-password --gecos "" deploy
-usermod -aG sudo deploy
-
-# Создание системного пользователя без права интерактивного входа для запуска приложения
-useradd --system --create-home --home-dir /opt/campus-knowledge-base --shell /usr/sbin/nologin campus
+apt install -y curl git ufw fail2ban nginx certbot unattended-upgrades
 ```
 
 ### 3.2. Защита SSH (`/etc/ssh/sshd_config`)
-Перед отключением паролей убедитесь, что ваш публичный SSH-ключ добавлен в `/home/deploy/.ssh/authorized_keys`.
+До изменения SSH откройте второй сеанс под тем же облачным администратором и проверьте доступ по ключу и через `sudo`. Первый сеанс держите открытым до повторной проверки после перезагрузки конфигурации.
 
 В файле `/etc/ssh/sshd_config` установите параметры:
 
@@ -90,7 +84,6 @@ MaxAuthTries 3
 ClientAliveInterval 300
 ClientAliveCountMax 2
 X11Forwarding no
-AllowUsers deploy
 ```
 
 Примените конфигурацию:
@@ -98,6 +91,8 @@ AllowUsers deploy
 ```bash
 sshd -t && systemctl reload ssh
 ```
+
+Из нового окна снова проверьте вход по ключу и `sudo id -u`. При ограничении списка пользователей указывайте только проверенные административные логины. Если новый вход не работает, верните прежнюю настройку в оставленном открытым сеансе.
 
 ### 3.3. Автоматические обновления безопасности
 
@@ -110,7 +105,7 @@ dpkg-reconfigure -plow unattended-upgrades
 ## 4. Настройка межсетевого экрана (UFW) и Fail2ban
 
 ### 4.1. Правила фаервола UFW
-Наружу открываются только порты `80`, `443` и `22`. Порты приложения (`3050`, `8080`) и локальной базы (`8000`) наружу **не открываются**.
+Наружу открываются только порты `80`, `443` и `22`. Порты приложения (`8080`) и локальной базы (`8000`) наружу **не открываются**.
 
 ```bash
 # Политика по умолчанию: запретить все входящие, разрешить исходящие
@@ -165,155 +160,97 @@ fail2ban-client status
 
 ## 5. Установка проекта и настройка боевого окружения
 
-### 5.1. Установка Node.js 24 LTS
+### 5.1. Проверка Docker Engine и Docker Compose
+
+Установите Docker Engine 28.0 или новее с плагином Compose 2.30 или новее. В Docker Engine до 28.0 соседние серверы в том же сегменте сети могли обращаться к портам, опубликованным на localhost. [Установка Docker](https://docs.docker.com/engine/install/), [публикация портов](https://docs.docker.com/engine/network/port-publishing/).
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
-apt install -y nodejs
-node -v
-npm -v
+docker version --format '{{.Server.Version}}'
+docker compose version
 ```
 
 ### 5.2. Развёртывание кода проекта
 
 ```bash
 git clone https://github.com/simonflows/campus-knowledge-base.git /opt/campus-knowledge-base/app
-mkdir -p /opt/campus-knowledge-base/app/.data
-chown -R campus:campus /opt/campus-knowledge-base
+cd /opt/campus-knowledge-base/app
+# Замените ПРОВЕРЕННЫЙ_SHA на идентификатор версии, прошедшей CI.
+git switch --detach ПРОВЕРЕННЫЙ_SHA
 ```
 
-### 5.3. Конфигурация переменных окружения (`.env.local`)
-На основе шаблона [.env.example](.env.example) создайте файл `/opt/campus-knowledge-base/app/.env.local`.
+<a id="pilot-access"></a>
 
-Сначала сгенерируйте случайный 256-битный секрет для HMAC-SHA256 подписи сессионных кук:
+### 5.3. Персональный доступ для сотрудников
+
+1. Оператор проверяет личность сотрудника и полномочия по реестру участников пилота. Назначьте ему постоянный индивидуальный логин из строчных латинских букв, цифр, дефисов и подчёркиваний. Завершившие работу логины не передают другому человеку.
+2. Выберите профиль из `demo-admin`, `demo-ministry`, `demo-rio`, `demo-chkk`, `demo-guest`, `demo-owner-<вуз>`, `demo-pr-<вуз>`. Идентификаторы вузов — `susu`, `csu`, `midis`, `susmu`, `sursau`, `mgtu`, `suspgu`. Профиль задаёт роль и зону ответственности существующих карточек. Закрепите как минимум одного координатора и руководителя каждого участвующего вуза.
+3. На доверенном рабочем месте с Node.js оператор создаёт отдельный ключ для каждого человека. Команда выводит персональный ключ и его отпечаток. Передайте ключ один раз через корпоративный менеджер паролей, а отпечаток перенесите в серверный справочник.
 
 ```bash
-openssl rand -hex 32
+node -e "const c=require('node:crypto'), k=c.randomBytes(32).toString('base64url'); console.log('accessKey',k); console.log('keyHash',c.createHash('sha256').update(k).digest('hex'))"
 ```
 
-Заполните `/opt/campus-knowledge-base/app/.env.local`:
+4. В защищённой форме VibeCraft или хранилище секретов инфраструктуры задайте `CAMPUS_PILOT_ACCOUNTS` как JSON-массив. Пример структуры одной строки ниже. Поле `keyHash` принимает 64 шестнадцатеричных символа из шага 3. У каждого человека свой логин и отпечаток.
 
-```ini
-NODE_ENV=production
-
-# 1. Безопасность сессий и режим работы (обязательно для боевого сервера)
-SESSION_SECRET=<вставьте_сгенерированную_строку_openssl_rand_hex_32>
-ADMIN_ACCESS_PIN=<сложный_пароль_или_пин_для_роли_администратора>
-FORCE_SECURE_COOKIE=true
-SEED_DEMO_ARTICLES=false
-NEXT_PUBLIC_DEMO_MODE=false
-
-# 2. Основной российский контур ИИ (Yandex AI Studio)
-YANDEX_AI_STUDIO_API_KEY=<ключ_сервисного_аккаунта_yandex_cloud>
-YANDEX_AI_STUDIO_FOLDER_ID=<идентификатор_каталога_b1g...>
-
-# 3. Автоматическая выгрузка резервных копий (.md и .csv) на Яндекс Диск
-YANDEX_DISK_OAUTH_TOKEN=<oauth_токен_яндекс_диска>
-
-# 4. База данных (если не указана — используется локальное хранилище .data/local-store.json)
-# Для подключения Yandex Database (YDB Document API) раскомментируйте:
-# USE_DATABASE=true
-# DOCUMENT_API_ENDPOINT=https://docapi.serverless.yandexcloud.net/ru-central1/<cloud_id>/<db_id>
-# DOCUMENT_API_REGION=ru-central1
-# AWS_ACCESS_KEY_ID=<статический_ключ_доступа_ydb>
-# AWS_SECRET_ACCESS_KEY=<секретный_ключ_ydb>
+```json
+[{"login":"editor-midis-01","name":"Имя Фамилия","profile":"demo-pr-midis","keyHash":"<отпечаток>"}]
 ```
 
-Ограничьте права доступа к файлу секретов (чтение только пользователем `campus`):
+5. Тем же способом задайте общий для реплик `SESSION_SECRET` (оператор генерирует его командой `openssl rand -hex 32`) и внешний HTTPS-адрес `CAMPUS_PUBLIC_ORIGIN` без пути и завершающей косой черты. Для общей базы приложение использует `DOCUMENT_API_ENDPOINT`, `AWS_ACCESS_KEY_ID` и `AWS_SECRET_ACCESS_KEY`. Если `DOCUMENT_API_REGION` не задан, используется `ru-central1`. Для подключённых интеграций добавьте их серверные переменные. Команда `npm run setup` показывает имена переменных для каждой интеграции. Режим production и отключение демо задаёт конфигурация из [раздела 6](#6-запуск-приложения-через-docker-compose).
+6. Примените конфигурацию ко всем экземплярам. Дождитесь обновления среды, откройте `/login` по публичному HTTPS и проверьте вход двух разных сотрудников. У автора появляется свой черновик, у руководителя своего вуза — только отправленная ему редакция. Межвузовский материал получает назначенный координатор. Посетителям доступны согласованные публикации. Старые статьи без отметки согласования доступны координатору и сотрудникам исходного вуза с прежним ID. Личные демонстрационные черновики автоматически сотрудникам не передаются.
 
-```bash
-chown campus:campus /opt/campus-knowledge-base/app/.env.local
-chmod 600 /opt/campus-knowledge-base/app/.env.local
-```
+**Отзыв и ротация.** Удалите строку сотрудника или замените отпечаток новым и обновите среду всех реплик. При следующем запросе сервер заново проверит запись и подпись. Смена `SESSION_SECRET` завершает все сессии. Каждая сессия истекает через восемь часов. Для публичного показа с выбором роли потребуется явный `CAMPUS_DEMO_LOGIN=true` на отдельном демонстрационном экземпляре с тестовыми данными. После переключения между режимами пользователи входят заново.
 
-Примечание: при `NEXT_PUBLIC_DEMO_MODE=false` и `SEED_DEMO_ARTICLES=false` демонстрационные вкладки («Архитектура и ИИ», «ИИ и ключи», переключатель провайдера в редакторе) и тестовые статьи автоматически отключены.
+Перед запуском менеджер секретов на сервере предоставляет `/run/campus/runtime.env`, доступный только доверенному оператору Docker. Используйте одну строку `ИМЯ=значение` на переменную. Compose читает значения буквально, поэтому справочник JSON должен занимать одну строку без дополнительных кавычек вокруг массива. После перезагрузки хоста менеджер секретов должен снова предоставить файл перед следующим обновлением конфигурации. Доступ к Docker позволяет читать окружение запущенных контейнеров. Храните сборочный каталог и образ отдельно от рабочих значений.
 
 ---
 
-## 6. Запуск приложения (Systemd или Docker)
+## 6. Запуск приложения через Docker Compose
 
-Выберите один из двух способов запуска.
+[Производственный Compose](deploy/compose.prod.yml) запускает один контейнер приложения. Порт на хосте привязан к `127.0.0.1:8080`. Контейнер работает без root, с файловой системой только для чтения и временными каталогами для кэша. Во время сборки [Dockerfile](Dockerfile) подставляет `NEXT_PUBLIC_DEMO_MODE=false` в клиентский код. Серверные значения поступают из файла окружения при создании контейнера.
 
-### Вариант А. Запуск через Systemd (рекомендуется для одного сервера)
-
-1. Соберите проект от имени сервисного пользователя:
+**1. Соберите проверенную версию и проверьте настройки.** Сборка получает файлы выбранного коммита из Git. Выполняйте команды по порядку. При ошибке сначала устраняйте её.
 
 ```bash
 cd /opt/campus-knowledge-base/app
-sudo -u campus npm ci
-sudo -u campus npm run build
+export CAMPUS_RELEASE_TAG="$(git rev-parse HEAD)"
+CAMPUS_RUNTIME_ENV_FILE=/dev/null docker compose --env-file /dev/null -f deploy/compose.prod.yml config --quiet
+git archive "$CAMPUS_RELEASE_TAG" -- . \
+  ':(exclude,glob)**/.env*' ':(exclude,glob)**/.data/**' ':(exclude,glob)**/*.pem' |
+  docker build -f Dockerfile -t "campus-kb:$CAMPUS_RELEASE_TAG" -
+docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps app node --import tsx deploy/preflight.ts
 ```
 
-2. Создайте файл службы `/etc/systemd/system/campus-kb.service` с параметрами изоляции процесса:
+Если Compose сообщает, что отсутствует `/run/campus/runtime.env`, проверьте его доставку менеджером секретов. [Проверка настроек](deploy/preflight.ts) выводит имена отсутствующих или неверно заданных переменных без их значений. Проверка выполняется и при каждом старте приложения.
 
-```ini
-[Unit]
-Description=Campus South Ural Canonical Knowledge Base (Next.js)
-After=network.target
-
-[Service]
-Type=simple
-User=campus
-Group=campus
-WorkingDirectory=/opt/campus-knowledge-base/app
-EnvironmentFile=/opt/campus-knowledge-base/app/.env.local
-Environment=NODE_ENV=production
-Environment=PORT=3050
-Environment=HOSTNAME=127.0.0.1
-ExecStart=/usr/bin/npx next start -H 127.0.0.1 -p 3050
-Restart=always
-RestartSec=5
-
-# Изоляция и защита процесса на уровне ядра
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/campus-knowledge-base/app/.data /opt/campus-knowledge-base/app/.next
-
-[Install]
-WantedBy=multi-user.target
-```
-
-3. Активируйте и запустите службу:
+**2. Запустите контейнер и подготовьте базу до подключения Nginx.** Миграцию запускайте одним оператором при первом развёртывании и при выпуске с изменениями схемы. Она создаёт недостающие таблицы. Проверку хранилища выполняйте при каждом выпуске.
 
 ```bash
-systemctl daemon-reload
-systemctl enable --now campus-kb.service
-systemctl status campus-kb.service
+docker compose --env-file /dev/null -f deploy/compose.prod.yml up --detach
+docker compose --env-file /dev/null -f deploy/compose.prod.yml exec -T app npm run db:migrate
+docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps app npm run check:deploy-storage
+docker compose --env-file /dev/null -f deploy/compose.prod.yml up --wait --wait-timeout 90
+curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/api/ready
 ```
 
-4. Проверьте локальный эндпоинт здоровья:
+Переходите к Nginx после успешных проверок. При ошибке старта посмотрите состояние контейнера командой `docker compose --env-file /dev/null -f deploy/compose.prod.yml ps`. Ошибки проверки настроек видны в выводе команды из первого шага.
+
+`/api/health` проверяет процесс, а `/api/ready` проверяет доступность всех шести таблиц. Сбой готовности даёт `503`. Сначала создайте таблицы, затем дождитесь готовности. Подключите алерт по `/api/ready` и проверьте рабочую запись с правами приложения на тестовой YDB.
+
+**3. Загрузите утверждённые записи и сверьте владельцев.** Обращение к сайту не наполняет базу. Координатор готовит JSON с полями `approvedBy`, `approvedAt` в ISO UTC и `cards`. Каждая запись содержит `id`, `status: "approved"` и поля своего типа карточки. Для совместного проекта включите `participantApprovals` всех участвующих вузов. Для персонального назначения добавьте `ownerIds` из реестра. Пользовательские типы должны существовать в выбранной БД. Сверьте даты, источники и содержание вне приложения до загрузки.
+
+Сначала примените тот же порядок на тестовой YDB. Рабочий импорт запускает оператор после проверки конфигурации, снимка базы и dry-run. Файл хранится вне репозитория и монтируется только для чтения. Дайте UID 1001 право чтения файла через владельца или файловый ACL без разрешения для остальных пользователей.
 
 ```bash
-curl -s http://127.0.0.1:3050/api/health
+docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps \
+  -v /secure/approved-knowledge.json:/tmp/approved-knowledge.json:ro \
+  app npm run db:import-approved-knowledge -- /tmp/approved-knowledge.json
+# После сверки добавьте --apply после пути к файлу.
 ```
 
-### Вариант Б. Запуск в производственном Docker-контейнере
+Команда проверяет весь входной файл до записи. С `--apply` она добавляет отсутствующие ID условной записью и оставляет существующие карточки. Если запись прервалась, повторите тот же проверенный файл и сверьте число добавленных и сохранённых. Проверьте публичный вид карточек до открытия прокси. Персональный ID пилота имеет вид `pilot-<login>`. Закрепите неоднозначные старые карточки за конкретными аккаунтами в форме координатора перед изменением реестра. Уже выданный логин принадлежит одному человеку.
 
-В проекте подготовлен многоступенчатый [Dockerfile](Dockerfile), работающий от непривилегированного пользователя `nextjs` (`UID 1001`) на порту `8080` со встроенным `HEALTHCHECK` на `/api/health`.
-
-```bash
-cd /opt/campus-knowledge-base/app
-
-# Выдача прав на директорию данных пользователю контейнера (UID 1001)
-chown -R 1001:1001 /opt/campus-knowledge-base/app/.data
-
-# Сборка производственного образа
-docker build -t campus-kb:prod -f Dockerfile .
-
-# Запуск контейнера с привязкой строго к локальному интерфейсу 127.0.0.1
-docker run -d \
-  --name campus-kb \
-  --restart unless-stopped \
-  --env-file /opt/campus-knowledge-base/app/.env.local \
-  -v /opt/campus-knowledge-base/app/.data:/app/.data \
-  -p 127.0.0.1:3050:8080 \
-  --memory="1536m" \
-  --cpus="1.5" \
-  --security-opt=no-new-privileges:true \
-  campus-kb:prod
-```
+Команда `npm run check:disk-sync` читает метаданные утверждённых записей. Она возвращает агрегаты очереди, дату последней полной выгрузки и код `0` при пустой очереди и выгрузке за последние сутки. Код `1` требует проверить отставание, ошибки или отсутствие недавних изменений. Код `2` означает, что метаданные прочитать не удалось. Перед открытием доступа проверьте реальную запись на Диск и ручной повтор после частичного отказа. Подключите периодическое оповещение на стороне своего мониторинга.
 
 ---
 
@@ -337,7 +274,7 @@ limit_req_zone $binary_remote_addr zone=api_strict:10m rate=15r/m;
 
 ```nginx
 upstream campus_nextjs {
-    server 127.0.0.1:3050;
+    server 127.0.0.1:8080;
     keepalive 32;
 }
 
@@ -361,7 +298,7 @@ server {
     listen [::]:443 ssl http2;
     server_name canon.campus74.ru;
 
-    # Пути к сертификатам (заполняются автоматически через Certbot или вручную)
+    # Пути к сертификату, выданному в разделе 8
     ssl_certificate     /etc/letsencrypt/live/canon.campus74.ru/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/canon.campus74.ru/privkey.pem;
 
@@ -378,7 +315,7 @@ server {
     client_header_timeout 10s;
 
     # Заголовки безопасности браузера
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Strict-Transport-Security "max-age=86400" always;
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
@@ -409,7 +346,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 60s;
     }
@@ -423,7 +360,7 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
@@ -435,13 +372,17 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-Важно: передача заголовков `Host` и `X-Forwarded-Proto` обязательна, так как серверная защита приложения ([lib/auth-server.ts](lib/auth-server.ts)) сверяет заголовки `Origin` и `Host` для защиты всех изменяющих запросов от межсайтовой подделки (CSRF).
+Для проверки источника браузерных запросов задайте в `CAMPUS_PUBLIC_ORIGIN` внешний адрес приложения с протоколом, например `https://canon.campus74.ru`. Приложение сверяет с ним заголовок `Origin`.
+
+`CAMPUS_TRUST_PROXY=true` разрешает учитывать IP клиента из `X-Forwarded-For` при ограничении попыток входа. Включайте его, когда к порту приложения обращается только доверенный прокси, который перезаписывает этот заголовок проверенным IP. В конфигурации Nginx выше используется адрес непосредственного клиента `$remote_addr`. По умолчанию ограничение попыток входа действует по учётной записи.
+
+На пилоте используйте один Nginx для общего лимита всех экземпляров приложения. При нескольких входных прокси настройте общий внешний лимит до расширения. Проверьте перезапись заголовка с адресом клиента и срабатывание `429` на тестовых аккаунтах.
 
 ---
 
@@ -449,23 +390,48 @@ server {
 
 ### Вариант 1. Автоматический бесплатный сертификат Let's Encrypt (Certbot)
 
-1. Активируйте конфигурацию сайта (если сертификата ещё нет, сначала оставьте в конфиге только HTTP-блок на порту 80 или выпустите сертификат командой ниже):
+1. После привязки DNS и открытия порта 80 сохраните временный HTTP-блок в `/etc/nginx/sites-available/campus-kb.conf`. Подставьте согласованный домен. Этот блок нужен, пока файлов сертификата ещё нет.
 
-```bash
-ln -s /etc/nginx/sites-available/campus-kb.conf /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name canon.campus74.ru;
 
-# Выпуск сертификата и автоматическая настройка путей в Nginx
-certbot --nginx -d canon.campus74.ru --non-interactive --agree-tos -m admin@campus74.ru --redirect
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 404;
+    }
+}
 ```
 
-2. Проверьте конфигурацию Nginx и перезагрузите его:
+2. Включите временный сайт, проверьте конфигурацию и выпустите сертификат. В команде подставьте тот же домен и действующий почтовый адрес.
+
+```bash
+ln -s /etc/nginx/sites-available/campus-kb.conf /etc/nginx/sites-enabled/campus-kb.conf
+nginx -t && systemctl reload nginx
+certbot certonly --webroot -w /var/www/html -d canon.campus74.ru \
+  --cert-name canon.campus74.ru --non-interactive --agree-tos -m admin@campus74.ru
+```
+
+3. После успешной выдачи сертификата замените временный файл полным конфигом из раздела 7.2. Сохраните тот же домен и пути к выданному сертификату. Проверьте конфигурацию, перезагрузите Nginx и проверьте HTTPS.
 
 ```bash
 nginx -t && systemctl reload nginx
+curl -fsS https://canon.campus74.ru/api/health
 ```
 
-3. Убедитесь, что таймер автоматического продления сертификата активен:
+4. Для обновления сертификата в работающем Nginx сохраните скрипт в `/etc/letsencrypt/renewal-hooks/deploy/reload-campus-nginx` с правом выполнения.
+
+```sh
+#!/bin/sh
+exec systemctl reload nginx
+```
+
+Проверьте таймер и пробное продление.
 
 ```bash
 systemctl status certbot.timer
@@ -495,10 +461,14 @@ ssl_certificate     /etc/ssl/campus-kb/fullchain.pem;
 ssl_certificate_key /etc/ssl/campus-kb/privkey.pem;
 ```
 
-3. Проверьте и примените настройки:
+3. Включите сайт, если ссылка ещё не создана, примените настройки и проверьте внешний HTTPS.
 
 ```bash
+if [ ! -e /etc/nginx/sites-enabled/campus-kb.conf ] && [ ! -L /etc/nginx/sites-enabled/campus-kb.conf ]; then
+  ln -s /etc/nginx/sites-available/campus-kb.conf /etc/nginx/sites-enabled/campus-kb.conf
+fi
 nginx -t && systemctl reload nginx
+curl -fsS https://canon.campus74.ru/api/health
 ```
 
 ---
@@ -513,24 +483,29 @@ curl -I https://canon.campus74.ru
 
 # 2. Проверка эндпоинта состояния сервиса
 curl -s https://canon.campus74.ru/api/health
+curl --fail --silent --show-error https://canon.campus74.ru/api/ready
 
-# 3. Проверка того, что порт 3050 закрыт извне (выполняется с другой машины)
-nc -zv canon.campus74.ru 3050
+# 3. Проверка того, что порт 8080 закрыт извне (выполняется с другой машины)
+nc -zv canon.campus74.ru 8080
 # Должно вернуть: Connection timed out / Connection refused
 ```
 
-### 9.2. Регламент обновления версии с GitHub
+### 9.2. Обновление версии и откат
 
-```bash
-cd /opt/campus-knowledge-base/app
-sudo -u campus git pull origin main
-sudo -u campus npm ci
-sudo -u campus npm run build
-systemctl restart campus-kb.service
-```
+[CI](.github/workflows/ci.yml) проверяет каждый push и pull request. Оператор GitHub назначает `Quality gate` обязательной проверкой защищённой ветки `main`.
 
-### 9.3. Локальное резервное копирование (в дополнение к Яндекс Диску)
-Даже при включённой автосинхронизации с Яндекс Диском рекомендуется добавить ежедневный локальный бэкап файла хранилища `/etc/cron.daily/campus-kb-backup`:
+1. Запишите текущую метку образа и сохраните этот образ. Выполните `git fetch origin` и `git switch --detach ПРОВЕРЕННЫЙ_SHA` для версии, прошедшей CI.
+2. Повторите сборку и проверку настроек из [раздела 6](#6-запуск-приложения-через-docker-compose), пока работает текущая версия. Заменяйте контейнер в согласованное окно обслуживания. Если выпуск меняет схему, ограничьте доступ через прокси до завершения миграции и проверки хранилища.
+3. При проблеме вернитесь к прежней версии репозитория командой `git switch --detach ПРЕЖНИЙ_SHA`, установите `export CAMPUS_RELEASE_TAG=ПРЕЖНИЙ_SHA` и запустите `docker compose --env-file /dev/null -f deploy/compose.prod.yml up --wait --wait-timeout 90`. Затем повторите контрольные проверки. Откат образа допускается, пока изменения схемы совместимы с прежней версией. Созданные таблицы остаются в общей базе.
+
+### 9.3. Резервные версии и локальное демо
+Production использует Document API; при его недоступности локальная запись не включается автоматически. `CAMPUS_LOCAL_DEMO=true` действует только вне production и сохраняет прежние `.data`-данные. Повреждённый файл или неизвестная версия не заменяются примерами; предыдущий корректный файл находится в `.data/local-store.json.bak`.
+
+Для общего хранилища пройдите [проверку управляемой копии и восстановления в отдельную базу](deploy/backup/README.md) до подключения сотрудников.
+
+На Яндекс Диск выгружаются утверждённые MD и снимки CSV. Имена начинаются с ISO UTC версии данных, а CSV содержит путь к неизменяемому файлу и метку согласованного снимка. Сортировать нужно по имени версии, не по времени загрузки. В корне выгружается `_КАК_ЧИТАТЬ_РЕЗЕРВ.md`. Совместная карточка физически хранится в `02_Совместные_проекты`; папки вузов содержат только `.link.md` указатели. Незавершённая выгрузка сохраняет статус и повторяется без перезаписи другой версии. Реальная облачная запись не проверялась в регрессионных тестах: транспорт заменён локальным fake.
+
+Следующая команда применима только к отдельно включённому локальному демо, а не к production Document API. Для локального файла можно настроить `/etc/cron.daily/campus-kb-backup`:
 
 ```bash
 #!/bin/sh
@@ -543,3 +518,16 @@ find /var/backups/campus-kb -type f -mtime +30 -delete
 ```bash
 chmod +x /etc/cron.daily/campus-kb-backup
 ```
+
+### 9.4. Долговечный Docker-том и прежние контейнеры
+
+Новый Compose хранит SQLite-файлы DynamoDB Local в именованном томе `campus-knowledge-dynamodb-data`, подключённом к `/home/dynamodblocal/data`; `-dbPath ./data` задан явно. Порт БД доступен только на `127.0.0.1:8000`; приложение внутри Compose обращается к сервису по внутренней сети. Это соответствует [рекомендации AWS по постоянному каталогу DynamoDB Local](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DynamoDBLocal.DownloadingAndRunning.html).
+
+Если прежний контейнер запускался без тома, его база находится внутри файловой системы контейнера. **Не пересоздавайте его до переноса.** Пункт `[5]` лаунчера проверяет mounts и отказывается менять такой контейнер. Простое добавление нового пустого тома не переносит существующие данные.
+
+1. Проверьте только mounts, не выгружая переменные окружения: `docker inspect --format '{{json .Mounts}}' dynamodb-local`. Сохраните имена прежних томов и сам прежний контейнер.
+2. В согласованное окно обслуживания приостановите записи и получите согласованный снимок всей базы: все файлы SQLite и журналы, либо полный экспорт всех таблиц. Копия одного активно изменяемого `.db` не является согласованным снимком. Не удаляйте старый контейнер или прежние тома. Снимок существующего тома/контейнера и экспорт держите отдельно от нового тома.
+3. На отдельном тестовом экземпляре восстановите снимок/экспорт в новый том. Проверьте ID и количества карточек, статей, редакционных документов/ревизий и межвузовских запросов, а также связи и последние утверждённые версии. Миграция схемы добавляет таблицы и не заменяет записи.
+4. Только после сверки и согласованного переключения используйте новый Compose. Старый контейнер, прежний том и проверенный снимок сохраняйте до завершения приёмки; удаление томов не входит в процедуру запуска. При ошибке вернитесь к сохранённому экземпляру.
+
+Этот перенос реальных данных автоматически не выполняется. В текущей среде Docker отсутствует, поэтому долговечность проверена конфигурацией и локальными тестами, без пересоздания контейнеров пользователя. На Windows без Docker укажите внешний `DOCUMENT_API_ENDPOINT` через штатную безопасную настройку окружения и выберите `[1]`; отдельная установка сервиса на компьютер не нужна.

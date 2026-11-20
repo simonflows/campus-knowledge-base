@@ -94,8 +94,7 @@ type GenerateResponse = {
 const PROVIDER_ITEMS = [
   { value: "auto", label: "Авто (Yandex → канонический движок)" },
   { value: "yandex", label: "Yandex AI Studio (основной контур)" },
-  { value: "alibaba", label: "Alibaba Cloud Qwen (только по выбору, без ПДн)" },
-  { value: "canonical", label: "Канонический движок (без LLM)" },
+  { value: "canonical", label: "Подготовка по проверенным фактам (без LLM)" },
 ];
 
 const examples = [
@@ -134,18 +133,59 @@ function sectionTitle(level: 2 | 3) {
   return level === 3 ? "h3" : "h2";
 }
 
-export function SmartEditorDialog({
-  open,
-  onOpenChange,
+export function SmartEditorDialog(props: SmartEditorDialogProps) {
+  const { open, basis, articles } = props;
+  const basisKey =
+    open && basis ? JSON.stringify([basis.articleId, basis.chunkIds]) : null;
+  const [previousBasis, setPreviousBasis] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [provider, setProvider] = useState<AiProviderChoice>("auto");
+
+  if (previousBasis !== basisKey) {
+    setPreviousBasis(basisKey);
+    if (open && basis) {
+      const article = articles.find((item) => item.id === basis.articleId);
+      setQuery(
+        article
+          ? buildBasisQuery(article, basis.chunkIds)
+          : "Напиши статью на основе утверждённого смыслового блока."
+      );
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={props.onOpenChange}>
+      {open && (
+        <SmartEditorForm
+          key={basisKey}
+          {...props}
+          query={query}
+          setQuery={setQuery}
+          provider={provider}
+          setProvider={setProvider}
+        />
+      )}
+    </Dialog>
+  );
+}
+
+function SmartEditorForm({
   dbAvailable,
-  currentUser = null,
+  currentUser,
   articles,
   basis,
   onSaved,
-}: SmartEditorDialogProps) {
+  query,
+  setQuery,
+  provider,
+  setProvider,
+}: SmartEditorDialogProps & {
+  query: string;
+  setQuery: (query: string) => void;
+  provider: AiProviderChoice;
+  setProvider: (provider: AiProviderChoice) => void;
+}) {
   const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
-  const [query, setQuery] = useState("");
-  const [provider, setProvider] = useState<AiProviderChoice>("auto");
   const [providerMeta, setProviderMeta] = useState<ProviderMeta | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -159,45 +199,12 @@ export function SmartEditorDialog({
   const [projectTitle, setProjectTitle] = useState("");
   const [savedArticleId, setSavedArticleId] = useState<string | null>(null);
   const requestIdRef = useRef(0);
-  const articlesRef = useRef(articles);
-
-  useEffect(() => {
-    articlesRef.current = articles;
-  }, [articles]);
-
-  useEffect(() => {
-    if (!open) return;
-
-    if (basis) {
-      const article = articlesRef.current.find(
-        (item) => item.id === basis.articleId
-      );
-      setQuery(
-        article
-          ? buildBasisQuery(article, basis.chunkIds)
-          : "Напиши статью на основе утверждённого смыслового блока."
-      );
-    } else {
-      setQuery((current) => current);
-    }
-
-    setError(null);
-    setNoDataMessage(null);
-  }, [open, basis]);
-
-  useEffect(() => {
-    if (!open) {
+  useEffect(
+    () => () => {
       requestIdRef.current += 1;
-      setIsGenerating(false);
-      setResult(null);
-      setSources([]);
-      setProviderMeta(null);
-      setError(null);
-      setNoDataMessage(null);
-      setSavedArticleId(null);
-      setIsEditingDraft(false);
-    }
-  }, [open]);
+    },
+    []
+  );
 
   const basisLabel = useMemo(() => {
     if (!basis) return null;
@@ -266,7 +273,7 @@ export function SmartEditorDialog({
       if (data.noData) {
         setNoDataMessage(
           data.noDataMessage ||
-            "В канонических карточках нет сведений по этому запросу."
+            "В официальных данных нет сведений по этому запросу."
         );
         return;
       }
@@ -358,7 +365,7 @@ export function SmartEditorDialog({
 
       if (!response.ok || !data || "error" in data) {
         toast.error(
-          data?.error || "Не удалось сохранить статью в «Готовые_статьи»"
+          data?.error || "Не удалось сохранить статью в «Готовые статьи»"
         );
         return;
       }
@@ -371,13 +378,13 @@ export function SmartEditorDialog({
           description: `Вуз: ${getUniversityName(data.universityId)}`,
         });
       } else if (data.diskSync?.status === "failed") {
-        toast.warning("Статья сохранена в «Готовые_статьи», но не выгружена", {
+        toast.warning("Статья сохранена в «Готовые статьи», но не выгружена", {
           description:
             data.diskSync.message ||
             "Выгрузку на Яндекс Диск можно повторить в библиотеке статей.",
         });
       } else {
-        toast.success("Статья сохранена в «Готовые_статьи»", {
+        toast.success("Статья сохранена в «Готовые статьи»", {
           description: `Вуз: ${getUniversityName(data.universityId)}`,
         });
       }
@@ -389,252 +396,258 @@ export function SmartEditorDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] max-w-[calc(100%-1rem)] overflow-y-auto sm:max-w-4xl">
-        <DialogHeader>
-          <div className="flex items-center gap-2">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
-              <Sparkles className="size-4" />
-            </span>
-            <Badge variant="secondary" className="gap-1">
-              <ShieldCheck className="size-3" />
-              Стандарты SEO и GEO встроены
-            </Badge>
-          </div>
-          <DialogTitle className="font-heading text-xl">
-            Умный редактор
-          </DialogTitle>
-          <DialogDescription>
-            Опишите задачу свободным языком. Редактор возьмёт твёрдые факты и
-            цифры из канонических карточек, а живые формулировки — из
-            утверждённых статей коллег.
-          </DialogDescription>
-        </DialogHeader>
+    <DialogContent className="max-h-[90vh] max-w-[calc(100%-1rem)] overflow-y-auto sm:max-w-4xl">
+      <DialogHeader>
+        <div className="flex items-center gap-2">
+          <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <Sparkles className="size-4" />
+          </span>
+          <Badge variant="secondary" className="gap-1">
+            <ShieldCheck className="size-3" />
+            Стандарты SEO и GEO встроены
+          </Badge>
+        </div>
+        <DialogTitle className="font-heading text-xl">
+          Умный редактор
+        </DialogTitle>
+        <DialogDescription>
+          Опишите задачу свободным языком. Редактор возьмёт твёрдые факты и
+          цифры из карточек официальных данных, а живые формулировки — из
+          утверждённых статей коллег.
+        </DialogDescription>
+      </DialogHeader>
 
+      <div className="flex flex-wrap gap-1.5">
+        {standards.map((standard) => (
+          <Badge key={standard} variant="outline" className="text-[11px]">
+            <BadgeCheck className="size-3" />
+            {standard}
+          </Badge>
+        ))}
+      </div>
+
+      {basisLabel ? (
+        <Alert>
+          <Quote className="size-4" />
+          <AlertTitle>Опора из «Готовых_статей»</AlertTitle>
+          <AlertDescription>{basisLabel}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="smart-editor-query">Задача редактору</Label>
+        <Textarea
+          id="smart-editor-query"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Например: напиши статью о сотрудничестве МИДиС и ЮУГМУ по виртуальному травмпункту с опорой на уже вышедший материал ЮУГМУ"
+          className="min-h-28"
+          aria-describedby="smart-editor-hint"
+        />
         <div className="flex flex-wrap gap-1.5">
-          {standards.map((standard) => (
-            <Badge key={standard} variant="outline" className="text-[11px]">
-              <BadgeCheck className="size-3" />
-              {standard}
-            </Badge>
+          {examples.map((example) => (
+            <Button
+              key={example}
+              type="button"
+              variant="outline"
+              size="xs"
+              className="h-auto max-w-full justify-start whitespace-normal text-left text-[11px] leading-snug"
+              onClick={() => setQuery(example)}
+            >
+              {example}
+            </Button>
           ))}
         </div>
+      </div>
 
-        {basisLabel ? (
-          <Alert>
-            <Quote className="size-4" />
-            <AlertTitle>Опора из «Готовых_статей»</AlertTitle>
-            <AlertDescription>{basisLabel}</AlertDescription>
-          </Alert>
-        ) : null}
-
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="smart-editor-query">Задача редактору</Label>
-          <Textarea
-            id="smart-editor-query"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Например: напиши статью о сотрудничестве МИДиС и ЮУГМУ по виртуальному травмпункту с опорой на уже вышедший материал ЮУГМУ"
-            className="min-h-28"
-            aria-describedby="smart-editor-hint"
-          />
-          <div className="flex flex-wrap gap-1.5">
-            {examples.map((example) => (
-              <Button
-                key={example}
-                type="button"
-                variant="outline"
-                size="xs"
-                className="h-auto max-w-full justify-start whitespace-normal text-left text-[11px] leading-snug"
-                onClick={() => setQuery(example)}
-              >
-                {example}
-              </Button>
-            ))}
-          </div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+          >
+            {isGenerating ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <PenLine className="size-4" />
+            )}
+            {isGenerating ? "Готовим статью..." : "Написать статью по запросу"}
+          </Button>
+          <span
+            id="smart-editor-hint"
+            className="text-xs text-muted-foreground"
+          >
+            Температура 0.05 · строго по карточкам.
+          </span>
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              onClick={handleGenerate}
-              disabled={isGenerating}
+        {isDemoMode ? (
+          <div className="flex flex-col gap-1 sm:w-64">
+            <Label
+              htmlFor="smart-editor-provider"
+              className="text-[11px] text-muted-foreground"
             >
-              {isGenerating ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <PenLine className="size-4" />
-              )}
-              {isGenerating ? "Готовим статью..." : "Написать статью по запросу"}
-            </Button>
-            <span id="smart-editor-hint" className="text-xs text-muted-foreground">
-              Температура 0.05 · строго по карточкам.
-            </span>
+              ИИ-движок (РФ / Учебный стенд)
+            </Label>
+            <Select
+              value={provider}
+              items={PROVIDER_ITEMS}
+              onValueChange={(value) =>
+                setProvider(String(value) as AiProviderChoice)
+              }
+            >
+              <SelectTrigger
+                id="smart-editor-provider"
+                className="h-10 w-full text-xs"
+              >
+                <SelectValue placeholder="Выберите движок" />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_ITEMS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-snug text-muted-foreground">
+              {provider === "yandex"
+                ? "Yandex AI Studio — основной облачный движок. Без ключа — канонический движок."
+                : provider === "canonical"
+                  ? "Подготовка по проверенным фактам: сборка без LLM, строго из карточек."
+                  : "Авто: Yandex AI Studio, при отсутствии ключа — канонический движок. Alibaba не включается автоматически."}
+            </p>
           </div>
-
-          {isDemoMode ? (
-            <div className="flex flex-col gap-1 sm:w-64">
-              <Label
-                htmlFor="smart-editor-provider"
-                className="text-[11px] text-muted-foreground"
-              >
-                ИИ-движок (РФ / Учебный стенд)
-              </Label>
-              <Select
-                value={provider}
-                items={PROVIDER_ITEMS}
-                onValueChange={(value) =>
-                  setProvider(String(value) as AiProviderChoice)
-                }
-              >
-                <SelectTrigger id="smart-editor-provider" className="h-10 w-full text-xs">
-                  <SelectValue placeholder="Выберите движок" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROVIDER_ITEMS.map((item) => (
-                    <SelectItem key={item.value} value={item.value}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-[11px] leading-snug text-muted-foreground">
-                {provider === "alibaba"
-                  ? "Alibaba Qwen — учебный стенд: используйте только без персональных данных."
-                  : provider === "yandex"
-                    ? "Yandex AI Studio — основной облачный движок. Без ключа — канонический движок."
-                    : provider === "canonical"
-                      ? "Канонический движок: сборка без LLM, строго из карточек."
-                      : "Авто: Yandex AI Studio, при отсутствии ключа — канонический движок. Alibaba не включается автоматически."}
-              </p>
-            </div>
-          ) : null}
-        </div>
-
-        {error ? (
-          <Alert variant="destructive">
-            <TriangleAlert className="size-4" />
-            <AlertTitle>Генерация не выполнена</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
         ) : null}
+      </div>
 
-        {noDataMessage ? (
-          <Alert>
-            <Layers3 className="size-4" />
-            <AlertTitle>Сведений в базе нет</AlertTitle>
-            <AlertDescription>{noDataMessage}</AlertDescription>
-          </Alert>
-        ) : null}
+      {error ? (
+        <Alert variant="destructive">
+          <TriangleAlert className="size-4" />
+          <AlertTitle>Генерация не выполнена</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
 
-        {result ? (
-          <div className="flex flex-col gap-5">
-            <Separator />
+      {noDataMessage ? (
+        <Alert>
+          <Layers3 className="size-4" />
+          <AlertTitle>Сведений в базе нет</AlertTitle>
+          <AlertDescription>{noDataMessage}</AlertDescription>
+        </Alert>
+      ) : null}
 
-            {providerMeta ? (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border bg-muted/25 px-3.5 py-2.5 text-xs">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Cpu className="size-3.5 text-primary" />
-                  <span className="font-semibold">{providerMeta.modelLabel}</span>
-                  <Badge variant="outline" className="text-[10px]">
-                    {providerMeta.latencyMs} мс
+      {result ? (
+        <div className="flex flex-col gap-5">
+          <Separator />
+
+          {providerMeta ? (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border bg-muted/25 px-3.5 py-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <Cpu className="size-3.5 text-primary" />
+                <span className="font-semibold">{providerMeta.modelLabel}</span>
+                <Badge variant="outline" className="text-[10px]">
+                  {providerMeta.latencyMs} мс
+                </Badge>
+                {providerMeta.anonymized152FZ ? (
+                  <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 text-[10px]">
+                    Контакты обезличены
                   </Badge>
-                  {providerMeta.anonymized152FZ ? (
-                    <Badge className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100 text-[10px]">
-                      Контакты обезличены
-                    </Badge>
-                  ) : null}
-                </div>
-                {providerMeta.fallbackReason ? (
-                  <span className="text-[11px] text-muted-foreground">
-                    {providerMeta.fallbackReason}
-                  </span>
                 ) : null}
               </div>
-            ) : null}
+              {providerMeta.fallbackReason ? (
+                <span className="text-[11px] text-muted-foreground">
+                  {providerMeta.fallbackReason}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
 
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Предпросмотр и доработка статьи
-              </span>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  type="button"
-                  variant={isEditingDraft ? "secondary" : "outline"}
-                  size="sm"
-                  onClick={() => setIsEditingDraft((value) => !value)}
-                  className="h-8 gap-1.5 text-xs"
-                >
-                  {isEditingDraft ? (
-                    <Eye className="size-3.5" />
-                  ) : (
-                    <Edit3 className="size-3.5" />
-                  )}
-                  {isEditingDraft ? "Режим чтения" : "Редактировать текст"}
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCopyDraft}
-                  className="h-8 gap-1.5 text-xs"
-                >
-                  <Copy className="size-3.5" />
-                  Копировать .md
-                </Button>
-              </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Предпросмотр и доработка статьи
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant={isEditingDraft ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => setIsEditingDraft((value) => !value)}
+                className="h-8 gap-1.5 text-xs"
+              >
+                {isEditingDraft ? (
+                  <Eye className="size-3.5" />
+                ) : (
+                  <Edit3 className="size-3.5" />
+                )}
+                {isEditingDraft ? "Режим чтения" : "Редактировать текст"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleCopyDraft}
+                className="h-8 gap-1.5 text-xs"
+              >
+                <Copy className="size-3.5" />
+                Копировать .md
+              </Button>
+            </div>
+          </div>
+
+          <article className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Badge variant="outline" className="w-fit text-[11px]">
+                H1 · {result.title.length} символов
+              </Badge>
+              {isEditingDraft ? (
+                <Input
+                  value={result.title}
+                  onChange={(event) =>
+                    setResult((prev) =>
+                      prev ? { ...prev, title: event.target.value } : prev
+                    )
+                  }
+                  aria-label="Заголовок статьи H1"
+                  className="font-heading text-lg font-bold"
+                />
+              ) : (
+                <h1 className="break-words font-heading text-2xl font-bold leading-tight tracking-tight">
+                  {result.title}
+                </h1>
+              )}
             </div>
 
-            <article className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <Badge variant="outline" className="w-fit text-[11px]">
-                  H1 · {result.title.length} символов
+            <div className="rounded-2xl border bg-muted/30 p-4">
+              <div className="mb-2 flex flex-wrap items-center gap-2">
+                <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
+                  Первые 1000 знаков
                 </Badge>
-                {isEditingDraft ? (
-                  <Input
-                    value={result.title}
-                    onChange={(event) =>
-                      setResult((prev) =>
-                        prev ? { ...prev, title: event.target.value } : prev
-                      )
-                    }
-                    aria-label="Заголовок статьи H1"
-                    className="font-heading text-lg font-bold"
-                  />
-                ) : (
-                  <h1 className="break-words font-heading text-2xl font-bold leading-tight tracking-tight">
-                    {result.title}
-                  </h1>
-                )}
+                <span className="text-[11px] text-muted-foreground">
+                  {result.lead.length} символов
+                </span>
               </div>
+              {isEditingDraft ? (
+                <Textarea
+                  value={result.lead}
+                  onChange={(event) =>
+                    setResult((prev) =>
+                      prev ? { ...prev, lead: event.target.value } : prev
+                    )
+                  }
+                  aria-label="Лид статьи (первые 1000 знаков)"
+                  className="min-h-28 text-sm leading-relaxed"
+                />
+              ) : (
+                <p className="break-words text-sm leading-relaxed">
+                  {result.lead}
+                </p>
+              )}
+            </div>
 
-              <div className="rounded-2xl border bg-muted/30 p-4">
-                <div className="mb-2 flex flex-wrap items-center gap-2">
-                  <Badge className="bg-emerald-100 text-emerald-700 hover:bg-emerald-100">
-                    Первые 1000 знаков
-                  </Badge>
-                  <span className="text-[11px] text-muted-foreground">
-                    {result.lead.length} символов
-                  </span>
-                </div>
-                {isEditingDraft ? (
-                  <Textarea
-                    value={result.lead}
-                    onChange={(event) =>
-                      setResult((prev) =>
-                        prev ? { ...prev, lead: event.target.value } : prev
-                      )
-                    }
-                    aria-label="Лид статьи (первые 1000 знаков)"
-                    className="min-h-28 text-sm leading-relaxed"
-                  />
-                ) : (
-                  <p className="break-words text-sm leading-relaxed">{result.lead}</p>
-                )}
-              </div>
-
-              {result.sections.map((section: ArticleSection, sectionIndex: number) => {
+            {result.sections.map(
+              (section: ArticleSection, sectionIndex: number) => {
                 const Heading = sectionTitle(section.level);
 
                 return (
@@ -653,7 +666,10 @@ export function SmartEditorDialog({
                                     ...prev,
                                     sections: prev.sections.map((sec, idx) =>
                                       idx === sectionIndex
-                                        ? { ...sec, heading: event.target.value }
+                                        ? {
+                                            ...sec,
+                                            heading: event.target.value,
+                                          }
                                         : sec
                                     ),
                                   }
@@ -691,7 +707,10 @@ export function SmartEditorDialog({
                                             ...sec,
                                             chunks: sec.chunks.map((c, cIdx) =>
                                               cIdx === chunkIndex
-                                                ? { ...c, content: event.target.value }
+                                                ? {
+                                                    ...c,
+                                                    content: event.target.value,
+                                                  }
                                                 : c
                                             ),
                                           }
@@ -715,125 +734,124 @@ export function SmartEditorDialog({
                     )}
                   </section>
                 );
-              })}
-            </article>
+              }
+            )}
+          </article>
 
-            <div className="flex flex-col gap-2 rounded-2xl border bg-muted/20 p-4">
-              <div className="flex items-center gap-2">
-                <BookOpenCheck className="size-4 text-primary" />
-                <p className="text-sm font-semibold">
-                  Карточки-источники статьи
-                </p>
-              </div>
-              {sources.length > 0 ? (
-                <ul className="flex flex-col gap-2">
-                  {sources.map((source) => (
-                    <li key={source.id} className="flex gap-2 text-xs">
-                      <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                      <div className="min-w-0 break-words">
-                        <p className="font-medium">{source.title}</p>
-                        <p className="text-muted-foreground">
-                          {source.description}
-                        </p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  {result.sourceCardTitles.join(" · ") ||
-                    "Источники не указаны."}
-                </p>
-              )}
+          <div className="flex flex-col gap-2 rounded-2xl border bg-muted/20 p-4">
+            <div className="flex items-center gap-2">
+              <BookOpenCheck className="size-4 text-primary" />
+              <p className="text-sm font-semibold">Карточки-источники статьи</p>
             </div>
-
-            <div className="flex flex-col gap-3 rounded-2xl border p-4">
-              <div>
-                <p className="text-sm font-semibold">
-                  Сохранить в «Готовые_статьи»
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Выберите вуз, в папке которого появится утверждённый материал.
-                </p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="article-university">Вуз</Label>
-                  <Select
-                    value={universityId}
-                    items={universityItems}
-                    onValueChange={(value) => setUniversityId(String(value))}
-                  >
-                    <SelectTrigger id="article-university" className="w-full">
-                      <SelectValue placeholder="Выберите вуз" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {universities.map((university) => (
-                        <SelectItem key={university.id} value={university.id}>
-                          {university.shortName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="article-project">Проект</Label>
-                  <Input
-                    id="article-project"
-                    value={projectTitle}
-                    onChange={(event) => setProjectTitle(event.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="article-topic">Тема</Label>
-                  <Input
-                    id="article-topic"
-                    value={topic}
-                    onChange={(event) => setTopic(event.target.value)}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <DialogFooter className="sm:justify-between">
-              <span className="text-xs text-muted-foreground" role="status">
-                {savedArticleId ? (
-                  "Статья сохранена в библиотеке."
-                ) : !currentUser || currentUser.role === "guest" ? (
-                  <>
-                    Чтобы сохранить в библиотеку,{" "}
-                    <Link
-                      href="/login"
-                      className="font-medium text-primary underline underline-offset-2"
-                    >
-                      войдите под ролью редактора (/login)
-                    </Link>
-                    .
-                  </>
-                ) : (
-                  "Проверьте формулировки перед сохранением."
-                )}
-              </span>
-              <Button
-                type="button"
-                onClick={handleSave}
-                disabled={isSaving || Boolean(savedArticleId) || !canSaveToLibrary}
-              >
-                {isSaving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Save className="size-4" />
-                )}
-                {savedArticleId
-                  ? "Сохранено"
-                  : isSaving
-                    ? "Сохраняем..."
-                    : "Сохранить в «Готовые_статьи»"}
-              </Button>
-            </DialogFooter>
+            {sources.length > 0 ? (
+              <ul className="flex flex-col gap-2">
+                {sources.map((source) => (
+                  <li key={source.id} className="flex gap-2 text-xs">
+                    <FileText className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 break-words">
+                      <p className="font-medium">{source.title}</p>
+                      <p className="text-muted-foreground">
+                        {source.description}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                {result.sourceCardTitles.join(" · ") || "Источники не указаны."}
+              </p>
+            )}
           </div>
-        ) : null}
-      </DialogContent>
-    </Dialog>
+
+          <div className="flex flex-col gap-3 rounded-2xl border p-4">
+            <div>
+              <p className="text-sm font-semibold">
+                Сохранить в «Готовые статьи»
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Выберите вуз, в папке которого появится утверждённый материал.
+              </p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="article-university">Вуз</Label>
+                <Select
+                  value={universityId}
+                  items={universityItems}
+                  onValueChange={(value) => setUniversityId(String(value))}
+                >
+                  <SelectTrigger id="article-university" className="w-full">
+                    <SelectValue placeholder="Выберите вуз" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {universities.map((university) => (
+                      <SelectItem key={university.id} value={university.id}>
+                        {university.shortName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="article-project">Проект</Label>
+                <Input
+                  id="article-project"
+                  value={projectTitle}
+                  onChange={(event) => setProjectTitle(event.target.value)}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="article-topic">Тема</Label>
+                <Input
+                  id="article-topic"
+                  value={topic}
+                  onChange={(event) => setTopic(event.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="sm:justify-between">
+            <span className="text-xs text-muted-foreground" role="status">
+              {savedArticleId ? (
+                "Статья сохранена в библиотеке."
+              ) : !currentUser || currentUser.role === "guest" ? (
+                <>
+                  Чтобы сохранить в библиотеку,{" "}
+                  <Link
+                    href="/login"
+                    className="font-medium text-primary underline underline-offset-2"
+                  >
+                    войдите под ролью редактора (/login)
+                  </Link>
+                  .
+                </>
+              ) : (
+                "Проверьте формулировки перед сохранением."
+              )}
+            </span>
+            <Button
+              type="button"
+              onClick={handleSave}
+              disabled={
+                isSaving || Boolean(savedArticleId) || !canSaveToLibrary
+              }
+            >
+              {isSaving ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Save className="size-4" />
+              )}
+              {savedArticleId
+                ? "Сохранено"
+                : isSaving
+                  ? "Сохраняем..."
+                  : "Сохранить в «Готовые статьи»"}
+            </Button>
+          </DialogFooter>
+        </div>
+      ) : null}
+    </DialogContent>
   );
 }

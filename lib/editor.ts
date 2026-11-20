@@ -5,12 +5,17 @@ import {
   type ReadyArticle,
 } from "./articles";
 import { universities } from "./data";
+import { checkFactText } from "./fact-check";
 import {
+  getApprovedVersion,
   getFolderPathLabel,
+  getUniversityFullName,
   getUniversityName,
   isJointProject,
   placementStatusLabels,
   type KnowledgeCard,
+  type StructuredMetric,
+  type UniversityCard,
 } from "./knowledge";
 import type { YandexAiMessage } from "./yandex-ai";
 import {
@@ -123,6 +128,17 @@ function cardSearchText(card: KnowledgeCard): string {
     ),
   ];
 
+  if (card.type === "university") {
+    parts.push(
+      getUniversityName(card.universityId),
+      getUniversityFullName(card.universityId),
+      ...(card.structuredMetrics ?? []).map(
+        (metric) =>
+          `${metric.label} ${metric.value} ${metric.unit} ${metric.year}`
+      )
+    );
+  }
+
   if (card.type === "project") {
     parts.push(
       card.sphere,
@@ -196,6 +212,8 @@ export function selectRelevantCards(
   if (roots.length === 0) return [];
 
   return cards
+    .map(getApprovedVersion)
+    .filter((card): card is KnowledgeCard => card !== null)
     .map((card) => {
       const text = cardSearchText(card);
       const title = normalize(card.title);
@@ -279,6 +297,9 @@ export function getBasisChunks(
 }
 
 function cardUniversityLabel(card: KnowledgeCard): string {
+  if (card.type === "university")
+    return getUniversityFullName(card.universityId);
+
   if (card.type === "project") {
     const initiator = getUniversityName(card.initiatorUniversityId);
     if (isJointProject(card)) {
@@ -303,7 +324,6 @@ export function serializeCardForPrompt(card: KnowledgeCard): string {
     `Название: ${card.title}`,
     `Папка: ${getFolderPathLabel(card.folderId)}`,
     `Вуз / принадлежность: ${cardUniversityLabel(card)}`,
-    `Владельцы: ${card.owners.join("; ")}`,
     `Эталонное описание: ${card.referenceDescription}`,
     `Стоп-формула: ${card.stopFormula}`,
   ];
@@ -324,7 +344,6 @@ export function serializeCardForPrompt(card: KnowledgeCard): string {
     lines.push(
       `Принадлежность: ${card.affiliation}`,
       `Партнёр: ${card.partner}`,
-      `Руководитель: ${card.head}`,
       `Статус размещения: ${placementStatusLabels[card.placementStatus]}`,
       `Детали размещения: ${card.placementDetails}`,
       `Направления: ${card.workDirections.join("; ")}`,
@@ -348,6 +367,16 @@ export function serializeCardForPrompt(card: KnowledgeCard): string {
     );
   }
 
+  if (card.type === "university") {
+    lines.push("Показатели вуза с подтверждением из документа:");
+    lines.push(
+      ...(card.structuredMetrics ?? []).map(
+        (metric) =>
+          `${formatUniversityMetric(card, metric)} Документ: ${metric.evidenceUrl}`
+      )
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -359,7 +388,7 @@ export function serializeApprovedChunk(chunk: FlatArticleChunk): string {
   ].join("\n");
 }
 
-const systemPrompt = `Ты — редактор пресс-службы кампуса «Южный Урал» и семи вузов-резидентов. Ты пишешь только по предоставленным каноническим карточкам и утверждённым статьям коллег.
+const systemPrompt = `Ты — редактор пресс-службы кампуса «Южный Урал» и семи вузов-резидентов. Ты пишешь только по предоставленным официальным данным и утверждённым статьям коллег.
 
 Жёсткие правила:
 1. Не используй общие знания модели и не добавляй факты, цифры, имена или сроки, которых нет в карточках.
@@ -369,7 +398,7 @@ const systemPrompt = `Ты — редактор пресс-службы камп
 5. Пиши живым языком без канцелярита. Избегай штампов «в рамках», «в целях», «осуществляется».
 6. Дели текст на самодостаточные чанки по 1–2 абзаца. В каждом чанке явно называй участников, проект и факты, чтобы блок можно было понять отдельно от статьи.
 7. Не приписывай совместный проект одному вузу или партнёру. Не меняй статус лаборатории и контур проекта.
-8. В конце статьи список использованных карточек добавит интерфейс, поэтому в JSON просто перечисли их ID в sourceCardIds.
+8. После каждого утверждения с датой, числом или статусом укажи ID подтверждающей карточки в квадратных скобках. Перечисли эти же ID в sourceCardIds. Показатель вуза указывай с названием вуза, единицей, годом и отметкой факт/план.
 
 Верни строго JSON без markdown и без пояснений:
 {
@@ -469,6 +498,8 @@ function toChunks(value: unknown): Array<{ id: string; content: string }> {
 }
 
 function findUniversityIdForCard(card: KnowledgeCard): string | null {
+  if (card.type === "university") return card.universityId;
+
   if (card.type === "project") {
     if (card.isJoint) {
       return card.participantUniversityIds[0] ?? null;
@@ -494,6 +525,8 @@ function fallbackTopic(card: KnowledgeCard): string {
   if (card.type === "laboratory")
     return card.workDirections[0] ?? "Лаборатория";
   if (card.type === "campus") return "Кампус «Южный Урал»";
+  if (card.type === "university")
+    return `Показатели ${getUniversityName(card.universityId)}`;
   return "Материалы базы знаний";
 }
 
@@ -513,11 +546,10 @@ export function normalizeGeneratedArticle(
   const rawSourceIds = Array.isArray(record.sourceCardIds)
     ? record.sourceCardIds.map(asString).filter(Boolean)
     : [];
-  const sourceCardIds = rawSourceIds.filter((id) => allowedIds.has(id));
-  const finalSourceIds =
-    sourceCardIds.length > 0
-      ? sourceCardIds
-      : params.selectedCards.map((card) => card.id);
+  if (!rawSourceIds.length || rawSourceIds.some((id) => !allowedIds.has(id))) {
+    throw new Error("Модель не указала проверяемые карточки-источники");
+  }
+  const finalSourceIds = [...new Set(rawSourceIds)];
 
   const sourceCardTitles = finalSourceIds
     .map(
@@ -555,7 +587,7 @@ export function normalizeGeneratedArticle(
     (firstCard ? findUniversityIdForCard(firstCard) : "");
 
   const projectTitle =
-    asString(record.projectTitle) || firstCard?.title || "Материалы канона";
+    asString(record.projectTitle) || firstCard?.title || "Официальные данные";
   const topic =
     asString(record.topic) ||
     (firstCard ? fallbackTopic(firstCard) : "Материалы базы знаний");
@@ -565,7 +597,7 @@ export function normalizeGeneratedArticle(
     noDataMessage:
       record.noData === true
         ? asString(record.noDataMessage) ||
-          "В канонических карточках нет достаточных сведений по запросу."
+          "В официальных данных нет достаточных сведений по запросу."
         : null,
     title: asString(record.title),
     lead: asString(record.lead),
@@ -599,6 +631,174 @@ export function buildNoDataDraft(params: {
   };
 }
 
+const metricUnitKeywords = [
+  "мест",
+  "студент",
+  "обучающ",
+  "преподавател",
+  "аспирант",
+  "сотрудник",
+  "процент",
+];
+
+export function selectUniversityMetricCards(
+  query: string,
+  cards: KnowledgeCard[]
+): UniversityCard[] | null {
+  const normalized = normalize(query);
+  const universitiesInQuery = universities.filter((university) => {
+    const shortName = normalize(university.shortName);
+    return (
+      ` ${normalized} `.includes(` ${shortName} `) ||
+      normalized.includes(normalize(university.fullName))
+    );
+  });
+  const hasExplicitUniversity = universitiesInQuery.length > 0;
+  const asksForPassport = /паспорт[а-я]*\s+(?:вуза|университета)/u.test(
+    normalized
+  );
+  const requestedUnits = metricUnitKeywords.filter((keyword) =>
+    normalized.split(" ").some((word) => word.startsWith(keyword))
+  );
+  const asksForMetrics =
+    /квот|численност|показател/u.test(normalized) ||
+    (requestedUnits.length > 0 &&
+      /сколько|количеств|число|статистик/u.test(normalized));
+  if (!asksForPassport && !(hasExplicitUniversity && asksForMetrics))
+    return null;
+
+  const years = new Set(
+    Array.from(normalized.matchAll(/\b(?:19|20|21)\d{2}\b/g), (match) =>
+      Number(match[0])
+    )
+  );
+  const wantsQuota = /квот/u.test(normalized);
+  const wantsPlan = /план|запланирован|будет|будут/u.test(normalized);
+  const wantsActual =
+    /фактическ|по факту/u.test(normalized) ||
+    normalized.split(" ").includes("факт");
+  const explicitMetric = query.match(
+    /показател[а-я]*\s+[«"]([^"»]+)["»]/iu
+  )?.[1];
+  const wantedIds = new Set(
+    universitiesInQuery.map((university) => university.id)
+  );
+
+  return cards
+    .map(getApprovedVersion)
+    .filter(
+      (card): card is UniversityCard =>
+        card?.type === "university" &&
+        (!hasExplicitUniversity || wantedIds.has(card.universityId))
+    )
+    .map((card) => ({
+      ...card,
+      structuredMetrics: (card.structuredMetrics ?? []).filter((metric) => {
+        const label = normalize(metric.label);
+        const unit = normalize(metric.unit);
+        return (
+          (years.size === 0 || years.has(metric.year)) &&
+          (!wantsPlan || wantsActual || metric.kind === "plan") &&
+          (!wantsActual || wantsPlan || metric.kind === "actual") &&
+          (!wantsQuota || label.includes("квот")) &&
+          (!explicitMetric || label === normalize(explicitMetric)) &&
+          (requestedUnits.length === 0 ||
+            requestedUnits.some(
+              (keyword) =>
+                unit.startsWith(keyword) ||
+                label.split(" ").some((word) => word.startsWith(keyword))
+            ))
+        );
+      }),
+    }));
+}
+
+function formatUniversityMetric(
+  card: UniversityCard,
+  metric: StructuredMetric
+): string {
+  const status = metric.kind === "plan" ? "план" : "факт";
+  const value = new Intl.NumberFormat("ru-RU", {
+    maximumFractionDigits: 12,
+  }).format(metric.value);
+  return `${getUniversityName(card.universityId)} за ${metric.year} год (${status}) — ${metric.label.toLowerCase()} составляет ${value} ${metric.unit}. [${card.id}]`;
+}
+
+const numeral =
+  /(?<![\p{L}\p{N}-])[-−+]?\d+(?:[   ]\d{3})*(?:[.,]\d+)?(?![\p{L}\p{N}])/gu;
+
+function numericClaims(text: string): string[] {
+  return (text.replace(/https?:\/\/[^\s)\]]+/gi, "").match(numeral) ?? []).map(
+    (value) =>
+      String(
+        Number(value.replace(/[   ]/g, "").replace(",", ".").replace("−", "-"))
+      )
+  );
+}
+
+export function isGroundedArticleText(
+  text: string,
+  cards: KnowledgeCard[]
+): boolean {
+  const evidence = cards
+    .filter((card) => card.type !== "custom")
+    .map((card) => {
+      const base = `${card.title}
+${card.referenceDescription}`;
+      if (card.type === "campus")
+        return [
+          base,
+          ...card.campusMetrics.map(
+            (metric) => `${metric.value} ${metric.note}`
+          ),
+          ...card.tariffs.map((tariff) => tariff.value),
+        ].join("\n");
+      if (card.type === "project")
+        return [base, ...card.confirmedFigures].join("\n");
+      if (card.type === "laboratory")
+        return [
+          base,
+          card.placementDetails,
+          ...card.equipment,
+          ...card.confirmedIndicators,
+        ].join("\n");
+      return [
+        base,
+        ...(card.structuredMetrics ?? []).map(
+          (metric) => `${metric.year}
+${metric.value}`
+        ),
+      ].join("\n");
+    })
+    .join("\n");
+  const allowed = new Set(numericClaims(evidence));
+  if (numericClaims(text).some((value) => !allowed.has(value))) return false;
+  return !checkFactText(text, cards).findings.some(
+    (finding) => finding.level === "red" || finding.level === "yellow"
+  );
+}
+
+export function groundGeneratedArticle(
+  candidate: GeneratedArticlePayload,
+  selectedCards: KnowledgeCard[]
+): string | null {
+  const ids = new Set(candidate.sourceCardIds);
+  const sources = selectedCards.filter((card) => ids.has(card.id));
+  const text = [
+    candidate.title,
+    candidate.lead,
+    ...candidate.sections.flatMap((section) => [
+      section.heading,
+      ...section.chunks.map((chunk) => chunk.content),
+    ]),
+  ].join("\n");
+  if (!isGroundedArticleText(text, sources))
+    return "Ответ модели содержит противоречие или факт без подтверждения. Черновик собран по утверждённым карточкам.";
+  if (candidate.lead.length > 1000)
+    return "Лид модели превышает 1000 знаков. Использован черновик по утверждённым карточкам.";
+  return null;
+}
+
 export function buildDeterministicArticleDraft(params: {
   query: string;
   selectedCards: KnowledgeCard[];
@@ -608,7 +808,7 @@ export function buildDeterministicArticleDraft(params: {
   const primary = params.selectedCards[0];
 
   if (!primary) {
-    throw new Error("Нет канонических карточек для сборки статьи");
+    throw new Error("Нет карточек официальных данных для сборки статьи");
   }
 
   const secondaryCards = params.selectedCards.slice(1, 3);
@@ -649,10 +849,6 @@ export function buildDeterministicArticleDraft(params: {
             ? `Проект «${primary.title}» является совместной разработкой ${participants} в контуре кампуса «Южный Урал». Вуз-инициатор — ${initiator}, соисполнители — ${primary.coExecutors.join(", ") || "участники консорциума"}, индустриальный партнёр — ${primary.industrialPartner}.`
             : `Инициатор разработки «${primary.title}» — ${initiator}${primary.coExecutors.length > 0 ? `, соисполнители — ${primary.coExecutors.join(", ")}` : ""}. Индустриальным партнёром выступает ${primary.industrialPartner}.`,
         },
-        {
-          id: "section-participants-chunk-2",
-          content: `Карточка проекта хранится в папке «${getFolderPathLabel(primary.folderId)}». Ограничение канона: ${primary.stopFormula}`,
-        },
       ],
     });
 
@@ -673,10 +869,11 @@ export function buildDeterministicArticleDraft(params: {
     });
   } else if (primary.type === "laboratory") {
     title = `${primary.title} (${primary.affiliation}): статус, оборудование и задачи`;
-    lead = `${primary.referenceDescription} Актуальный статус площадки: ${placementStatusLabels[primary.placementStatus].toLowerCase()} — ${primary.placementDetails}. Партнёр направления — ${primary.partner}.`.slice(
-      0,
-      990
-    );
+    lead =
+      `${primary.referenceDescription} Актуальный статус площадки: ${placementStatusLabels[primary.placementStatus].toLowerCase()} — ${primary.placementDetails}. Партнёр направления — ${primary.partner}.`.slice(
+        0,
+        990
+      );
 
     sections.push({
       id: "section-lab-status",
@@ -689,7 +886,7 @@ export function buildDeterministicArticleDraft(params: {
         },
         {
           id: "section-lab-status-chunk-2",
-          content: `Основные направления работ: ${primary.workDirections.join("; ")}. Используемое оборудование: ${primary.equipment.join("; ")}. Ограничение канона: ${primary.stopFormula}`,
+          content: `Основные направления работ: ${primary.workDirections.join("; ")}. Оборудование, указанное в официальных данных: ${primary.equipment.join("; ")}.`,
         },
       ],
     });
@@ -709,7 +906,7 @@ export function buildDeterministicArticleDraft(params: {
     }
   } else if (primary.type === "campus") {
     title =
-      "Кампус «Южный Урал» в Челябинске: канонические параметры, этапы ввода и 7 вузов-резидентов";
+      "Кампус «Южный Урал» в Челябинске: официальные параметры, этапы ввода и 7 вузов-резидентов";
     lead = primary.referenceDescription.slice(0, 990);
 
     sections.push({
@@ -720,7 +917,9 @@ export function buildDeterministicArticleDraft(params: {
         {
           id: "section-campus-metrics-chunk-1",
           content: primary.campusMetrics
-            .map((metric) => `${metric.label}: ${metric.value} (${metric.note})`)
+            .map(
+              (metric) => `${metric.label}: ${metric.value} (${metric.note})`
+            )
             .join(". "),
         },
         {
@@ -734,7 +933,7 @@ export function buildDeterministicArticleDraft(params: {
 
     sections.push({
       id: "section-campus-entities",
-      heading: "Юридические лица и стоп-лист частых искажений",
+      heading: "Организации и их роли",
       level: 2,
       chunks: [
         {
@@ -743,12 +942,42 @@ export function buildDeterministicArticleDraft(params: {
             .map((entity) => `${entity.name} — ${entity.role}`)
             .join(". "),
         },
-        {
-          id: "section-campus-entities-chunk-2",
-          content: `Ключевые запреты канона: ${primary.stopList.slice(0, 3).join(" ")}`,
-        },
       ],
     });
+  } else if (primary.type === "university") {
+    const universityCards = params.selectedCards.filter(
+      (card): card is UniversityCard => card.type === "university"
+    );
+    const allMetrics = universityCards.flatMap((card) =>
+      (card.structuredMetrics ?? []).map((metric) => ({ card, metric }))
+    );
+    const opening = allMetrics[0];
+    title =
+      universityCards.length > 1
+        ? "Показатели вузов-резидентов по паспортам"
+        : `${getUniversityName(primary.universityId)}: показатели по паспорту вуза`;
+    lead = opening
+      ? formatUniversityMetric(opening.card, opening.metric)
+      : `${getUniversityFullName(primary.universityId)}. Сведения о показателях в утверждённом паспорте отсутствуют. [${primary.id}]`;
+    for (const card of universityCards) {
+      const metrics = card.structuredMetrics ?? [];
+      sections.push({
+        id: `section-metrics-${card.universityId}`,
+        heading: `Показатели ${getUniversityName(card.universityId)} по годам`,
+        level: 2,
+        chunks: metrics.length
+          ? metrics.slice(0, 12).map((metric, index) => ({
+              id: `section-metrics-${card.universityId}-${index}`,
+              content: formatUniversityMetric(card, metric),
+            }))
+          : [
+              {
+                id: `section-metrics-${card.universityId}-empty`,
+                content: `Для ${getUniversityName(card.universityId)} подтверждённых показателей по запросу нет. [${card.id}]`,
+              },
+            ],
+      });
+    }
   } else {
     lead = (primary.referenceDescription || primary.title).slice(0, 990);
     sections.push({
@@ -760,21 +989,24 @@ export function buildDeterministicArticleDraft(params: {
           id: "section-custom-chunk-1",
           content:
             Object.entries(primary.customFields)
-              .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : String(v ?? "—")}`)
+              .map(
+                ([k, v]) =>
+                  `${k}: ${Array.isArray(v) ? v.join(", ") : String(v ?? "—")}`
+              )
               .join("; ") || primary.title,
         },
       ],
     });
   }
 
-  if (secondaryCards.length > 0) {
+  if (primary.type !== "university" && secondaryCards.length > 0) {
     sections.push({
       id: "section-related-context",
-      heading: "Связанные объекты и проекты канона",
+      heading: "Связанные объекты и проекты из официальных данных",
       level: 3,
       chunks: secondaryCards.map((card, index) => ({
         id: `section-related-chunk-${index + 1}`,
-        content: `${card.title}: ${card.referenceDescription}`,
+        content: `${card.title}: ${card.referenceDescription} [${card.id}]`,
       })),
     });
   }
@@ -782,13 +1014,29 @@ export function buildDeterministicArticleDraft(params: {
   if (params.referenceChunks.length > 0) {
     sections.push({
       id: "section-colleagues-context",
-      heading: "Опорный контекст из библиотеки «Готовые_статьи»",
+      heading: "Опорный контекст из библиотеки «Готовые статьи»",
       level: 3,
       chunks: params.referenceChunks.slice(0, 2).map((chunk, index) => ({
         id: `section-colleagues-chunk-${index + 1}`,
         content: `${chunk.content} (опора на материал «${chunk.articleTitle}»)`,
       })),
     });
+  }
+
+  if (primary.type !== "university") {
+    const citation = ` [${primary.id}]`;
+    lead = `${lead.slice(0, 1000 - citation.length)}${citation}`;
+    sections
+      .filter(
+        (section) =>
+          section.id !== "section-related-context" &&
+          section.id !== "section-colleagues-context"
+      )
+      .forEach((section) =>
+        section.chunks.forEach((chunk) => {
+          chunk.content += citation;
+        })
+      );
   }
 
   return generatedArticleSchema.parse({

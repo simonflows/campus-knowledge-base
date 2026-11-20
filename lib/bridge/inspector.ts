@@ -188,6 +188,7 @@ export function init() {
 
   return () => {
     clearSelectedElementHighlight();
+    setState({ active: false, hoveredElement: null, appearance: DEFAULT_APPEARANCE });
     window.removeEventListener("mousemove", handleMouseMove);
     window.removeEventListener("click", handleClick, true);
     window.removeEventListener("keydown", handleKeyDown);

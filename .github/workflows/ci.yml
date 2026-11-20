@@ -1,0 +1,120 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-gate:
+    name: Quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXT_PUBLIC_DEMO_MODE: "false"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Validate source and types
+        run: npm run check
+      - name: Validate backlog
+        run: npm run check:backlog
+      - name: Validate production Compose file
+        env:
+          CAMPUS_RELEASE_TAG: ci
+          CAMPUS_RUNTIME_ENV_FILE: /dev/null
+        run: docker compose --env-file /dev/null -f deploy/compose.prod.yml config --quiet
+      - name: Test production preflight
+        run: node --import tsx --test deploy/preflight.test.ts
+      - name: Run offline regressions
+        run: npm run test:offline
+      - name: Build pilot bundle
+        run: npm run build
+      - name: Install Chromium for the pilot fixture
+        run: npx --no-install playwright-core install --with-deps --no-shell chromium
+      - name: Run pilot fixture against fresh DynamoDB Local
+        env:
+          CAMPUS_QA_DISPOSABLE: "yes"
+          CAMPUS_QA_CHROME_CHANNEL: chromium
+          USE_DATABASE: "true"
+          DOCUMENT_API_ENDPOINT: http://127.0.0.1:8000
+          DOCUMENT_API_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: campusLocalTest
+          AWS_SECRET_ACCESS_KEY: localTestOnly
+        run: |
+          compose=(docker compose --env-file /dev/null -f deploy/compose.qa.yml)
+          trap '"${compose[@]}" rm --stop --force database' EXIT
+          "${compose[@]}" up --detach
+          for attempt in {1..30}; do
+            if curl --silent --output /dev/null --max-time 2 "$DOCUMENT_API_ENDPOINT"; then
+              break
+            fi
+            sleep 1
+          done
+          CAMPUS_QA_MARKER="$(npm run --silent qa:init-fixture)"
+          export CAMPUS_QA_MARKER
+          npm run check:deploy-storage
+          npm run test:fixture
+      - name: Verify the release image with disposable storage over HTTPS
+        env:
+          CAMPUS_QA_DISPOSABLE: "yes"
+          USE_DATABASE: "true"
+          DOCUMENT_API_ENDPOINT: http://127.0.0.1:8000
+          DOCUMENT_API_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: campusLocalTest
+          AWS_SECRET_ACCESS_KEY: localTestOnly
+        run: |
+          set -euo pipefail
+          export CAMPUS_RELEASE_TAG=ci
+          docker build --tag "campus-kb:$CAMPUS_RELEASE_TAG" .
+          umask 077
+          CAMPUS_QA_IMAGE_DIR="$(mktemp -d "$RUNNER_TEMP/canon-image.XXXXXX")"
+          CAMPUS_QA_RUNNER_USER="$(id -u):$(id -g)"
+          export CAMPUS_QA_IMAGE_DIR CAMPUS_QA_RUNNER_USER
+          export CAMPUS_RUNTIME_ENV_FILE="$CAMPUS_QA_IMAGE_DIR/runtime.env"
+          compose=(docker compose --env-file /dev/null --project-name canon-ci-image
+            -f deploy/compose.prod.yml -f deploy/compose.qa.yml -f deploy/compose.qa-image.yml)
+          cleanup() {
+            if [[ -f "$CAMPUS_RUNTIME_ENV_FILE" ]]; then
+              "${compose[@]}" rm --stop --force app qa-document-api database
+            fi
+            rm -f "$CAMPUS_QA_IMAGE_DIR"/{runtime.env,client.key,ca.key,ca.crt,tls.key,tls.csr,tls.crt}
+            rmdir "$CAMPUS_QA_IMAGE_DIR"
+          }
+          trap cleanup EXIT
+          openssl req -x509 -newkey rsa:2048 -noenc -days 1 -sha256 \
+            -subj '/CN=Disposable CI root' -addext 'basicConstraints=critical,CA:TRUE' \
+            -addext 'keyUsage=critical,keyCertSign' -keyout "$CAMPUS_QA_IMAGE_DIR/ca.key" -out "$CAMPUS_QA_IMAGE_DIR/ca.crt"
+          openssl req -new -newkey rsa:2048 -noenc -sha256 -subj '/CN=qa-document-api' \
+            -addext 'subjectAltName=DNS:qa-document-api' -addext 'basicConstraints=critical,CA:FALSE' \
+            -addext 'extendedKeyUsage=serverAuth' -addext 'keyUsage=critical,digitalSignature,keyEncipherment' \
+            -keyout "$CAMPUS_QA_IMAGE_DIR/tls.key" -out "$CAMPUS_QA_IMAGE_DIR/tls.csr"
+          openssl x509 -req -in "$CAMPUS_QA_IMAGE_DIR/tls.csr" -days 1 -sha256 -set_serial 1 \
+            -CA "$CAMPUS_QA_IMAGE_DIR/ca.crt" -CAkey "$CAMPUS_QA_IMAGE_DIR/ca.key" \
+            -copy_extensions copy \
+            -out "$CAMPUS_QA_IMAGE_DIR/tls.crt"
+          chmod 0444 "$CAMPUS_QA_IMAGE_DIR/ca.crt"
+          openssl verify -CAfile "$CAMPUS_QA_IMAGE_DIR/ca.crt" -purpose sslserver -verify_hostname qa-document-api "$CAMPUS_QA_IMAGE_DIR/tls.crt"
+          node scripts/qa-image-smoke.mjs prepare
+          "${compose[@]}" config --quiet
+          "${compose[@]}" up --detach database qa-document-api app
+          node scripts/qa-image-smoke.mjs empty
+          for attempt in {1..30}; do
+            if curl --silent --output /dev/null --max-time 2 "$DOCUMENT_API_ENDPOINT"; then break; fi
+            sleep 1
+          done
+          CAMPUS_QA_MARKER="$(npm run --silent qa:init-fixture)"
+          export CAMPUS_QA_MARKER
+          node scripts/qa-image-smoke.mjs verify

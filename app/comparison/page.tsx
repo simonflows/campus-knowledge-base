@@ -1,22 +1,31 @@
+import "../data-workspaces.css";
+
 import { ComparisonWorkspace } from "@/components/comparison/comparison-workspace";
-import { getAlibabaAiConfig } from "@/lib/alibaba-ai";
-import { getStorageMode } from "@/lib/db";
-import { getYandexAiConfig } from "@/lib/yandex-ai";
+import { isAlibabaAiConfigured } from "@/lib/alibaba-ai";
+import { getSessionUser, isAdminPinRequired } from "@/lib/auth-server";
+import { demoLoginEnabled } from "@/lib/pilot-auth";
+import { getComparisonStorageMode } from "@/lib/deploy-storage";
+import { StorageUnavailable } from "@/components/storage-unavailable";
+import { isYandexAiConfigured } from "@/lib/yandex-ai";
 
 export const dynamic = "force-dynamic";
 
 export default async function ComparisonPage() {
-  const [storageMode, yandexCfg, alibabaCfg] = await Promise.all([
-    getStorageMode(),
-    Promise.resolve(getYandexAiConfig()),
-    Promise.resolve(getAlibabaAiConfig()),
+  const [storageMode, user] = await Promise.all([
+    getComparisonStorageMode(),
+    getSessionUser(),
   ]);
+
+  if (!storageMode) return <StorageUnavailable title="Сравнение платформ" />;
 
   return (
     <ComparisonWorkspace
-      yandexConfigured={yandexCfg.configured}
-      alibabaConfigured={alibabaCfg.configured}
+      yandexConfigured={isYandexAiConfigured()}
+      alibabaConfigured={isAlibabaAiConfigured()}
       storageMode={storageMode}
+      canRunLive={
+        user?.role === "admin" && (!demoLoginEnabled() || isAdminPinRequired())
+      }
     />
   );
 }

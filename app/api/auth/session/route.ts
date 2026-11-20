@@ -7,7 +7,6 @@ import {
   getClientIp,
   getSessionUser,
   isAdminPinRequired,
-  LEGACY_SESSION_COOKIE,
   recordFailedLogin,
   SESSION_COOKIE,
   sessionCookieOptions,
@@ -15,6 +14,7 @@ import {
   verifyAdminPin,
   verifySameOrigin,
 } from "@/lib/auth-server";
+import { authenticatePilot, demoLoginEnabled, getSessionIdentity, pilotLoginReady } from "@/lib/pilot-auth";
 import { loginSchema } from "@/lib/validation/access";
 
 export async function GET() {
@@ -22,7 +22,8 @@ export async function GET() {
 
   return NextResponse.json({
     user,
-    adminPinRequired: isAdminPinRequired(),
+    adminPinRequired: demoLoginEnabled() && isAdminPinRequired(),
+    demoLogin: demoLoginEnabled(),
   });
 }
 
@@ -31,17 +32,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       { error: "Запрещён кросс-доменный запрос авторизации" },
       { status: 403 }
-    );
-  }
-
-  const clientKey = getClientIp(request);
-  const rate = checkLoginRateLimit(clientKey);
-  if (!rate.allowed) {
-    return NextResponse.json(
-      {
-        error: `Слишком много неверных попыток входа. Повторите через ${rate.retryAfterSeconds} сек.`,
-      },
-      { status: 429 }
     );
   }
 
@@ -68,35 +58,39 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const account = getDemoAccount(parsed.data.accountId);
-
-  if (!account) {
+  const demo = demoLoginEnabled();
+  if ((!demo && !pilotLoginReady()) || (process.env.NODE_ENV === "production" && (process.env.SESSION_SECRET?.length ?? 0) < 32)) {
+    return NextResponse.json({ error: "Вход временно недоступен. Обратитесь к администратору." }, { status: 503 });
+  }
+  const login = parsed.data.accountId;
+  const known = getSessionIdentity(demo ? login : "pilot-" + login);
+  const accountKey = known ? "account:" + known.user.id : "unknown-account";
+  const ip = getClientIp(request);
+  const keys = ip ? [accountKey, "ip:" + ip] : [accountKey];
+  const delay = Math.max(...keys.map((key) => checkLoginRateLimit(key).retryAfterSeconds));
+  if (delay) {
     return NextResponse.json(
-      { error: "Демонстрационный аккаунт не найден" },
-      { status: 404 }
+      { error: `Слишком много неверных попыток входа. Повторите через ${delay} сек.` },
+      { status: 429, headers: { "Retry-After": String(delay) } }
     );
   }
-
-  if (account.role === "admin" && isAdminPinRequired()) {
-    if (!verifyAdminPin(parsed.data.pin)) {
-      recordFailedLogin(clientKey);
-      return NextResponse.json(
-        {
-          error: parsed.data.pin
-            ? "Неверный ПИН-код администратора"
-            : "Для входа под Администратором канона требуется ПИН-код (ADMIN_ACCESS_PIN)",
-          requiresPin: true,
-        },
-        { status: 401 }
-      );
-    }
+  const demoAccount = demo ? getDemoAccount(parsed.data.accountId) : null;
+  const user = demoAccount ? toSessionUser(demoAccount) :
+    !demo ? authenticatePilot(parsed.data.accountId, parsed.data.accessKey) : null;
+  if (!user) {
+    keys.forEach(recordFailedLogin);
+    return NextResponse.json({ error: "Неверный логин или ключ доступа" }, { status: 401 });
+  }
+  if (demo && user.role === "admin" && isAdminPinRequired() && !verifyAdminPin(parsed.data.pin)) {
+    keys.forEach(recordFailedLogin);
+    return NextResponse.json({ error: "Введите ПИН-код администратора", requiresPin: true }, { status: 401 });
   }
 
-  clearLoginFailures(clientKey);
-  const response = NextResponse.json({ user: toSessionUser(account) });
+  clearLoginFailures(accountKey);
+  const response = NextResponse.json({ user }, { headers: { "Cache-Control": "private, no-store" } });
   response.cookies.set(
     SESSION_COOKIE,
-    signSessionToken(account.id),
+    signSessionToken(user.id),
     sessionCookieOptions
   );
 
@@ -116,11 +110,5 @@ export async function DELETE(request: NextRequest) {
     ...sessionCookieOptions,
     maxAge: 0,
   });
-  response.cookies.set(LEGACY_SESSION_COOKIE, "", {
-    ...sessionCookieOptions,
-    secure: true,
-    maxAge: 0,
-  });
-
   return response;
 }
