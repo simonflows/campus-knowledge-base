@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 import { POST } from "../app/api/auth/session/route";
 import { testIntegrationStatus } from "./test-integration-status";
 import { getClientIp, verifySameOrigin, checkLoginRateLimit, clearLoginFailures, recordFailedLogin, SESSION_COOKIE, SESSION_LIFETIME_SECONDS, signSessionToken, verifySessionToken } from "../lib/auth-server";
-import { demoAccounts, canEditCard } from "../lib/auth";
+import { demoAccounts, canEditCard, isCardOwner } from "../lib/auth";
 import { knowledgeSeedCards } from "../lib/knowledge";
 import { canReadLegacyArticle } from "../lib/editorial-models";
 import { publicArticle, articleSeed } from "../lib/articles";
@@ -52,6 +52,22 @@ async function main() {
     assert.equal(person.universityId, profile.universityId);
     assert.notEqual(person.id, profile.id);
   }
+  const sharedName = "QA Сотрудник";
+  const namesakeProfiles = ["demo-owner-csu", "demo-owner-susu"];
+  process.env.CAMPUS_PILOT_ACCOUNTS = JSON.stringify(fixture.rows.map(row =>
+    namesakeProfiles.includes(row.profile) ? { ...row, name: sharedName } : row
+  ));
+  const csuNamesake = fixture.account("demo-owner-csu");
+  const susuNamesake = fixture.account("demo-owner-susu");
+  assert.ok(isCardOwner(csuNamesake, [csuNamesake.ownershipLabel]));
+  assert.ok(!isCardOwner(susuNamesake, [csuNamesake.ownershipLabel]), "A qualified owner label belongs to the assigned university");
+  assert.ok(!isCardOwner(csuNamesake, [sharedName]), "A name shared across universities cannot identify an owner by itself");
+  assert.ok(!isCardOwner(susuNamesake, [sharedName]));
+  assert.ok(isCardOwner(csuNamesake, [demoAccounts.find(account => account.id === "demo-owner-csu")!.ownershipLabel]));
+  assert.ok(isCardOwner(fixture.account("demo-rio"), ["QA Сотрудник, АНО «РИОН»"]));
+  process.env.CAMPUS_PILOT_ACCOUNTS = JSON.stringify(fixture.rows);
+  const uniqueOwner = fixture.account("demo-owner-csu");
+  assert.ok(isCardOwner(uniqueOwner, [uniqueOwner.name]));
   const owner = fixture.account("demo-pr-midis");
   const key = fixture.keys.get("demo-pr-midis");
   assert.equal((await POST(request({ accountId: "qa-admin", accessKey: key }))).status, 401);
@@ -93,6 +109,20 @@ async function main() {
   assert.equal(demo.status, 200);
   const demoSession = demo.cookies.get(SESSION_COOKIE)!.value;
   assert.equal(verifySessionToken(demoSession), "demo-pr-midis");
+  // A newly required or rotated PIN must take effect for existing demo administrators.
+  process.env.ADMIN_ACCESS_PIN = "";
+  const beforePin = await POST(request({ accountId: "demo-admin" }));
+  assert.equal(beforePin.status, 200);
+  const unprotectedSession = beforePin.cookies.get(SESSION_COOKIE)!.value;
+  process.env.ADMIN_ACCESS_PIN = randomBytes(16).toString("hex");
+  assert.ok(verifySessionToken(unprotectedSession) === null, "Enabling a PIN must invalidate an existing demo admin session");
+  const withPin = await POST(request({ accountId: "demo-admin", pin: process.env.ADMIN_ACCESS_PIN }));
+  assert.equal(withPin.status, 200);
+  const protectedSession = withPin.cookies.get(SESSION_COOKIE)!.value;
+  assert.ok(verifySessionToken(protectedSession) === "demo-admin");
+  process.env.ADMIN_ACCESS_PIN = randomBytes(16).toString("hex");
+  assert.ok(verifySessionToken(protectedSession) === null, "Rotating the PIN must invalidate an existing demo admin session");
+  assert.ok(verifySessionToken(demoSession) === "demo-pr-midis");
   process.env.CAMPUS_DEMO_LOGIN = "false";
   assert.equal(verifySessionToken(demoSession), null);
   console.log("PASS production defaults, individual credentials, 7 universities, legacy ACL, 8h expiry, revocation, secure host cookie, explicit demo and origin checks on five mutations, scoped rate limits, public metadata and disabled production integration edits");

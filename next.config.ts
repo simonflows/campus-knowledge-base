@@ -51,10 +51,7 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   reactStrictMode: true,
-  typescript: {
-    ignoreBuildErrors: true,
-    ...(isFullLocalDemo && { tsconfigPath: "tsconfig.demo.json" }),
-  },
+  ...(isFullLocalDemo && { typescript: { tsconfigPath: "tsconfig.demo.json" } }),
   experimental: {
     serverSourceMaps: false,
     turbopackSourceMaps: false,

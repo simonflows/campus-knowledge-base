@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import { universities } from "@/lib/data";
 import type { SessionUser } from "@/lib/auth";
 import {
@@ -155,7 +156,7 @@ export function KnowledgeCardForm({
     Record<string, CustomFieldValue>
   >(customCard?.customFields ?? {});
   const [title, setTitle] = useState(initialCard?.title ?? "");
-  const [owners, setOwners] = useState(initialCard?.owners.join(", ") ?? "");
+  const [owners, setOwners] = useState(initialCard?.owners.join("\n") ?? "");
   const [folderId, setFolderId] = useState(
     initialCard?.folderId ??
       (defaultFolderId &&
@@ -489,7 +490,7 @@ export function KnowledgeCardForm({
               : isJoint
                 ? folderIds.joint
                 : folderId,
-      owners: splitList(owners),
+      owners: splitLines(owners),
       referenceDescription,
       stopFormula,
     };
@@ -746,19 +747,21 @@ export function KnowledgeCardForm({
               <label className="text-sm font-medium" htmlFor="card-owners">
                 Владельцы карточки
               </label>
-              <Input
+              <Textarea
                 id="card-owners"
+                aria-describedby="card-owners-hint"
+                rows={2}
                 value={owners}
                 onChange={(event) => setOwners(event.target.value)}
-                placeholder="Имя, вуз или организация; через запятую"
+                placeholder="Имя, вуз или название организации"
                 disabled={isEdit && currentUser?.role !== "admin"}
                 required
               />
-              {isEdit && currentUser?.role !== "admin" ? (
-                <p className="text-[11px] text-muted-foreground">
-                  Владельцев карточки меняет только координатор.
-                </p>
-              ) : null}
+              <p id="card-owners-hint" className="text-[11px] text-muted-foreground">
+                {isEdit && currentUser?.role !== "admin"
+                  ? "Владельцев карточки меняет только координатор"
+                  : "Укажите каждого владельца с новой строки"}
+              </p>
             </div>
 
             {type === "custom" ? (

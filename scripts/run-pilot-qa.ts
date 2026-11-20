@@ -7,6 +7,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { requireFixtureDatabase } from "./qa-fixture";
 import { installPilotFixture } from "./pilot-fixture";
+import { knowledgeSeedCards } from "../lib/knowledge";
 import { runEditorialRoutes } from "./test-editorial-routes";
 import runRequestBrowserChecks from "./requests-browser-check";
 
@@ -42,14 +43,46 @@ async function main() {
     }
     assert.ok(ready, "Isolated production server not ready");
     await runEditorialRoutes(credentials);
-    const staff = credentials("demo-pr-midis");
-    const benchmark = spawn(process.execPath, ["--import", "tsx", "scripts/test-benchmark-pilot.ts", "--http"], {
-      env: { ...env, CAMPUS_BENCHMARK_HTTP_ORIGIN: base, CAMPUS_BENCHMARK_HTTP_ACCOUNT: staff.accountId, CAMPUS_BENCHMARK_HTTP_ACCESS_KEY: staff.accessKey },
-      stdio: "inherit", windowsHide: true,
-    });
-    assert.equal((await once(benchmark, "exit"))[0], 0, "Benchmark HTTP checks failed");
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
+      const analyticsPage = await browser.newPage({ reducedMotion: "reduce" });
+      await analyticsPage.goto(base + "/analytics");
+      await analyticsPage.getByRole("button", { name: /Собери все проекты взаимодействия/ }).click();
+      await analyticsPage.getByRole("button", { name: "Собрать аналитику", exact: true }).click();
+      const metrics = analyticsPage.locator(".data-report-metrics");
+      await metrics.waitFor();
+      const visibleMetrics = await metrics.locator("dd").evaluateAll(cells => cells.map(cell => {
+        const value = cell.firstElementChild!.getBoundingClientRect();
+        const track = cell.querySelector("[aria-hidden='true']")!.getBoundingClientRect();
+        return value.height > track.height && value.bottom <= track.top;
+      }));
+      assert.deepEqual(visibleMetrics, [true, true, true, true], "Analytics figures must stand above their tracks");
+      await analyticsPage.close();
+      console.log("PASS analytics numbers are separate from progress tracks");
+
+      const ownerFormPage = await browser.newPage();
+      await ownerFormPage.goto(base + "/login");
+      const coordinator = credentials("demo-admin");
+      await ownerFormPage.getByLabel("Логин", { exact: true }).fill(coordinator.accountId);
+      await ownerFormPage.getByLabel("Персональный ключ").fill(coordinator.accessKey);
+      await ownerFormPage.getByRole("button", { name: "Войти", exact: true }).last().click();
+      await ownerFormPage.waitForURL("**/knowledge");
+      const project = knowledgeSeedCards.find(card => card.id === "project-susu-digital-twin")!;
+      await ownerFormPage.goto(base + "/knowledge?card=" + project.id);
+      await ownerFormPage.getByRole("button", { name: "Редактировать карточку", exact: true }).click();
+      const [update] = await Promise.all([
+        ownerFormPage.waitForResponse(response =>
+          response.request().method() === "PUT" &&
+          new URL(response.url()).pathname === "/api/knowledge/cards/" + project.id
+        ),
+        ownerFormPage.getByRole("button", { name: "Сохранить изменения", exact: true }).click(),
+      ]);
+      assert.equal(update.status(), 200);
+      const submitted = update.request().postDataJSON() as { owners: string[] };
+      assert.deepEqual(submitted.owners, project.owners, "Each owner name must retain its organization");
+      await ownerFormPage.close();
+      console.log("PASS card edit preserves existing owner identities");
+
       const page = await browser.newPage();
       await page.goto(base + "/login#" + marker);
       await page.getByRole("heading", { name: "Вход в справочник кампуса" }).waitFor();
@@ -65,6 +98,12 @@ async function main() {
       assert.equal(JSON.parse(results).passed, true);
       console.log("PASS personal login form, secure browser session, requests privacy, final moderation, mobile requests page");
     } finally { await browser.close(); }
+    const staff = credentials("demo-pr-midis");
+    const benchmark = spawn(process.execPath, ["--import", "tsx", "scripts/test-benchmark-pilot.ts", "--http"], {
+      env: { ...env, CAMPUS_BENCHMARK_HTTP_ORIGIN: base, CAMPUS_BENCHMARK_HTTP_ACCOUNT: staff.accountId, CAMPUS_BENCHMARK_HTTP_ACCESS_KEY: staff.accessKey },
+      stdio: "inherit", windowsHide: true,
+    });
+    assert.equal((await once(benchmark, "exit"))[0], 0, "Benchmark HTTP checks failed");
   } finally { next.kill(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

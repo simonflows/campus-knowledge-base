@@ -5,7 +5,7 @@ export function sanitizeTextForDisplay(text: string): string {
       "[контакт скрыт]"
     )
     .replace(
-      /(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}/g,
+      /(?<!\d)(?:\+7|8)[\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2}(?!\d)/g,
       "[контакт скрыт]"
     );
 }

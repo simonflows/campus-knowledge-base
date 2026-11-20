@@ -88,21 +88,34 @@ export async function listInformationRequests(user: SessionUser) {
   };
   return Promise.all(items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(item => presentRequestFor(user, item, readCard)));
 }
+function replayCreation(
+  item: InformationRequest | undefined,
+  authorId: string,
+  creationDigest: string
+) {
+  if (item?.creationDigest === creationDigest && item.authorId === authorId)
+    return item;
+  throw new RequestError("Повторный запрос изменён: обновите форму", 409);
+}
+
 export async function createInformationRequest(
   user: SessionUser,
   input: z.infer<typeof createInformationRequestSchema>
 ) {
-  if (input.recipientUniversityId === user.universityId)
-    throw new RequestError("Выберите другой вуз-получатель", 400);
   if (user.role === "guest")
     throw new RequestError("Гостям недоступна отправка запросов", 403);
+  const id = digest([user.id, input.operationId]);
+  const creationDigest = digest(input);
+  const existing = await getInformationRequest(id);
+  if (existing) return replayCreation(existing, user.id, creationDigest);
+
+  if (input.recipientUniversityId === user.universityId)
+    throw new RequestError("Выберите другой вуз-получатель", 400);
   if (input.linkedCardId) {
     const card = await getKnowledgeCardById(input.linkedCardId);
     if (!card || (!canSeeCard(user, card) && !getApprovedVersion(card)))
       throw new RequestError("Карточка недоступна", 404);
   }
-  const id = digest([user.id, input.operationId]);
-  const creationDigest = digest(input);
   const now = new Date().toISOString();
   const item: InformationRequest = {
     id,
@@ -137,13 +150,7 @@ export async function createInformationRequest(
   } catch (error) {
     if ((error as Error).name !== "ConditionalCheckFailedException")
       throw error;
-    const existing = await getInformationRequest(id);
-    if (
-      existing?.creationDigest === creationDigest &&
-      existing.authorId === user.id
-    )
-      return existing;
-    throw new RequestError("Повторный запрос изменён: обновите форму", 409);
+    return replayCreation(await getInformationRequest(id), user.id, creationDigest);
   }
 }
 export async function mutateInformationRequest(
@@ -196,7 +203,7 @@ export async function mutateInformationRequest(
           (account) =>
             account.role === "university_owner" &&
             account.universityId === item.recipientUniversityId
-        )?.name ?? item.recipientUniversityId,
+        )?.ownershipLabel ?? item.recipientUniversityId,
       ],
       referenceDescription: `${item.answer}\nИсточник: ${item.evidenceUrl}`,
       stopFormula:

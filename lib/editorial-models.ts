@@ -58,8 +58,7 @@ export async function listEditorial(user: SessionUser) {
     .filter((doc) => canReadEditorial(user, doc))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
-export async function getEditorial(id: string, user: SessionUser) {
-  await available();
+async function getReadableEditorialHead(id: string, user: SessionUser) {
   const { Item } = await docClient.send(
     new GetCommand({
       TableName: TableName.EDITORIAL_DOCUMENTS,
@@ -70,27 +69,46 @@ export async function getEditorial(id: string, user: SessionUser) {
   const doc = Item as EditorialDocument | undefined;
   if (!doc || !canReadEditorial(user, doc))
     throw new EditorialError("Черновик не найден", 404);
-  const events = await scan<{
-    kind?: string;
-    documentId: string;
-    event?: EditorialEvent;
-  }>(TableName.EDITORIAL_REVISIONS);
-  const combined = new Map(doc.events.map((item) => [item.id, item]));
-  events
-    .filter(
-      (item) => item.kind === "event" && item.documentId === id && item.event
-    )
-    .forEach((item) => combined.set(item.event!.id, item.event!));
-  return {
-    ...doc,
-    events: [...combined.values()].sort((a, b) => a.at.localeCompare(b.at)),
-  };
+  return doc;
+}
+
+export async function getEditorial(id: string, user: SessionUser) {
+  await available();
+  let doc = await getReadableEditorialHead(id, user);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const events = await scan<{
+      kind?: string;
+      documentId: string;
+      event?: EditorialEvent;
+    }>(TableName.EDITORIAL_REVISIONS);
+    // A consistent scan can still see events committed after the first read.
+    const latest = await getReadableEditorialHead(id, user);
+    if (latest.version !== doc.version) {
+      doc = latest;
+      continue;
+    }
+
+    const combined = new Map(doc.events.map((item) => [item.id, item]));
+    for (const item of events) {
+      if (item.kind === "event" && item.documentId === id && item.event)
+        combined.set(item.event.id, item.event);
+    }
+    return {
+      ...doc,
+      events: [...combined.values()].sort((a, b) => a.at.localeCompare(b.at)),
+    };
+  }
+  throw new EditorialError("Черновик сейчас изменяется. Повторите запрос.", 409);
 }
 export async function getEditorialRevisions(doc: EditorialDocument, user: SessionUser) {
   if (!canReadEditorial(user, doc)) throw new EditorialError("Черновик не найден", 404);
   return (await scan<EditorialRevision>(TableName.EDITORIAL_REVISIONS))
     .filter(
-      (r) => r.documentId === doc.id && !("kind" in r && r.kind === "event") && (doc.ownerId === user.id || r.id === doc.submittedRevisionId)
+      (r) =>
+        r.documentId === doc.id &&
+        !("kind" in r && r.kind === "event") &&
+        r.number <= doc.version &&
+        (doc.ownerId === user.id || r.id === doc.submittedRevisionId)
     )
     .sort((a, b) => b.number - a.number);
 }

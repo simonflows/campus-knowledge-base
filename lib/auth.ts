@@ -367,7 +367,7 @@ export function toSessionUser(account: DemoAccount): SessionUser {
   };
 }
 
-function normalize(value: string): string {
+export function normalizeOwnerLabel(value: string): string {
   return value.toLowerCase().replace(/[«»"]/g, "").replace(/\s+/g, " ").trim();
 }
 
@@ -377,12 +377,20 @@ export function isCardOwner(
 ): boolean {
   if (!user) return false;
 
-  const normalizedOwners = new Set(owners.flatMap((owner) => [normalize(owner), ...owner.split(",").map(normalize)]));
-  const aliases = [...user.ownerAliases, ...user.organizationAliases]
-    .map(normalize)
-    .filter(Boolean);
-
-  return aliases.some((alias) => normalizedOwners.has(alias));
+  const people = new Set(user.ownerAliases.map(normalizeOwnerLabel));
+  const organizations = new Set(user.organizationAliases.map(normalizeOwnerLabel));
+  const ownOrganization = normalizeOwnerLabel(user.organization);
+  return owners.some((owner) => {
+    const label = normalizeOwnerLabel(owner);
+    const separator = label.lastIndexOf(",");
+    if (separator < 0) return people.has(label) || organizations.has(label);
+    const name = label.slice(0, separator).trim();
+    const organization = label.slice(separator + 1).trim();
+    return organizations.has(organization) || (
+      organization === ownOrganization &&
+      (people.has(name) || people.has(name + ", " + organization))
+    );
+  });
 }
 
 export function canManageTypes(user: SessionUser | null): boolean {

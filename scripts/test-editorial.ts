@@ -1,7 +1,15 @@
 import { requireFixtureDatabase } from "./qa-fixture";
 import assert from "node:assert/strict";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { docClient } from "../lib/db";
+import { TableName } from "../lib/schema";
 import { installPilotFixture } from "./pilot-fixture";
 import { canReadEditorial, editorialContentSchema, EditorialError } from "../lib/editorial";
+import {
+  readEditorialRecovery,
+  RECOVERY_PREFIX,
+  saveEditorialRecovery,
+} from "../lib/editorial-recovery";
 import {
   createEditorial,
   getEditorial,
@@ -12,7 +20,96 @@ import {
 import { getAllArticles, ensureKnowledgeSeed } from "../lib/models";
 import { articleSeed } from "../lib/articles";
 import { knowledgeSeedCards } from "../lib/knowledge";
+function testLocalRecovery() {
+  const record = {
+    ownerId: "qa-owner",
+    documentId: "qa-draft",
+    version: 3,
+    savedAt: Date.now(),
+    content: editorialContentSchema.parse({ title: "Текст для восстановления" }),
+  };
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const storage = Object.assign(
+    Object.create({
+      getItem(this: Record<string, string>, key: string) {
+        return this[key] ?? null;
+      },
+      setItem(this: Record<string, string>, key: string, value: string) {
+        this[key] = value;
+      },
+      removeItem(this: Record<string, string>, key: string) {
+        delete this[key];
+      },
+    }),
+    {
+      [RECOVERY_PREFIX + "qa-owner:invalid"]: '{"ownerId":',
+      [RECOVERY_PREFIX + "qa-owner:qa-draft"]: JSON.stringify(record),
+    }
+  );
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  try {
+    assert.deepEqual(
+      readEditorialRecovery(record.ownerId),
+      [record],
+      "A malformed entry must not hide the owner's intact recovery copy"
+    );
+    const manyParagraphs = {
+      ...record.content,
+      sections: Array.from({ length: 3 }, (_, section) => ({
+        id: `section-${section}`,
+        heading: "Раздел",
+        level: 2 as const,
+        chunks: Array.from({ length: 12 }, (_, chunk) => ({
+          id: `chunk-${section}-${chunk}`,
+          content: "я".repeat(4000),
+        })),
+      })),
+    };
+    const longParagraph = {
+      ...record.content,
+      sections: [{
+        id: "section",
+        heading: "Раздел",
+        level: 2 as const,
+        chunks: [{ id: "chunk", content: "я".repeat(4001) }],
+      }],
+    };
+    const manySources = {
+      ...record.content,
+      sourceCardIds: Array.from({ length: 101 }, (_, index) => `card-${index}`),
+      sourceCardTitles: Array.from({ length: 101 }, (_, index) => `Источник ${index}`),
+    };
+    const largeCopies = [
+      ["many-paragraphs", manyParagraphs],
+      ["long-paragraph", longParagraph],
+      ["many-sources", manySources],
+    ] as const;
+    for (const [documentId, content] of largeCopies) {
+      assert.equal(editorialContentSchema.safeParse(content).success, false);
+      assert.ok(saveEditorialRecovery(record.ownerId, documentId, 1, content));
+    }
+    const copies = readEditorialRecovery(record.ownerId);
+    assert.deepEqual(
+      largeCopies.map(([id]) => copies.some(({ documentId }) => documentId === id)),
+      largeCopies.map(() => true),
+      "The browser must retain copies when server limits are exceeded"
+    );
+    for (const [documentId, content] of largeCopies)
+      assert.deepEqual(copies.find((entry) => entry.documentId === documentId)?.content, content);
+    const invalidCopy = {
+      ...record.content,
+      sections: [{ id: "", heading: "Новый раздел", level: 2 as const, chunks: [] }],
+    };
+    assert.equal(saveEditorialRecovery(record.ownerId, record.documentId, 4, invalidCopy), false);
+    assert.equal(readEditorialRecovery(record.ownerId).find(copy => copy.documentId === record.documentId)?.version, 3);
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+}
+
 async function main() {
+  testLocalRecovery();
   await requireFixtureDatabase();
   const fixture = installPilotFixture();
   const owner = fixture.account("demo-pr-midis");
@@ -39,6 +136,34 @@ async function main() {
     version: doc.version,
     content,
   });
+  // Model a commit between loading the head and scanning its events.
+  const originalSend = docClient.send;
+  let staleRead = true;
+  docClient.send = function (this: typeof docClient, ...args: unknown[]) {
+    const command = args[0];
+    if (
+      staleRead &&
+      command instanceof GetCommand &&
+      command.input.TableName === TableName.EDITORIAL_DOCUMENTS &&
+      command.input.Key?.id === doc.id
+    ) {
+      staleRead = false;
+      return Promise.resolve({ Item: doc });
+    }
+    return Reflect.apply(originalSend, this, args);
+  } as typeof docClient.send;
+  try {
+    const consistent = await getEditorial(doc.id, owner);
+    assert.equal(consistent.version, saved.document.version, "The event history and head must reflect the same version");
+    assert.deepEqual(consistent.events, saved.document.events);
+  } finally {
+    docClient.send = originalSend;
+  }
+  assert.deepEqual(
+    (await getEditorialRevisions(doc, owner)).map(({ id }) => id),
+    [doc.revisionId],
+    "History for a previously read draft must exclude revisions committed afterwards"
+  );
   await assert.rejects(
     mutateEditorial(doc.id, owner, {
       action: "save",
@@ -249,6 +374,26 @@ async function main() {
     }),
     (e: unknown) => e instanceof EditorialError && e.status === 403
   );
+  const concurrent = await createEditorial(owner, { content, channel: "Оригинал" });
+  const contenders = await Promise.allSettled(
+    ["Первая вкладка", "Вторая вкладка"].map((title) =>
+      mutateEditorial(concurrent.id, owner, {
+        action: "save",
+        version: concurrent.version,
+        content: { ...content, title },
+      })
+    )
+  );
+  const winner = contenders.find((result) => result.status === "fulfilled");
+  const loser = contenders.find((result) => result.status === "rejected");
+  assert.ok(winner?.status === "fulfilled" && loser?.status === "rejected");
+  assert.ok(loser.reason instanceof EditorialError && loser.reason.status === 409);
+  const latest = await getEditorial(concurrent.id, owner);
+  assert.equal(latest.version, concurrent.version + 1);
+  assert.equal(latest.content.title, winner.value.document.content.title);
+  assert.equal((await getEditorialRevisions(latest, owner)).length, 2);
+  assert.equal(latest.events.filter(({ action }) => action === "saved").length, 1);
+  console.log("PASS local recovery skips malformed entries, history respects the read version, concurrent saves commit only one edit");
   console.log(
     "PASS: durable incomplete draft, ownership, private drafts, revision conflict, submission, role gate, return/comment, approval projection, unpublished edit isolation, restore, grouped channel variant, red approval block"
   );

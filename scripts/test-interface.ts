@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { test } from "node:test";
 import {
   searchKnowledgeCards,
   getSearchFragment,
@@ -75,3 +76,25 @@ assert.equal(
 console.log(
   "UI regression: search metrics, matching fragments, ACL scope, exact single replacement passed"
 );
+
+test("Search excerpts show a match after repeated whitespace", () => {
+  const card = {
+    ...passport,
+    referenceDescription: `${"Раздел          ".repeat(35)}Контур   12 000 утверждён.`,
+  };
+  const query = "контур 12000";
+  assert.equal(searchKnowledgeCards([card], query)[0]?.id, card.id);
+  assert.match(getSearchFragment(card, query), /Контур   12 000/);
+});
+
+test("Home search excerpts show a match when the first word is in another field", () => {
+  const card = {
+    ...passport,
+    title: "Архив проекта",
+    referenceDescription: `${"Историческая справка. ".repeat(16)}Модуль предназначен для роботов.`,
+  };
+  const [result] = findHomeCards([card], "архив модуль роботов", null);
+  assert.equal(result?.title, card.title);
+  assert.ok(result.detail);
+  assert.match(result.detail, /Модуль предназначен для роботов/);
+});

@@ -27,6 +27,11 @@ import {
   type ProjectCard,
   type UniversityCard,
 } from "../lib/knowledge";
+import {
+  callYandexAiWithUsage,
+  type YandexAiMessage,
+  YandexAiError,
+} from "../lib/yandex-ai";
 
 const realProject = knowledgeSeedCards.find(
   (card): card is ProjectCard =>
@@ -135,6 +140,21 @@ test("Benchmark uses three reproducible public inputs and recognises scenario-sp
   assert.ok(analytics.structure.every((check) => check.passed));
 });
 
+test("Benchmark preserves numeric codes and still hides standalone phone numbers", () => {
+  const { output } = assessBenchmarkOutput(
+    "article",
+    JSON.stringify({
+      title: "Тестовая публикация",
+      lead: "Коды образцов: 8000000000123 и 1280000000000. Телефоны: +7 (000) 000-00-00, 8 (000) 000-00-00.",
+      sections: [],
+      sources: [],
+    })
+  );
+  assert.ok(output);
+  assert.match(output, /Коды образцов: 8000000000123 и 1280000000000\./);
+  assert.match(output, /Телефоны: \[контакт скрыт\], \[контакт скрыт\]\./);
+});
+
 test("Legacy editor requests for Alibaba return to local assembly without external traffic", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -155,6 +175,211 @@ test("Legacy editor requests for Alibaba return to local assembly without extern
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("Yandex AI uses the configured model's completion protocol", async (t) => {
+  const flashModel = "gpt://test-folder/aliceai-llm-flash";
+  const messages: YandexAiMessage[] = [
+    { role: "system", text: "Test system instruction" },
+    { role: "user", text: "Test article request" },
+  ];
+  process.env.YANDEX_AI_STUDIO_API_KEY = "test-key";
+  process.env.YANDEX_AI_STUDIO_FOLDER_ID = "test-folder";
+  t.after(() => {
+    delete process.env.YANDEX_AI_STUDIO_API_KEY;
+    delete process.env.YANDEX_AI_STUDIO_FOLDER_ID;
+    delete process.env.YANDEX_AI_STUDIO_MODEL_URI;
+  });
+
+  await t.test(
+    "retains the default Foundation request and token counts",
+    async (t) => {
+      delete process.env.YANDEX_AI_STUDIO_MODEL_URI;
+      const fetch = t.mock.method(globalThis, "fetch", async () =>
+        Response.json({
+          result: {
+            alternatives: [
+              {
+                status: "ALTERNATIVE_STATUS_FINAL",
+                message: { text: " Result " },
+              },
+            ],
+            usage: { inputTextTokens: "11", completionTokens: "7" },
+          },
+        })
+      );
+
+      assert.deepEqual(await callYandexAiWithUsage(messages), {
+        text: "Result",
+        usage: { inputTokens: 11, outputTokens: 7 },
+      });
+      const [url, init] = fetch.mock.calls[0].arguments;
+      assert.equal(
+        url,
+        "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+      );
+      assert.equal(init?.method, "POST");
+      assert.equal(
+        new Headers(init?.headers).get("Authorization"),
+        "Api-Key test-key"
+      );
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        modelUri: "gpt://test-folder/yandexgpt/latest",
+        completionOptions: {
+          stream: false,
+          temperature: 0.05,
+          maxTokens: "4000",
+        },
+        messages,
+      });
+    }
+  );
+
+  await t.test(
+    "uses Chat Completions for Flash and reads its text and usage",
+    async (t) => {
+      process.env.YANDEX_AI_STUDIO_MODEL_URI = flashModel;
+      const fetch = t.mock.method(globalThis, "fetch", async () =>
+        Response.json({
+          choices: [
+            { finish_reason: "stop", message: { content: " Flash result " } },
+          ],
+          usage: { prompt_tokens: 17, completion_tokens: 3 },
+        })
+      );
+
+      assert.deepEqual(
+        await callYandexAiWithUsage(messages, {
+          maxTokens: 1200,
+          temperature: 0,
+        }),
+        { text: "Flash result", usage: { inputTokens: 17, outputTokens: 3 } }
+      );
+      assert.equal(fetch.mock.callCount(), 1);
+      const [url, init] = fetch.mock.calls[0].arguments;
+      assert.equal(url, "https://ai.api.cloud.yandex.net/v1/chat/completions");
+      assert.equal(init?.method, "POST");
+      assert.ok(init?.signal instanceof AbortSignal);
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("Authorization"), "Api-Key test-key");
+      assert.equal(headers.get("Content-Type"), "application/json");
+      assert.equal(headers.get("x-data-logging-enabled"), "false");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        model: flashModel,
+        messages: [
+          { role: "system", content: "Test system instruction" },
+          { role: "user", content: "Test article request" },
+        ],
+        stream: false,
+        temperature: 0,
+        max_completion_tokens: 1200,
+      });
+
+      const execution = await runWithAiProvider(messages, "yandex");
+      assert.equal(execution.provider, "yandex");
+      assert.equal(execution.text, "Flash result");
+      assert.equal(
+        execution.modelLabel,
+        "Yandex AI Studio (aliceai-llm-flash)"
+      );
+    }
+  );
+
+  await t.test(
+    "uses local assembly after a Flash answer is truncated",
+    async (t) => {
+      process.env.YANDEX_AI_STUDIO_MODEL_URI = flashModel;
+      t.mock.method(globalThis, "fetch", async () =>
+        Response.json({
+          choices: [
+            {
+              finish_reason: "length",
+              message: { content: "Partial article" },
+            },
+          ],
+        })
+      );
+
+      const execution = await runWithAiProvider(messages, "auto");
+      assert.equal(execution.provider, "canonical");
+      assert.equal(execution.text, null);
+      assert.match(execution.fallbackReason ?? "", /незавершённый ответ/);
+    }
+  );
+
+  await t.test(
+    "rejects an incomplete Foundation answer from a custom model URI",
+    async (t) => {
+      process.env.YANDEX_AI_STUDIO_MODEL_URI =
+        "gpt://test-folder/yandexgpt-lite/rc";
+      const fetch = t.mock.method(globalThis, "fetch", async () =>
+        Response.json({
+          result: {
+            alternatives: [
+              {
+                status: "ALTERNATIVE_STATUS_TRUNCATED_FINAL",
+                message: { text: "Partial article" },
+              },
+            ],
+          },
+        })
+      );
+
+      await assert.rejects(callYandexAiWithUsage(messages), YandexAiError);
+      const [url, init] = fetch.mock.calls[0].arguments;
+      assert.equal(
+        url,
+        "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+      );
+      assert.equal(
+        JSON.parse(String(init?.body)).modelUri,
+        "gpt://test-folder/yandexgpt-lite/rc"
+      );
+    }
+  );
+
+  await t.test(
+    "rejects empty and malformed Flash responses safely",
+    async (t) => {
+      process.env.YANDEX_AI_STUDIO_MODEL_URI = flashModel;
+      const responses = [
+        Response.json({
+          choices: [{ finish_reason: "stop", message: { content: " " } }],
+        }),
+        Response.json({
+          choices: [{ finish_reason: "stop", message: { content: 42 } }],
+        }),
+        new Response("Invalid JSON"),
+      ];
+      t.mock.method(globalThis, "fetch", async () => responses.shift());
+
+      for (let index = 0; index < 3; index++) {
+        await assert.rejects(callYandexAiWithUsage(messages), YandexAiError);
+      }
+    }
+  );
+
+  await t.test(
+    "keeps the HTTP status and hides the Flash error body",
+    async (t) => {
+      process.env.YANDEX_AI_STUDIO_MODEL_URI = flashModel;
+      t.mock.method(
+        globalThis,
+        "fetch",
+        async () => new Response("Provider detail", { status: 429 })
+      );
+
+      await assert.rejects(
+        callYandexAiWithUsage(messages),
+        (error: unknown) => {
+          assert.ok(error instanceof YandexAiError);
+          assert.equal(error.status, 429);
+          assert.doesNotMatch(error.message, /Provider detail/);
+          return true;
+        }
+      );
+    }
+  );
 });
 
 test("Analytics uses published revisions, filters projects with partners, and links to the published card", () => {

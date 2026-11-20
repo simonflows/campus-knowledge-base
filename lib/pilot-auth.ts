@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { demoAccounts, getDemoAccount, toSessionUser, type SessionUser } from "./auth";
+import { demoAccounts, getDemoAccount, normalizeOwnerLabel, toSessionUser, type SessionUser } from "./auth";
 
 export function demoLoginEnabled() {
   return process.env.CAMPUS_DEMO_LOGIN === "true";
@@ -17,14 +17,33 @@ function pilotDirectory() {
   try {
     const rows = pilotDirectorySchema.parse(JSON.parse(process.env.CAMPUS_PILOT_ACCOUNTS || "[]"));
     if (new Set(rows.map(row => row.login)).size !== rows.length || new Set(rows.map(row => row.keyHash)).size !== rows.length) return [];
+    // Old cards can identify a person by name alone. Require their organization
+    // when the personal directory and legacy profiles assign that name to different organizations.
+    const organizationsByName = new Map<string, Set<string>>();
+    function registerName(name: string, organization: string) {
+      const label = normalizeOwnerLabel(name);
+      const organizations = organizationsByName.get(label) ?? new Set<string>();
+      organizations.add(organization);
+      organizationsByName.set(label, organizations);
+    }
+    for (const profile of demoAccounts) {
+      for (const name of [...profile.ownerAliases, ...profile.organizationAliases]) registerName(name, profile.organization);
+    }
+    for (const row of rows) {
+      const profile = getDemoAccount(row.profile)!;
+      if (profile.ownerAliases.length) registerName(row.name, profile.organization);
+    }
     return rows.map(row => {
       const profile = toSessionUser(getDemoAccount(row.profile)!);
+      const names = profile.ownerAliases.length ? new Set([...profile.ownerAliases, row.name]) : [];
       const user: SessionUser = {
         ...profile,
         id: "pilot-" + row.login,
         name: row.name,
         ownershipLabel: row.name + ", " + profile.organization,
-        ownerAliases: profile.ownerAliases.length ? [...profile.ownerAliases, row.name] : [],
+        ownerAliases: Array.from(names, name => organizationsByName.get(normalizeOwnerLabel(name))!.size > 1
+          ? name + ", " + profile.organization
+          : name),
       };
       return { user, row };
     });
@@ -40,7 +59,10 @@ export function sessionDirectory(): SessionUser[] {
 export function getSessionIdentity(id: string) {
   if (demoLoginEnabled()) {
     const account = getDemoAccount(id);
-    return account && { user: toSessionUser(account), binding: "demo" };
+    if (!account) return null;
+    const pin = account.role === "admin" ? process.env.ADMIN_ACCESS_PIN?.trim() : undefined;
+    const binding = pin ? "demo-admin:" + createHash("sha256").update(pin).digest("hex") : "demo";
+    return { user: toSessionUser(account), binding };
   }
   const entry = pilotDirectory().find(entry => entry.user.id === id);
   return entry && { user: entry.user, binding: JSON.stringify(entry.row) };

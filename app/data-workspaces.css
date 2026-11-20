@@ -13,13 +13,10 @@
 
 .data-workspace [data-slot="card"] {
   min-inline-size: 0;
-  border: 1px solid color-mix(in srgb, var(--border) 92%, #fff);
-  border-radius: 14px;
-  background-color: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(8px);
-  box-shadow:
-    0 1px 2px rgba(16, 35, 50, 0.03),
-    0 10px 24px -20px rgba(16, 35, 50, 0.14);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background-color: var(--card);
+  box-shadow: none;
 }
 
 .data-workspace [data-slot="card"] [data-slot="card-header"],
@@ -164,16 +161,9 @@
 }
 
 .data-index-tree[data-slot="card"] {
-  background:
-    radial-gradient(
-      ellipse at 18% 0%,
-      rgba(135, 203, 235, 0.14),
-      transparent 55%
-    ),
-    var(--data-night);
+  background: var(--data-night);
   color: #f3f9fb;
   border-color: var(--data-night);
-  box-shadow: 0 18px 34px -24px rgba(10, 22, 34, 0.65);
   --foreground: #f3f9fb;
   --primary: var(--data-sky);
   --border: var(--data-outline);
@@ -244,16 +234,12 @@
 
 .data-index-record[data-slot="card"] {
   padding: 0;
-  transition:
-    border-color 180ms ease,
-    transform 180ms ease,
-    box-shadow 180ms ease;
+  transition: border-color 180ms ease;
 }
 
 .data-index-record:focus-within,
 .data-index-record:hover {
   border-color: var(--primary);
-  box-shadow: 0 8px 20px -18px var(--primary);
 }
 
 .data-index-record-link {
@@ -625,14 +611,12 @@
   background: var(--background);
   transition:
     transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 200ms ease,
-    box-shadow 200ms ease;
+    border-color 200ms ease;
 }
 
 .data-report-metrics > div:hover {
   transform: translateY(-2px);
   border-color: color-mix(in srgb, var(--primary) 42%, var(--border));
-  box-shadow: 0 10px 20px -16px rgba(16, 35, 50, 0.25);
 }
 
 .data-report-metrics dt {
@@ -642,23 +626,24 @@
 }
 
 .data-report-metrics dd {
+  display: grid;
+  gap: 0.55rem;
   color: var(--primary);
   font: 600 clamp(1.45rem, 3vw, 2.75rem)/1 var(--font-mono);
   letter-spacing: -0.07em;
 }
 
-.data-report-metrics span,
-.data-report-metrics i {
+.data-report-track,
+.data-report-track > i {
   display: block;
   height: 3px;
   border-radius: 2px;
 }
 
-.data-report-metrics span {
-  margin-top: 0.55rem;
+.data-report-track {
   background: var(--border);
 }
-.data-report-metrics i {
+.data-report-track > i {
   background: var(--primary);
 }
 

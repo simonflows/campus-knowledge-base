@@ -155,7 +155,7 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
               <dt>{item.label}</dt>
               <dd>
                 <AnimatedNumber value={summary[item.key]} />
-                <span aria-hidden="true">
+                <span className="data-report-track" aria-hidden="true">
                   <i
                     className="atlas-bar-grow"
                     style={{

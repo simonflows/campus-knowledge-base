@@ -70,13 +70,10 @@
 }
 
 .campus-workspace [data-slot="card"] {
-  border: 1px solid color-mix(in srgb, var(--desk-line) 92%, #fff);
-  border-radius: 14px;
-  background-color: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(8px);
-  box-shadow:
-    0 1px 2px rgba(16, 35, 50, 0.03),
-    0 10px 24px -20px rgba(16, 35, 50, 0.14);
+  border: 1px solid var(--desk-line);
+  border-radius: var(--radius);
+  background-color: var(--card);
+  box-shadow: none;
   min-width: 0;
 }
 
@@ -141,15 +138,11 @@
 }
 
 .desk-panel {
-  background: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--card);
   color: var(--card-foreground);
   min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--desk-line) 92%, #fff);
-  border-radius: 14px;
-  box-shadow:
-    0 1px 2px rgba(16, 35, 50, 0.03),
-    0 10px 24px -20px rgba(16, 35, 50, 0.14);
+  border: 1px solid var(--desk-line);
+  border-radius: var(--radius);
 }
 
 .desk-panel-head {
@@ -301,10 +294,8 @@
   gap: 0.85rem;
   padding: 0.95rem;
   border: 1px solid var(--desk-line);
-  border-radius: 14px;
-  background-color: color-mix(in srgb, var(--card) 92%, transparent);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 8px 20px -18px rgba(16, 35, 50, 0.18);
+  border-radius: var(--radius);
+  background-color: var(--card);
 }
 
 .desk-active-account h2 {

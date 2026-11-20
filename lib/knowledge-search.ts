@@ -102,6 +102,22 @@ export function searchKnowledgeCards(
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((item) => item.card);
 }
+
+function sourceOffset(text: string, normalizedOffset: number): number {
+  let start = 0;
+  let end = text.length;
+  // Find the first source position whose normalized prefix includes the match.
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2);
+    if (normalize(text.slice(0, middle + 1)).length <= normalizedOffset) {
+      start = middle + 1;
+    } else {
+      end = middle;
+    }
+  }
+  return start;
+}
+
 export function getSearchFragment(card: KnowledgeCard, query: string): string {
   const tokens = normalize(query).split(" ").filter(Boolean);
   const fragments = searchableFragments(card);
@@ -112,6 +128,12 @@ export function getSearchFragment(card: KnowledgeCard, query: string): string {
         tokens.filter((token) => normalize(a).includes(token)).length
     )[0] ?? card.referenceDescription;
   if (fragment.length <= 260) return fragment;
-  const index = Math.max(0, normalize(fragment).indexOf(tokens[0] ?? "") - 70);
-  return `${index > 0 ? "…" : ""}${fragment.slice(index, index + 260)}…`;
+  const normalized = normalize(fragment);
+  const match = tokens
+    .map((token) => normalized.indexOf(token))
+    .find((index) => index >= 0);
+  const start =
+    match === undefined ? 0 : Math.max(0, sourceOffset(fragment, match) - 70);
+  const end = start + 260;
+  return `${start > 0 ? "…" : ""}${fragment.slice(start, end)}${end < fragment.length ? "…" : ""}`;
 }

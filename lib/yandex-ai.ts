@@ -3,6 +3,8 @@ export type YandexAiMessage = {
   text: string;
 };
 
+const ALICE_AI_FLASH_URI = /^gpt:\/\/[^/]+\/aliceai-llm-flash$/;
+
 export class MissingYandexCredentialsError extends Error {
   constructor() {
     super(
@@ -32,6 +34,7 @@ export function isYandexAiConfigured(): boolean {
 export function getYandexModelLabel(): string {
   const uri = process.env.YANDEX_AI_STUDIO_MODEL_URI;
   if (!uri) return "yandexgpt/latest";
+  if (ALICE_AI_FLASH_URI.test(uri)) return "aliceai-llm-flash";
   const publicModel =
     /^gpt:\/\/[^/]+\/(yandexgpt(?:-lite)?\/(?:latest|rc|deprecated))$/.exec(
       uri
@@ -73,6 +76,18 @@ export async function callYandexAi(
   return (await callYandexAiWithUsage(messages, options)).text;
 }
 
+function parseCompletion(
+  content: unknown,
+  inputTokens: unknown,
+  outputTokens: unknown
+): AiCompletion {
+  const text = typeof content === "string" ? content.trim() : "";
+  if (!text) {
+    throw new YandexAiError("Yandex AI Studio вернул пустой ответ");
+  }
+  return { text, usage: parseTokenUsage(inputTokens, outputTokens) };
+}
+
 export async function callYandexAiWithUsage(
   messages: YandexAiMessage[],
   options: { temperature?: number; maxTokens?: number } = {}
@@ -87,27 +102,42 @@ export async function callYandexAiWithUsage(
   const modelUri =
     process.env.YANDEX_AI_STUDIO_MODEL_URI ??
     `gpt://${folderId}/yandexgpt/latest`;
+  const useChatCompletions = ALICE_AI_FLASH_URI.test(modelUri);
+  const temperature = options.temperature ?? 0.05;
+  const maxTokens = options.maxTokens ?? 4_000;
+  const body = useChatCompletions
+    ? {
+        model: modelUri,
+        messages: messages.map(({ role, text }) => ({ role, content: text })),
+        stream: false,
+        temperature,
+        max_completion_tokens: maxTokens,
+      }
+    : {
+        modelUri,
+        completionOptions: {
+          stream: false,
+          temperature,
+          maxTokens: String(maxTokens),
+        },
+        messages,
+      };
 
   let response: Response;
 
   try {
     response = await fetch(
-      "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+      useChatCompletions
+        ? "https://ai.api.cloud.yandex.net/v1/chat/completions"
+        : "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
       {
         method: "POST",
         headers: {
           Authorization: `Api-Key ${apiKey}`,
           "Content-Type": "application/json",
+          ...(useChatCompletions && { "x-data-logging-enabled": "false" }),
         },
-        body: JSON.stringify({
-          modelUri,
-          completionOptions: {
-            stream: false,
-            temperature: options.temperature ?? 0.05,
-            maxTokens: String(options.maxTokens ?? 4_000),
-          },
-          messages,
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(60_000),
       }
     );
@@ -122,24 +152,44 @@ export async function callYandexAiWithUsage(
     );
   }
 
-  const data = (await response.json().catch(() => null)) as {
+  const data: unknown = await response.json().catch(() => null);
+  if (useChatCompletions) {
+    const chat = data as {
+      choices?: Array<{
+        finish_reason?: string;
+        message?: { content?: unknown };
+      }>;
+      usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+    } | null;
+    const choice = chat?.choices?.[0];
+    if (choice && choice.finish_reason !== "stop") {
+      throw new YandexAiError("Yandex AI Studio вернул незавершённый ответ");
+    }
+    return parseCompletion(
+      choice?.message?.content,
+      chat?.usage?.prompt_tokens,
+      chat?.usage?.completion_tokens
+    );
+  }
+
+  const foundation = data as {
     result?: {
-      alternatives?: Array<{ message?: { text?: string } }>;
+      alternatives?: Array<{ status?: string; message?: { text?: unknown } }>;
       usage?: { inputTextTokens?: unknown; completionTokens?: unknown };
     };
   } | null;
 
-  const text = data?.result?.alternatives?.[0]?.message?.text?.trim();
-
-  if (!text) {
-    throw new YandexAiError("Yandex AI Studio вернул пустой ответ");
+  const alternative = foundation?.result?.alternatives?.[0];
+  if (
+    alternative?.status &&
+    alternative.status !== "ALTERNATIVE_STATUS_FINAL"
+  ) {
+    throw new YandexAiError("Yandex AI Studio вернул незавершённый ответ");
   }
 
-  return {
-    text,
-    usage: parseTokenUsage(
-      data?.result?.usage?.inputTextTokens,
-      data?.result?.usage?.completionTokens
-    ),
-  };
+  return parseCompletion(
+    alternative?.message?.text,
+    foundation?.result?.usage?.inputTextTokens,
+    foundation?.result?.usage?.completionTokens
+  );
 }
