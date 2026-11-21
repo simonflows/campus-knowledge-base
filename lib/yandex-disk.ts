@@ -13,7 +13,6 @@ import {
 } from "./knowledge";
 
 const DISK_API_BASE = "https://cloud-api.yandex.net/v1/disk";
-const DISK_ROOT = "disk:";
 export function diskAttemptDeadline(): AbortSignal {
   return AbortSignal.timeout(30_000);
 }
@@ -74,7 +73,8 @@ function toDisplayPath(segments: string[]): string {
 }
 
 function toResourcePath(segments: string[]): string {
-  return `${DISK_ROOT}/${segments.join("/")}`;
+  const root = process.env.YANDEX_DISK_ROOT_MODE === "app" ? "app:" : "disk:";
+  return `${root}/${segments.join("/")}`;
 }
 
 export function getCardDiskFolderSegments(card: KnowledgeCard): string[] {
@@ -492,10 +492,11 @@ async function ensureFolder(
   token: string,
   segments: string[]
 ): Promise<void> {
-  let current = DISK_ROOT;
+  const folderSegments: string[] = [];
 
   for (const segment of segments) {
-    current = `${current}/${segment}`;
+    folderSegments.push(segment);
+    const current = toResourcePath(folderSegments);
     const response = await diskRequest(
       signal,
       token,
