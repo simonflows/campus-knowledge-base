@@ -8,18 +8,29 @@ import { init as initInspector } from "@/lib/bridge/inspector";
 import { init as initRouter } from "@/lib/bridge/router";
 import { InspectorOverlay } from "./inspector-overlay";
 
-export function BridgeProvider() {
+export function BridgeProvider({
+  trustedOrigin,
+  basePath,
+}: {
+  trustedOrigin: string;
+  basePath: string;
+}) {
   useEffect(() => {
+    const closeChannel = initChannel(trustedOrigin);
+    if (!closeChannel) return;
+
     const cleanups = [
-      initChannel(),
       initPing(),
       initErrors(),
       initInspector(),
-      initRouter(),
+      initRouter(basePath),
     ];
 
-    return () => cleanups.forEach((fn) => fn());
-  }, []);
+    return () => {
+      closeChannel();
+      cleanups.forEach((fn) => fn());
+    };
+  }, [basePath, trustedOrigin]);
 
   return <InspectorOverlay />;
 }

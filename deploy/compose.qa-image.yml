@@ -1,0 +1,43 @@
+# CI overlay applied after compose.prod.yml and compose.qa.yml.
+services:
+  app:
+    environment:
+      NODE_EXTRA_CA_CERTS: /run/qa-ca.crt
+    volumes:
+      - type: bind
+        source: ${CAMPUS_QA_IMAGE_DIR:?Set the CI temporary directory}/ca.crt
+        target: /run/qa-ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+
+  qa-document-api:
+    image: campus-kb:${CAMPUS_RELEASE_TAG:?Set the built image tag}
+    pull_policy: never
+    user: "${CAMPUS_QA_RUNNER_USER:?Set the owner of the temporary TLS key}"
+    command: ["node", "/run/qa-relay.mjs"]
+    healthcheck:
+      disable: true
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - type: bind
+        source: ./qa-image-relay.mjs
+        target: /run/qa-relay.mjs
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CAMPUS_QA_IMAGE_DIR}/tls.key
+        target: /run/qa-tls.key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CAMPUS_QA_IMAGE_DIR}/tls.crt
+        target: /run/qa-tls.crt
+        read_only: true
+        bind:
+          create_host_path: false

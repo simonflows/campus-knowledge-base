@@ -1,19 +1,107 @@
 import { z } from "zod";
+import { universities } from "@/lib/data";
 
 import {
   CONTOURS,
   CUSTOM_FIELD_TYPES,
   PLACEMENT_STATUSES,
   READINESS_STAGES,
+  folderIds,
+  getUniversityIdFromFolder,
   type CardTypeDefinition,
   type CustomCardField,
+  type CustomFieldValue,
 } from "@/lib/knowledge";
 
 const text = z.string().trim().min(1, "Заполните поле");
 const longText = z.string().trim().min(1, "Заполните поле").max(10_000);
 const textList = z.array(text).default([]);
+const universityIdSchema = text.refine(
+  (id) => universities.some((university) => university.id === id),
+  "Выберите вуз из списка резидентов"
+);
+const ownerIds = z.array(text.max(80)).max(2000)
+  .refine(ids => new Set(ids).size === ids.length, "Владельцы не должны повторяться")
+  .optional();
+const organizationScope = z.enum(["rio", "chkk"]).optional();
+
+export const evidenceUrlSchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .url("Укажите ссылку на документ")
+  .refine((value) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "https:" && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, "Документ должен иметь безопасную HTTPS-ссылку без логина и пароля");
+
+export const cardVersionIdSchema = z.string().regex(/^cv-[0-9a-f]{64}$/);
+
+export const knowledgeSourceSchema = z.object({
+  url: evidenceUrlSchema,
+  title: text.max(300),
+  publishedAt: z.iso.date().optional(),
+  scope: text.max(400).optional(),
+});
+
+export const verifiedCardFactSchema = z.object({
+  id: text.max(80),
+  label: text.max(200),
+  value: text.max(120),
+  unit: text.max(80),
+  year: z.number().int().min(1900).max(2200),
+  scope: text.max(400),
+  kind: z.enum(["actual", "plan"]),
+  evidenceUrl: evidenceUrlSchema,
+});
+
+const evidenceFields = {
+  // Empty explicitly clears the previous public reason. Omitted fields preserve older clients.
+  changeReason: z.string().trim().max(500).optional(),
+  sources: z.array(knowledgeSourceSchema).max(24).optional(),
+  verifiedFacts: z.array(verifiedCardFactSchema).max(32)
+    .refine(facts => new Set(facts.map(fact => fact.id)).size === facts.length, "Факты не должны повторяться")
+    .optional(),
+};
+
+export const updateCardFreshnessSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("schedule"),
+    nextReviewAt: z.iso.date().nullable(),
+    responsibleId: text.max(80).nullable().optional(),
+  }),
+  z.strictObject({
+    action: z.literal("verify"),
+    versionId: cardVersionIdSchema,
+  }),
+]);
+
+export function canonicalCustomFieldValues(fields: Record<string, CustomFieldValue | undefined>): Record<string, CustomFieldValue> {
+  return Object.fromEntries(
+    Object.entries(fields).filter((entry): entry is [string, CustomFieldValue] => entry[1] !== undefined)
+  );
+}
+
+export const structuredMetricSchema = z.object({
+  id: text.max(80),
+  label: text.max(200),
+  value: z.number().finite().nonnegative(),
+  unit: text.max(80),
+  year: z.number().int().min(1900).max(2200),
+  kind: z.enum(["actual", "plan"]),
+  evidenceUrl: evidenceUrlSchema,
+  verifiedAt: z.iso.date(),
+  owner: text.max(200),
+});
 
 const baseCardSchema = z.object({
+  ...evidenceFields,
+  ownerIds,
+  organizationScope,
   title: text.max(200),
   folderId: text,
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -24,14 +112,15 @@ const baseCardSchema = z.object({
 const projectCardSchema = baseCardSchema.extend({
   type: z.literal("project"),
   sphere: text,
-  initiatorUniversityId: text,
+  initiatorUniversityId: universityIdSchema.or(z.literal("")),
   coExecutors: textList,
   industrialPartner: text,
   readinessStage: z.enum(READINESS_STAGES),
   contour: z.enum(CONTOURS),
   confirmedFigures: textList,
   isJoint: z.boolean().default(false),
-  participantUniversityIds: textList,
+  participantUniversityIds: z.array(universityIdSchema).default([]),
+  externalParticipantNames: z.array(text.max(300)).max(20).optional(),
 });
 
 const laboratoryCardSchema = baseCardSchema.extend({
@@ -68,6 +157,15 @@ const campusCardSchema = baseCardSchema.extend({
   tariffs: z.array(campusTariffSchema).min(1),
   legalEntities: z.array(campusLegalEntitySchema).min(1),
   stopList: z.array(text).min(1),
+});
+
+const universityCardSchema = baseCardSchema.extend({
+  type: z.literal("university"),
+  universityId: text.refine(
+    (id) => universities.some((university) => university.id === id),
+    "Выберите вуз"
+  ),
+  structuredMetrics: z.array(structuredMetricSchema).max(100).default([]),
 });
 
 export const customCardFieldInputSchema = z
@@ -108,10 +206,21 @@ const cardTypeFieldsSchema = z
     });
   });
 
-export const cardTypeInputSchema = z.object({
+export function hasRequiredConstructionField(fields: CardTypeDefinition["fields"]): boolean {
+  return fields.some(field => field.required);
+}
+
+const cardTypeProperties = z.object({
   name: text.max(120),
   description: z.string().trim().max(500).default(""),
   fields: cardTypeFieldsSchema,
+  organizationScope: z.literal("chkk").optional(),
+});
+
+export const cardTypeInputSchema = cardTypeProperties.superRefine((type, ctx) => {
+  if (type.organizationScope === "chkk" && !hasRequiredConstructionField(type.fields)) {
+    ctx.addIssue({ code: "custom", path: ["fields"], message: "Для параметра ЧКК добавьте обязательное поле." });
+  }
 });
 
 export const cardTypeUpdateSchema = z
@@ -119,20 +228,26 @@ export const cardTypeUpdateSchema = z
     name: text.max(120).optional(),
     description: z.string().trim().max(500).optional(),
     fields: cardTypeFieldsSchema.optional(),
+    organizationScope: z.literal("chkk").nullable().optional(),
   })
   .refine(
     (data) =>
       data.name !== undefined ||
       data.description !== undefined ||
-      data.fields !== undefined,
+      data.fields !== undefined ||
+      data.organizationScope !== undefined,
     { message: "Нет данных для обновления" }
   );
 
 export type CardTypeInput = z.infer<typeof cardTypeInputSchema>;
 
 const customCardSchema = z.object({
+  ...evidenceFields,
+  ownerIds,
+  organizationScope,
   type: z.literal("custom"),
   customTypeId: text,
+  universityId: universityIdSchema.optional(),
   title: text.max(200),
   folderId: z.string().trim().optional().default(""),
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -141,16 +256,88 @@ const customCardSchema = z.object({
   customFields: z.record(z.string(), z.unknown()).default({}),
 });
 
-export const knowledgeCardInputSchema = z.discriminatedUnion("type", [
-  projectCardSchema,
-  laboratoryCardSchema,
-  campusCardSchema,
-  customCardSchema,
-]);
+export const knowledgeCardInputSchema = z
+  .discriminatedUnion("type", [
+    projectCardSchema,
+    laboratoryCardSchema,
+    campusCardSchema,
+    customCardSchema,
+    universityCardSchema,
+  ])
+  .superRefine((card, ctx) => {
+    if (card.type === "university") {
+      if (card.folderId !== `01_universities/${card.universityId}/passport`) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["folderId"],
+          message: "Паспорт должен храниться в папке своего вуза",
+        });
+      }
+      const keys = card.structuredMetrics.map(
+        (metric) =>
+          `${metric.label.toLowerCase().trim()}|${metric.unit.toLowerCase().trim()}|${metric.year}|${metric.kind}`
+      );
+      if (
+        new Set(keys).size !== keys.length ||
+        new Set(card.structuredMetrics.map((metric) => metric.id)).size !==
+          card.structuredMetrics.length
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["structuredMetrics"],
+          message: "Показатель, единица, год и статус должны быть уникальны",
+        });
+      }
+    }
+    if (card.type === "project" && !card.isJoint && !card.initiatorUniversityId && card.organizationScope !== "rio") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["initiatorUniversityId"],
+        message: "Для проекта одного вуза укажите вуз-инициатор",
+      });
+    }
+    if (
+      card.type === "project" &&
+      card.isJoint &&
+      ((new Set(card.participantUniversityIds).size < 2 && !(card.participantUniversityIds.length >= 1 && card.externalParticipantNames?.length)) ||
+        (card.initiatorUniversityId && !card.participantUniversityIds.includes(card.initiatorUniversityId)))
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["participantUniversityIds"],
+        message: "Укажите двух участников: вузы-резиденты либо вуз-резидент и внешняя организация. Если инициатор известен, включите его в список.",
+      });
+    }
+    if (card.type === "project" && card.externalParticipantNames?.length && !card.isJoint) {
+      ctx.addIssue({ code: "custom", path: ["isJoint"], message: "Проект с внешним соавтором отмечается как совместный" });
+    }
+  });
 
 export type KnowledgeCardInput = z.infer<typeof knowledgeCardInputSchema>;
 
-function isEmptyValue(value: unknown): boolean {
+export function canonicalKnowledgeFolder(card: KnowledgeCardInput): string | null {
+  switch (card.type) {
+    case "campus":
+      return folderIds.campus;
+    case "university":
+      return folderIds.subfolder(card.universityId, "passport");
+    case "custom":
+      return card.organizationScope === "chkk" ? folderIds.chkkParameters : folderIds.customType(card.customTypeId);
+    case "project":
+      if (card.isJoint) return folderIds.joint;
+      if (card.organizationScope === "rio" && !card.initiatorUniversityId) return folderIds.rioProjects;
+      return card.initiatorUniversityId ? folderIds.subfolder(card.initiatorUniversityId, "products") : null;
+    case "laboratory": {
+      if (card.organizationScope === "chkk") return folderIds.campus;
+      const universityId = getUniversityIdFromFolder(card.folderId);
+      return universityId && universities.some(item => item.id === universityId)
+        ? folderIds.subfolder(universityId, "infrastructure")
+        : null;
+    }
+  }
+}
+
+function isEmptyValue(value: unknown): value is undefined | null | "" | [] {
   return (
     value === undefined ||
     value === null ||
@@ -159,8 +346,8 @@ function isEmptyValue(value: unknown): boolean {
   );
 }
 
-function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
-  let base: z.ZodTypeAny;
+function customFieldValueSchema(field: CustomCardField) {
+  let base: z.ZodType<CustomFieldValue>;
 
   switch (field.type) {
     case "longText":
@@ -173,7 +360,7 @@ function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
       base = z
         .string()
         .trim()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "Укажите дату в формате ГГГГ-ММ-ДД");
+        .pipe(z.iso.date("Укажите дату в формате ГГГГ-ММ-ДД"));
       break;
     case "list":
       base = z.array(z.string().trim().min(1, "Заполните элемент списка"));
@@ -194,26 +381,31 @@ function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
       base = z.string().trim().max(1_000, "Слишком длинный текст");
   }
 
-  return z.any().superRefine((value, ctx) => {
-    if (isEmptyValue(value)) {
+  const schema = z.unknown().transform((value, ctx) => {
+    const normalized = typeof value === "string" ? value.trim() : value;
+    if (isEmptyValue(normalized)) {
       if (field.required) {
         ctx.addIssue({
           code: "custom",
           message: "Заполните обязательное поле",
         });
+        return z.NEVER;
       }
-      return;
+      return normalized;
     }
 
-    const parsed = base.safeParse(value);
+    const parsed = base.safeParse(normalized);
 
     if (!parsed.success) {
       ctx.addIssue({
         code: "custom",
         message: parsed.error.issues[0]?.message ?? "Некорректное значение",
       });
+      return z.NEVER;
     }
+    return parsed.data;
   });
+  return field.required ? schema : schema.optional();
 }
 
 export function buildCustomFieldValuesSchema(typeDef: CardTypeDefinition) {

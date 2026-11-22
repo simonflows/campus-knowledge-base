@@ -1,46 +1,35 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { canManageTypes } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
+  CardTypeInUseError,
   countKnowledgeCardsByCustomType,
   deleteCardType,
   getCardTypeById,
   updateCardType,
 } from "@/lib/models";
-import { cardTypeUpdateSchema } from "@/lib/validation/knowledge";
+import { cardTypeUpdateSchema, hasRequiredConstructionField } from "@/lib/validation/knowledge";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-function fieldsChanged(
-  current: {
-    id: string;
-    name: string;
-    type: string;
-    required: boolean;
-    options: string[];
-  }[],
-  next: {
-    id: string;
-    name: string;
-    type: string;
-    required: boolean;
-    options: string[];
-  }[]
-): boolean {
-  const normalize = (fields: typeof current) =>
-    fields.map((field) => ({
-      id: field.id,
-      name: field.name,
-      type: field.type,
-      required: field.required,
-      options: field.options,
-    }));
-
-  return JSON.stringify(normalize(current)) !== JSON.stringify(normalize(next));
+function typeWriteFailure(error: unknown) {
+  if (error instanceof CardTypeInUseError) {
+    return NextResponse.json({
+      error: "Тип используют сохранённые карточки. Сохраните поля или создайте новый тип.",
+      cardCount: error.count,
+    }, { status: 409 });
+  }
+  if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
+    return NextResponse.json({
+      error: "Тип карточки изменился. Обновите страницу и повторите действие.",
+    }, { status: 409 });
+  }
+  return unavailableStorageResponse();
 }
 
 async function getAdminDeniedResponse() {
@@ -66,6 +55,9 @@ async function getAdminDeniedResponse() {
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   const denied = await getAdminDeniedResponse();
 
   if (denied) return denied;
@@ -114,21 +106,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    if (parsed.data.fields) {
-      const cardCount = await countKnowledgeCardsByCustomType(id);
-
-      if (cardCount > 0 && fieldsChanged(current.fields, parsed.data.fields)) {
-        return NextResponse.json(
-          {
-            error: `По типу «${current.name}» уже сохранено ${cardCount} карточек. Если переименовать или удалить поля, значения в существующих карточках перестанут отображаться. Сначала удалите карточки этого типа или создайте новый тип.`,
-            cardCount,
-          },
-          { status: 409 }
-        );
-      }
+    const { organizationScope, ...patch } = parsed.data;
+    if (organizationScope !== undefined && organizationScope !== (current.organizationScope ?? null)) {
+      return NextResponse.json({ error: "Доступ типа задаётся при создании. Создайте отдельный тип для другой зоны." }, { status: 409 });
     }
-
-    const updated = await updateCardType(id, parsed.data);
+    if (current.organizationScope === "chkk" && patch.fields && !hasRequiredConstructionField(patch.fields)) {
+      return NextResponse.json({ error: "Для параметра ЧКК добавьте обязательное поле." }, { status: 400 });
+    }
+    const updated = await updateCardType(id, patch, current.updatedAt);
 
     if (!updated) {
       return NextResponse.json(
@@ -141,15 +126,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ ...updated, cardCount });
   } catch (error) {
-    console.error("Ошибка обновления типа карточки:", error);
-    return NextResponse.json(
-      { error: "Ошибка обновления типа карточки" },
-      { status: 500 }
-    );
+    return typeWriteFailure(error);
   }
 }
 
-export async function DELETE(_request: NextRequest, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: RouteContext) {
+  if (!verifySameOrigin(request)) {
+    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+  }
   const denied = await getAdminDeniedResponse();
 
   if (denied) return denied;
@@ -175,26 +159,10 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
       );
     }
 
-    const cardCount = await countKnowledgeCardsByCustomType(id);
-
-    if (cardCount > 0) {
-      return NextResponse.json(
-        {
-          error: `Нельзя удалить тип «${current.name}»: по нему сохранено ${cardCount} карточек. Сначала удалите эти карточки.`,
-          cardCount,
-        },
-        { status: 409 }
-      );
-    }
-
-    await deleteCardType(id);
+    await deleteCardType(id, current.updatedAt);
 
     return NextResponse.json({ success: true });
   } catch (error) {
-    console.error("Ошибка удаления типа карточки:", error);
-    return NextResponse.json(
-      { error: "Ошибка удаления типа карточки" },
-      { status: 500 }
-    );
+    return typeWriteFailure(error);
   }
 }

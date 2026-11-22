@@ -1,0 +1,45 @@
+name: campus-kb-prod
+
+services:
+  app:
+    image: campus-kb:${CAMPUS_RELEASE_TAG:?Set CAMPUS_RELEASE_TAG to the approved revision}
+    pull_policy: never
+    env_file:
+      - path: ${CAMPUS_RUNTIME_ENV_FILE:-/run/campus/runtime.env}
+        format: raw
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_DEMO_MODE: "false"
+      CAMPUS_DEMO_LOGIN: "false"
+      CAMPUS_LOCAL_DEMO: "false"
+      CAMPUS_FULL_LOCAL_DEMO: "false"
+      SEED_DEMO_ARTICLES: "false"
+      USE_DATABASE: "true"
+      CANON_DISK_RECOVERY: ${CANON_DISK_RECOVERY:-true}
+      OUTPUT_MODE: ""
+      BASE_PATH: ""
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        node --import tsx deploy/preflight.ts
+        exec node node_modules/next/dist/bin/next start -H 0.0.0.0 -p 8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/ready').then(r => { process.exitCode = r.ok ? 0 : 1 }).catch(() => { process.exitCode = 1 })"]
+      interval: 30s
+      timeout: 6s
+      start_period: 20s
+      retries: 3
+    user: "1001:1001"
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /app/.next/cache:uid=1001,gid=1001,mode=0700
+    mem_limit: 1536m
+    cpus: 1.5
+    restart: unless-stopped

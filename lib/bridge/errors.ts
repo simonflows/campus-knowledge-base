@@ -1,6 +1,17 @@
 "use client";
 
-import { postMessage } from "./channel";
+import { isBridgeReady, postMessage } from "./channel";
+
+function formatConsoleArgument(arg: unknown) {
+  if (typeof arg !== "object" && typeof arg !== "function" && typeof arg !== "symbol") {
+    return arg;
+  }
+  try {
+    return String(arg);
+  } catch {
+    return "[Unprintable value]";
+  }
+}
 
 export function init() {
   const handleError = (event: ErrorEvent) => {
@@ -37,13 +48,12 @@ export function init() {
     (level: "log" | "warn" | "error" | "info") =>
     (...args: unknown[]) => {
       originalConsole[level].apply(console, args);
+      if (!isBridgeReady()) return;
       postMessage({
         type: "console",
         payload: {
           level,
-          args: args.map((arg) =>
-            typeof arg === "object" ? String(arg) : arg
-          ),
+          args: args.map(formatConsoleArgument),
         },
       });
     };

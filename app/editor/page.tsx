@@ -1,61 +1,48 @@
 import { SmartEditorWorkspace } from "@/components/editor/smart-editor-workspace";
 import { getSessionUser } from "@/lib/auth-server";
-import { isStorageWritable } from "@/lib/db";
-import { mockArticles, mockKnowledgeCards } from "@/lib/mock-data";
-import {
-  ensureArticleSeed,
-  ensureKnowledgeSeed,
-  getAllArticles,
-  getCanonicalKnowledgeCards,
-} from "@/lib/models";
-import type { ReadyArticle } from "@/lib/articles";
+import { StorageUnavailable } from "@/components/storage-unavailable";
+import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
+import { getAllArticles, getCanonicalKnowledgeCards } from "@/lib/models";
+import { publicArticle } from "@/lib/articles";
+import { showFlashAssist } from "@/lib/flash-assist";
 
 export const dynamic = "force-dynamic";
 
-async function getEditorData(): Promise<{
-  articles: ReadyArticle[];
-  cardsCount: number;
-  dbAvailable: boolean;
-}> {
-  if (await isStorageWritable()) {
-    try {
-      await Promise.all([ensureKnowledgeSeed(), ensureArticleSeed()]);
-      const [articles, cards] = await Promise.all([
-        getAllArticles(),
-        getCanonicalKnowledgeCards(),
-      ]);
-
-      return {
-        articles: [...articles].sort((a, b) =>
-          b.createdAt.localeCompare(a.createdAt)
-        ),
-        cardsCount: cards.length,
-        dbAvailable: true,
-      };
-    } catch (error) {
-      console.error("Не удалось загрузить данные умного редактора:", error);
-    }
-  }
-
-  return {
-    articles: mockArticles,
-    cardsCount: mockKnowledgeCards.length,
-    dbAvailable: false,
-  };
+function linkedId(value?: string | string[]) {
+  return typeof value === "string" && value.length <= 100 && /^[a-z0-9][a-z0-9._-]*$/i.test(value)
+    ? value : undefined;
 }
 
-export default async function EditorPage() {
-  const [{ articles, cardsCount, dbAvailable }, user] = await Promise.all([
-    getEditorData(),
+export default async function EditorPage({ searchParams }: {
+  searchParams: Promise<{ draft?: string | string[]; article?: string | string[] }>;
+}) {
+  const [data, user, params] = await Promise.all([
+    Promise.all([
+      getAllArticles(),
+      getCanonicalKnowledgeCards(),
+      getReadableStorageMode(),
+    ]).catch(() => null),
     getSessionUser(),
+    searchParams,
   ]);
+  if (!data) return <StorageUnavailable title="Редактор публикаций" />;
+  const [articles, cards, mode] = data;
+  const initialArticles = articles
+    .map(publicArticle)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const initialDocumentId = linkedId(params.draft);
+  const initialArticleId = initialDocumentId ? undefined : linkedId(params.article);
 
   return (
     <SmartEditorWorkspace
-      initialArticles={articles}
-      cardsCount={cardsCount}
-      dbAvailable={dbAvailable}
+      key={user?.id || "anonymous"}
+      initialArticles={initialArticles}
+      cardsCount={cards.length}
+      dbAvailable={mode === "dynamodb"}
       currentUser={user}
+      flashAssistAvailable={showFlashAssist(user)}
+      initialDocumentId={initialDocumentId}
+      initialArticleId={initialArticleId}
     />
   );
 }

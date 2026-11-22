@@ -1,15 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { canEditCard } from "@/lib/auth";
-import { getSessionUser } from "@/lib/auth-server";
+import { canEditCard, visibleKnowledgeCard } from "@/lib/auth";
+import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
-import { retryKnowledgeCardSync } from "@/lib/disk-sync-service";
+import {
+  readKnowledgeCardDiskRegistry,
+  syncKnowledgeCardRecord,
+} from "@/lib/disk-sync-service";
 import { getCardStatus } from "@/lib/knowledge";
 import { getKnowledgeCardById } from "@/lib/models";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-export async function POST(_request: Request, context: RouteContext) {
+async function authorizedCard(context: RouteContext) {
   if (!(await isStorageWritable())) {
     return NextResponse.json(
       { error: "База данных недоступна в статическом режиме" },
@@ -18,8 +22,18 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   const user = await getSessionUser();
+  if (!user)
+    return NextResponse.json(
+      { error: "Войдите для повторной выгрузки" },
+      { status: 401 }
+    );
   const { id } = await context.params;
-  const existing = await getKnowledgeCardById(id);
+  let existing;
+  try {
+    existing = await getKnowledgeCardById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
 
   if (!existing) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
@@ -34,7 +48,32 @@ export async function POST(_request: Request, context: RouteContext) {
       { status: 403 }
     );
   }
+  return { user, existing };
+}
 
+export async function GET(_request: Request, context: RouteContext) {
+  const access = await authorizedCard(context);
+  if (access instanceof Response) return access;
+  try {
+    const registry = await readKnowledgeCardDiskRegistry(access.existing);
+    return NextResponse.json(
+      { registry },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
+  } catch {
+    return unavailableStorageResponse();
+  }
+}
+
+export async function POST(request: Request, context: RouteContext) {
+  if (!verifySameOrigin(request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
+  const access = await authorizedCard(context);
+  if (access instanceof Response) return access;
+  const { user, existing } = access;
   if (getCardStatus(existing) !== "approved") {
     return NextResponse.json(
       { error: "Черновик не выгружается на Диск до одобрения координатором" },
@@ -43,7 +82,7 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   try {
-    const card = await retryKnowledgeCardSync(id);
+    const card = await syncKnowledgeCardRecord(existing);
 
     if (!card) {
       return NextResponse.json(
@@ -52,12 +91,19 @@ export async function POST(_request: Request, context: RouteContext) {
       );
     }
 
-    return NextResponse.json(card);
+    return NextResponse.json(visibleKnowledgeCard(user, card));
   } catch (error) {
-    console.error("Ошибка повторной выгрузки карточки на Диск:", error);
-    return NextResponse.json(
-      { error: "Не удалось повторить выгрузку карточки" },
-      { status: 500 }
-    );
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error:
+            "Редакция или попытка выгрузки изменилась. Обновите карточку и повторите.",
+        },
+        { status: 409 }
+      );
+    return unavailableStorageResponse();
   }
 }

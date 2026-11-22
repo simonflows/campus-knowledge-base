@@ -8,6 +8,7 @@
 
 # next.js
 /.next/
+/.next-campus-demo/
 /out/
 
 # production
@@ -44,4 +45,6 @@ next-env.d.ts
 /.opencode/
 /opencode.json
 /skills-lock.json
-/AGENTS.md
+
+# Local browser audit evidence
+.taste-skill/

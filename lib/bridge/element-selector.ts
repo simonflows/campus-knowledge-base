@@ -11,7 +11,7 @@ function escapeCssIdentifier(value: string): string {
 }
 
 export function computeSelector(element: Element, root: Element = document.body): string {
-  if (element.id) return `#${element.id}`;
+  if (element.id) return `#${escapeCssIdentifier(element.id)}`;
 
   const path: string[] = [];
   let current: Element | null = element;
@@ -22,7 +22,7 @@ export function computeSelector(element: Element, root: Element = document.body)
       (className) => className.trim() && !className.startsWith("hover-")
     );
     if (classes.length) {
-      selector += `.${classes.join(".")}`;
+      selector += `.${classes.map(escapeCssIdentifier).join(".")}`;
     }
 
     const siblings = current.parentElement
@@ -39,7 +39,7 @@ export function computeSelector(element: Element, root: Element = document.body)
     current = current.parentElement;
   }
 
-  return path.join(" > ");
+  return path.join(" > ") || root.tagName.toLowerCase();
 }
 
 export function computeDisplaySelector(element: Element, selector: string): string {

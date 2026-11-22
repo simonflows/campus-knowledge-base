@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { getFolderDisplayPath } from "./folder-labels";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -28,11 +29,11 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-  CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { DiskSyncPanel } from "@/components/disk-sync/disk-sync-panel";
 import { KnowledgeCardAccessPanel } from "@/components/knowledge/knowledge-card-access-panel";
+import { KnowledgeUsagePanel } from "./knowledge-usage-panel";
 import type { SessionUser } from "@/lib/auth";
 import {
   cardStatusLabels,
@@ -63,6 +64,8 @@ type KnowledgeCardDetailProps = {
   onEdit: () => void;
   onCardUpdated: (card: KnowledgeCard) => void;
   onCardDeleted?: (cardId: string) => void;
+  readOnlyVersion?: boolean;
+  additionalSections?: React.ReactNode;
 };
 
 function buildClientCardMarkdown(
@@ -94,8 +97,9 @@ function buildClientCardMarkdown(
       "## Параметры проекта",
       "",
       `- Сфера: ${card.sphere}`,
-      `- Инициатор: ${getUniversityName(card.initiatorUniversityId)}`,
+      `- Инициатор: ${card.isJoint && !card.initiatorUniversityId ? "Совместная инициатива, отдельный инициатор не установлен" : getUniversityName(card.initiatorUniversityId)}`,
       `- Соисполнители: ${card.coExecutors.join(", ") || "нет"}`,
+      ...(card.externalParticipantNames?.length ? [`- Внешние участники: ${card.externalParticipantNames.join(", ")}. Подтверждение участников требует отдельной сверки.`] : []),
       `- Партнёр: ${card.industrialPartner}`,
       `- Стадия: ${card.readinessStage}`,
       `- Контур: ${card.contour}`,
@@ -123,8 +127,16 @@ function buildClientCardMarkdown(
     lines.push(
       "## Показатели паспорта",
       "",
-      ...card.campusMetrics.map(
-        (m) => `- ${m.label}: ${m.value} (${m.note})`
+      ...card.campusMetrics.map((m) => `- ${m.label}: ${m.value} (${m.note})`),
+      ""
+    );
+  } else if (card.type === "university") {
+    lines.push(
+      "## Показатели вуза",
+      "",
+      ...card.structuredMetrics.map(
+        (metric) =>
+          `- ${metric.label}: ${metric.value} ${metric.unit}; ${metric.year}; ${metric.kind === "plan" ? "план" : "факт"}; проверено ${metric.verifiedAt}; ${metric.owner}; ${metric.evidenceUrl}`
       ),
       ""
     );
@@ -146,16 +158,19 @@ function CustomFieldValueView({
   field,
   value,
   cards,
+  readOnlyVersion,
 }: {
   field: CustomCardField;
   value: CustomFieldValue | undefined;
   cards: KnowledgeCard[];
+  readOnlyVersion?: boolean;
 }) {
   if (isEmptyFieldValue(value)) {
     return <span className="text-sm text-muted-foreground">Не заполнено</span>;
   }
 
   if (field.type === "cardReference") {
+    if (readOnlyVersion) return <span className="break-words">{String(value)}</span>;
     const referenced = cards.find((card) => card.id === value);
 
     return referenced ? (
@@ -192,7 +207,9 @@ function Field({
       <dt className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
         {label}
       </dt>
-      <dd className="break-words text-sm leading-relaxed text-foreground">{children}</dd>
+      <dd className="break-words text-sm leading-relaxed text-foreground">
+        {children}
+      </dd>
     </div>
   );
 }
@@ -229,13 +246,15 @@ export function KnowledgeCardDetail({
   onEdit,
   onCardUpdated,
   onCardDeleted,
+  readOnlyVersion = false,
+  additionalSections,
 }: KnowledgeCardDetailProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const joint = isJointProject(card);
   const status = getCardStatus(card);
   const canDelete =
-    currentUser?.role === "admin" &&
+    !readOnlyVersion && currentUser?.role === "admin" &&
     dbAvailable &&
     card.id !== "campus-passport";
   const customType =
@@ -300,8 +319,13 @@ export function KnowledgeCardDetail({
   return (
     <div className="animate-in fade-in slide-in-from-bottom-2 space-y-5 duration-300">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2 h-10 sm:h-8">
-          <ArrowLeft className="h-4 w-4" />К списку папки
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          className="-ml-2 h-10 sm:h-8"
+        >
+          <ArrowLeft className="h-4 w-4" />{readOnlyVersion ? "К текущей карточке" : "К списку папки"}
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -411,10 +435,10 @@ export function KnowledgeCardDetail({
             ) : null}
           </div>
 
-          <div className="space-y-2">
-            <CardTitle className="font-heading text-2xl leading-tight tracking-tight break-words sm:text-3xl">
+          <div className="data-index-detail-header space-y-2">
+            <h2 className="font-heading text-2xl leading-tight tracking-tight break-words sm:text-3xl">
               {card.title}
-            </CardTitle>
+            </h2>
             <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
               <FolderTree className="h-3.5 w-3.5" />
               <span>Папка хранения:</span>
@@ -423,7 +447,7 @@ export function KnowledgeCardDetail({
                 onClick={() => onOpenFolder(card.folderId)}
                 className="min-h-8 min-w-0 break-words rounded-sm text-left font-medium text-primary underline-offset-4 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-primary"
               >
-                {getFolderPathLabel(card.folderId, tree)}
+                {getFolderDisplayPath(card.folderId, tree)}
               </button>
             </CardDescription>
           </div>
@@ -452,21 +476,23 @@ export function KnowledgeCardDetail({
             ) : null}
           </div>
 
-          <KnowledgeCardAccessPanel
+          {readOnlyVersion ? null : <KnowledgeCardAccessPanel
             card={card}
             currentUser={currentUser}
             dbAvailable={dbAvailable}
             onCardUpdated={onCardUpdated}
             onEdit={onEdit}
-          />
+          />}
 
-          <DiskSyncPanel<KnowledgeCard>
+          {readOnlyVersion ? null : <DiskSyncPanel<KnowledgeCard>
             diskSync={card.diskSync}
             retryEndpoint={`/api/knowledge/cards/${card.id}/sync`}
             canRetry={dbAvailable && status === "approved"}
             entityLabel="карточка"
             onSynced={onCardUpdated}
-          />
+          />}
+          {additionalSections}
+          {currentUser && currentUser.role !== "guest" ? <KnowledgeUsagePanel key={card.id} cardId={card.id} /> : null}
 
           {joint ? (
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground">
@@ -489,18 +515,73 @@ export function KnowledgeCardDetail({
             </div>
           ) : null}
 
+          {card.type === "university" ? (
+            <section
+              className="flex flex-col gap-4"
+              aria-label="Показатели вуза"
+            >
+              <h3 className="font-heading text-lg font-semibold">
+                Показатели {getUniversityName(card.universityId)}
+              </h3>
+              {card.structuredMetrics.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Проверенные показатели пока не внесены. Карточка не
+                  подтверждает квоты, места и число студентов.
+                </p>
+              ) : (
+                card.structuredMetrics.map((metric) => (
+                  <div
+                    key={metric.id}
+                    className="flex flex-col gap-2 rounded-xl border p-4"
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h4 className="font-medium">{metric.label}</h4>
+                      <Badge variant="outline">
+                        {metric.kind === "plan" ? "План" : "Факт"} ·{" "}
+                        {metric.year}
+                      </Badge>
+                    </div>
+                    <p className="text-2xl font-semibold">
+                      {metric.value.toLocaleString("ru-RU")} {metric.unit}
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      Проверено {metric.verifiedAt} · {metric.owner}
+                    </p>
+                    {/^https:\/\//i.test(metric.evidenceUrl) ? (
+                      <a
+                        className="text-sm text-primary underline"
+                        href={metric.evidenceUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Документ-основание
+                      </a>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">
+                        Безопасная ссылка на документ не задана
+                      </span>
+                    )}
+                  </div>
+                ))
+              )}
+            </section>
+          ) : null}
+
           {card.type === "project" ? (
             <>
-              <dl className="grid gap-5 sm:grid-cols-2">
+              <dl className="data-index-detail-fields grid gap-5 sm:grid-cols-2">
                 <Field label="Сфера / отрасль">{card.sphere}</Field>
                 <Field label="Вуз-инициатор">
-                  {getUniversityName(card.initiatorUniversityId)}
+                  {card.isJoint && !card.initiatorUniversityId
+                    ? "Совместная инициатива, отдельный инициатор не установлен"
+                    : getUniversityName(card.initiatorUniversityId)}
                 </Field>
                 <Field label="Соисполнители">
                   {card.coExecutors.length > 0
                     ? card.coExecutors.join(", ")
                     : "Нет"}
                 </Field>
+                {card.externalParticipantNames?.length ? <Field label="Внешние участники">{card.externalParticipantNames.join(", ")}. До отдельного подтверждения участников карточка остаётся черновиком.</Field> : null}
                 <Field label="Индустриальный партнёр">
                   {card.industrialPartner}
                 </Field>
@@ -536,7 +617,7 @@ export function KnowledgeCardDetail({
 
           {card.type === "laboratory" ? (
             <>
-              <dl className="grid gap-5 sm:grid-cols-2">
+              <dl className="data-index-detail-fields grid gap-5 sm:grid-cols-2">
                 <Field label="Принадлежность">{card.affiliation}</Field>
                 <Field label="Партнёр">{card.partner}</Field>
                 <Field label="Руководитель">{card.head}</Field>
@@ -590,7 +671,7 @@ export function KnowledgeCardDetail({
           {card.type === "custom" ? (
             <>
               {customType ? (
-                <dl className="grid gap-5 sm:grid-cols-2">
+                <dl className="data-index-detail-fields grid gap-5 sm:grid-cols-2">
                   {customType.fields.map((field) => (
                     <Field key={field.id} label={field.name}>
                       <div className="space-y-1">
@@ -598,6 +679,7 @@ export function KnowledgeCardDetail({
                           field={field}
                           value={card.customFields[field.id]}
                           cards={cards}
+                          readOnlyVersion={readOnlyVersion}
                         />
                         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                           {customFieldTypeLabels[field.type]}
@@ -679,7 +761,10 @@ export function KnowledgeCardDetail({
                   </div>
                   <ul className="space-y-2">
                     {card.legalEntities.map((entity) => (
-                      <li key={`${entity.name}-${entity.role}`} className="space-y-0.5 text-sm">
+                      <li
+                        key={`${entity.name}-${entity.role}`}
+                        className="space-y-0.5 text-sm"
+                      >
                         <p className="font-medium">{entity.name}</p>
                         <p className="text-xs text-muted-foreground">
                           {entity.role}

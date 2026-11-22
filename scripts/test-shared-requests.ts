@@ -1,0 +1,31 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { test } from "node:test";
+import { requireFixtureDatabase } from "./qa-fixture";
+import { installPilotFixture } from "./pilot-fixture";
+import { createInformationRequestSchema, updateInformationRequestSchema, canSeeInformationRequest } from "../lib/information-requests";
+import { createInformationRequest, mutateInformationRequest, getInformationRequest } from "../lib/information-requests-models";
+
+test("joining a shared question preserves existing privacy, joins once and receives its result in the service", async () => {
+  await requireFixtureDatabase();
+  const people = installPilotFixture();
+  const author = people.account("demo-pr-midis"), recipient = people.account("demo-owner-susu"), colleague = people.account("demo-pr-susu"), outsider = people.account("demo-pr-csu");
+  const request = await createInformationRequest(author, createInformationRequestSchema.parse({ operationId: randomUUID(), recipientUniversityId: "susu", subject: "QA уточнить сведения", question: "Уточните действующее название лаборатории и источник." }));
+  const join = updateInformationRequestSchema.parse({ action: "join", operationId: randomUUID(), revision: request.revision });
+  const joined = await mutateInformationRequest(colleague, request.id, join);
+  assert.ok(joined.participantIds?.includes(colleague.id));
+  assert.equal((await mutateInformationRequest(colleague, request.id, join)).revision, joined.revision);
+  assert.equal(canSeeInformationRequest(outsider, joined), false);
+  await assert.rejects(() => mutateInformationRequest(outsider, request.id, updateInformationRequestSchema.parse({ ...join, operationId: randomUUID(), revision: joined!.revision })), (e: Error & { status?: number }) => e.status === 404);
+  const assigned = await mutateInformationRequest(author, request.id, updateInformationRequestSchema.parse({ action: "assign", operationId: randomUUID(), revision: joined.revision, responsibleId: recipient.id, dueDate: "2026-11-25" }));
+  assert.equal(assigned.responsibleId, recipient.id);
+  assert.equal(assigned.dueDate, "2026-11-25");
+  await assert.rejects(() => mutateInformationRequest(author, request.id, updateInformationRequestSchema.parse({ action: "assign", operationId: randomUUID(), revision: assigned.revision, responsibleId: outsider.id, dueDate: null })), /получател/i);
+  const answered = await mutateInformationRequest(recipient, request.id, updateInformationRequestSchema.parse({ action: "answer", operationId: randomUUID(), revision: assigned.revision, answer: "Официальное наименование приведено на странице подразделения.", evidenceUrl: "https://example.org/qa-lab" }));
+  assert.equal(answered.status, "answered");
+  assert.ok(answered.participantIds?.includes(colleague.id));
+  assert.equal(canSeeInformationRequest(colleague, answered), true);
+  const readback = await getInformationRequest(request.id);
+  assert.equal(readback?.answer, answered.answer);
+  assert.equal(readback?.responsibleId, recipient.id);
+});

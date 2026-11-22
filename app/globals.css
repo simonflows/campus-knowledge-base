@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "shadcn/tailwind.css";
 @import "tw-animate-css";
+@import "./fonts.css";
+@import "./atlas.css";
+@import "./atlas-motion.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -20,6 +23,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: #fff;
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -40,37 +44,43 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: "Segoe UI Variable Text", "Segoe UI", "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Roboto", Arial, sans-serif;
-  --font-heading: "Segoe UI Variable Display", "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
-  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans:
+    "Onest", "Segoe UI Variable Text", "Segoe UI", "Inter", system-ui,
+    -apple-system, BlinkMacSystemFont, "Roboto", Arial, sans-serif;
+  --font-heading:
+    "Onest", "Segoe UI Variable Display", "Segoe UI", "Inter", system-ui,
+    -apple-system, sans-serif;
+  --font-mono:
+    "JetBrains Mono", "Cascadia Mono", "Consolas", ui-monospace, SFMono-Regular,
+    Menlo, monospace;
 }
 
 @layer base {
   :root {
-    --background: oklch(0.986 0.003 250);
-    --foreground: oklch(0.18 0.03 255);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.18 0.03 255);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.18 0.03 255);
-    --primary: oklch(0.47 0.19 258);
-    --primary-foreground: oklch(0.99 0.003 250);
-    --secondary: oklch(0.94 0.025 255);
-    --secondary-foreground: oklch(0.28 0.06 258);
-    --muted: oklch(0.95 0.012 250);
-    --muted-foreground: oklch(0.46 0.04 255);
-    --accent: oklch(0.93 0.035 235);
-    --accent-foreground: oklch(0.26 0.07 255);
-    --destructive: oklch(0.55 0.22 25);
-    --border: oklch(0.89 0.02 250);
-    --input: oklch(0.89 0.02 250);
-    --ring: oklch(0.47 0.19 258);
+    --background: #f5f4ef;
+    --foreground: #142733;
+    --card: #fffefa;
+    --card-foreground: #142733;
+    --popover: #ffffff;
+    --popover-foreground: #142733;
+    --primary: #174c69;
+    --primary-foreground: #ffffff;
+    --secondary: #e2eae8;
+    --secondary-foreground: #1f4350;
+    --muted: #ebefeb;
+    --muted-foreground: #516575;
+    --accent: #e2ecec;
+    --accent-foreground: #144450;
+    --destructive: #ab342e;
+    --border: #d7dedc;
+    --input: #bccbc9;
+    --ring: #21789b;
     --chart-1: oklch(0.6 0.18 264);
     --chart-2: oklch(0.55 0.15 200);
     --chart-3: oklch(0.5 0.12 150);
     --chart-4: oklch(0.65 0.1 30);
     --chart-5: oklch(0.45 0.15 320);
-    --radius: 0.75rem;
+    --radius: 0.625rem;
     --sidebar: oklch(0.97 0.01 270);
     --sidebar-foreground: oklch(0.2 0.02 270);
     --sidebar-primary: oklch(0.55 0.18 264);
@@ -127,23 +137,20 @@
     letter-spacing: -0.02em;
   }
   .gradient-hero {
-    background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 45%, #0f766e 100%);
+    background: linear-gradient(135deg, #102332 0%, #23495a 65%, #365d60 100%);
   }
   .gradient-hero-light {
-    background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 45%, #ecfeff 100%);
+    background: linear-gradient(135deg, #f7f7f0 0%, #edf2ed 55%, #e1ebea 100%);
   }
   .gradient-hero-vibrant {
-    background:
-      radial-gradient(circle at 8% 12%, rgba(37, 99, 235, 0.13) 0%, transparent 45%),
-      radial-gradient(circle at 92% 18%, rgba(16, 185, 129, 0.12) 0%, transparent 42%),
-      radial-gradient(circle at 65% 95%, rgba(14, 165, 233, 0.1) 0%, transparent 48%),
-      linear-gradient(135deg, #f0f7ff 0%, #e6f0ff 42%, #eef2ff 72%, #ecfdf5 100%);
-    box-shadow:
-      inset 0 1px 0 0 rgba(255, 255, 255, 0.9),
-      0 18px 42px -28px rgba(15, 23, 42, 0.25);
+    background: linear-gradient(130deg, #f9f4e9, #ecf0e9 58%, #dce8e8);
   }
   .gradient-card {
-    background: linear-gradient(145deg, rgba(255,255,255,0.96) 0%, rgba(248,250,252,0.92) 100%);
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.96) 0%,
+      rgba(248, 250, 252, 0.92) 100%
+    );
   }
   .pattern-grid {
     background-image:
@@ -155,11 +162,19 @@
     animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
   @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
   }
   .card-hover {
-    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    transition:
+      transform 0.2s ease,
+      box-shadow 0.2s ease,
+      border-color 0.2s ease;
   }
   .card-hover:hover {
     transform: translateY(-2px);
@@ -176,5 +191,105 @@
   }
   .card-hover:hover {
     transform: none;
+  }
+}
+
+/* Keyboard navigation remains visible on all links and native controls. */
+:where(a, button, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+html {
+  scroll-padding-top: 6rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* The homepage keeps the map behind the hero and its controls. */
+.atlas-ambient-bg {
+  background: var(--background);
+}
+
+.atlas-hero.atlas-hero--topography {
+  isolation: isolate;
+  padding-block: clamp(3.2rem, 5.7vw, 5.55rem) clamp(1.9rem, 3.7vw, 3.2rem);
+}
+
+.atlas-hero--topography h1 {
+  --title-size: clamp(1.8rem, 4.4vw, 3.7rem);
+  margin: 0 0 clamp(1rem, 2vw, 1.55rem);
+  letter-spacing: -0.04em;
+}
+
+.atlas-hero--topography h1 em {
+  margin-top: 0.14em;
+  font-size: 1.29em;
+  letter-spacing: -0.035em;
+}
+
+.atlas-hero--topography .atlas-lead {
+  width: min(100%, 58ch);
+  color: #d1dce5;
+  text-wrap: balance;
+}
+
+.atlas-hero--topography .campus-home-search {
+  width: min(100%, 42rem);
+  margin-top: clamp(1.15rem, 2.4vw, 1.75rem);
+}
+
+.atlas-hero--topography .atlas-scene {
+  margin-top: clamp(1.5rem, 3.8vw, 2.75rem);
+  background: #1a2a36;
+}
+
+html:not([data-motion="off"]) .atlas-hero.atlas-hero--topography
+  :is(h1, .atlas-lead, .campus-home-search, .atlas-scene) {
+  animation: none;
+}
+
+.atlas-hero--topography .atlas-search button:focus-visible {
+  outline: 2px solid #a1d1ec;
+  outline-offset: -4px;
+}
+
+.atlas-hero--topography .atlas-search button:active,
+.atlas-hero--topography .atlas-scene-card:active {
+  background: #3e5364;
+}
+
+.campus-search-positioner .campus-search-panel {
+  max-height: min(20rem, var(--available-height, 20rem));
+}
+
+@media (max-width: 480px) {
+  .atlas-hero.atlas-hero--topography {
+    padding-block: 2.7rem 1.5rem;
+  }
+
+  .atlas-hero--topography .atlas-scene-card {
+    padding-inline: 0.65rem;
+  }
+
+  .atlas-hero--topography .atlas-scene-card small {
+    font-size: 0.75rem;
+  }
+
+  .atlas-hero--topography .atlas-search button {
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 374px) {
+  .atlas-hero--topography .atlas-search button svg {
+    display: none;
   }
 }

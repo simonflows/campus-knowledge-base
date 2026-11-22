@@ -1,0 +1,322 @@
+.masthead {
+  --title-size: clamp(2rem, 3.8vw, 3.5rem);
+  --measure: calc(var(--title-size) * 1.09);
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(16.5rem, 27%, 20.5rem);
+  align-items: start;
+  gap: clamp(1rem, 3vw, 3rem);
+  padding-block: clamp(0.75rem, 1.6vw, 1.5rem) clamp(1.15rem, 2.2vw, 2rem);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.identity {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: var(--measure) minmax(0, 1fr);
+  align-items: start;
+  gap: 0.55rem clamp(0.7rem, 1.4vw, 1.25rem);
+}
+
+.icon {
+  width: var(--measure);
+  height: var(--measure);
+  display: grid;
+  place-items: center;
+  background: var(--atlas-navy);
+  color: var(--atlas-sky);
+  border: 1px solid #324e60;
+  border-radius: 0.7rem;
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 220ms ease;
+}
+
+.icon svg {
+  width: 54%;
+  height: 54%;
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .masthead:hover .icon {
+    transform: translateY(-1px) rotate(-2deg);
+    border-color: rgba(135, 203, 235, 0.55);
+  }
+  .masthead:hover .icon svg {
+    transform: scale(1.06);
+  }
+}
+
+.title {
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-heading);
+  font-weight: 650;
+  font-size: var(--title-size);
+  line-height: 1.09;
+  letter-spacing: -0.052em;
+  text-wrap: balance;
+}
+
+.description,
+.note {
+  grid-column: 2;
+  margin: 0;
+  min-width: 0;
+}
+
+.description {
+  max-width: 58ch;
+  color: var(--muted-foreground);
+  font-size: clamp(0.875rem, 1.15vw, 1rem);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.aside {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.aside a svg {
+  transition: transform var(--m-in) var(--m-ease);
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .aside a:hover svg {
+    transform: translateX(3px);
+  }
+  .masthead[data-layout="access"] .aside a:hover svg {
+    transform: translateX(-3px);
+  }
+}
+
+.metric {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  min-width: 9rem;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+}
+
+.metric strong {
+  display: flex;
+  align-items: center;
+  min-height: var(--measure);
+  color: var(--primary);
+  font: 500 clamp(1.55rem, 2.6vw, 2.4rem)/1 var(--font-mono);
+  letter-spacing: -0.065em;
+}
+
+.metric a {
+  font-size: 0.8rem;
+}
+
+@media (min-width: 641px) {
+  .metric > span {
+    padding-top: 0.55rem;
+    line-height: 1.5rem;
+  }
+  .masthead:not([data-layout="access"]) .aside > :is(a, button) {
+    margin-top: max(0px, calc((var(--measure) - 2.75rem) / 2));
+  }
+}
+
+@media (min-width: 641px) and (max-width: 780px) {
+  .masthead[data-layout="access"] .aside {
+    padding-inline-start: calc(var(--measure) + 0.65rem);
+  }
+}
+
+.art {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(
+    90deg,
+    transparent 30%,
+    #000 62%,
+    transparent 95%
+  );
+}
+
+.contours {
+  display: block;
+  position: absolute;
+  inset: -50% 0 -40% 23%;
+  transform: rotate(-12deg);
+  background:
+    radial-gradient(
+      ellipse at 67% 100%,
+      transparent 44%,
+      #ba895242 44.2%,
+      transparent 44.55%
+    ),
+    repeating-radial-gradient(
+      ellipse at 67% 100%,
+      transparent 0 18px,
+      #44768a26 18.5px 19.5px,
+      transparent 20px 37px
+    );
+}
+
+@keyframes mastheadRise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes contoursBreathe {
+  0%,
+  100% {
+    transform: rotate(-12deg) translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: rotate(-11.2deg) translate3d(-1%, 1.2%, 0) scale(1.025);
+  }
+}
+
+/* A single slow pass registers the contour map when a section opens, then gently breathes. */
+@media (prefers-reduced-motion: no-preference) {
+  :global(html:not([data-motion="off"])) .icon {
+    animation: mastheadRise 420ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+  :global(html:not([data-motion="off"])) .title {
+    animation: mastheadRise 460ms cubic-bezier(0.22, 1, 0.36, 1) 45ms backwards;
+  }
+  :global(html:not([data-motion="off"])) .description {
+    animation: mastheadRise 460ms cubic-bezier(0.22, 1, 0.36, 1) 90ms backwards;
+  }
+  :global(html:not([data-motion="off"])) .aside {
+    animation: mastheadRise 480ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
+  }
+  :global(html:not([data-motion="off"])) .contours {
+    --tw-enter-translate-x: 1.8rem;
+    --tw-enter-rotate: -12deg;
+    --tw-enter-opacity: 0.25;
+    animation:
+      var(--workspace-map-enter, enter) 4.5s var(--m-ease-enter) both,
+      contoursBreathe 18s ease-in-out 4.5s infinite;
+  }
+}
+
+.masthead[data-layout="access"] {
+  position: sticky;
+  top: 6rem;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: end;
+  min-height: 27rem;
+  gap: 1.25rem;
+  padding: clamp(1.3rem, 3.5vw, 3rem);
+  border: 1px solid rgba(72, 108, 134, 0.42);
+  overflow: clip;
+  border-radius: 12px;
+  background: var(--atlas-navy);
+  color: #f4fafc;
+}
+
+.masthead[data-layout="access"] .art {
+  mask-image: linear-gradient(#000, transparent 96%);
+}
+
+.masthead[data-layout="access"] .contours {
+  inset: -68% -24% 0 -25%;
+  background:
+    radial-gradient(
+      ellipse at 68% 12%,
+      transparent 60%,
+      #f59a6880 60.2%,
+      transparent 60.5%
+    ),
+    repeating-radial-gradient(
+      ellipse at 68% 12%,
+      transparent 0 18px,
+      #87cbeb38 18.5px 19.5px,
+      transparent 20px 37px
+    );
+}
+
+.masthead[data-layout="access"] .identity {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.masthead[data-layout="access"] .icon {
+  background: #1c3749;
+  border-color: #426477;
+}
+
+.masthead[data-layout="access"] .description {
+  grid-column: auto;
+  color: #c3d6df;
+}
+
+.masthead[data-layout="access"] .aside {
+  justify-self: start;
+}
+
+.masthead[data-layout="access"] a {
+  color: var(--atlas-sky);
+}
+
+.masthead[data-layout="access"] a:focus-visible {
+  outline-color: var(--atlas-sky);
+}
+
+@media (max-width: 780px) {
+  .masthead[data-layout="access"] {
+    position: relative;
+    top: auto;
+    min-height: 0;
+    gap: 0.4rem;
+  }
+  .masthead[data-layout="access"] .identity {
+    grid-template-columns: var(--measure) minmax(0, 1fr);
+    gap: 0.65rem;
+  }
+  .masthead[data-layout="access"] .description {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 640px) {
+  .masthead {
+    --title-size: clamp(1.75rem, 6.8vw, 2.35rem);
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.7rem;
+  }
+  .description,
+  .note,
+  .masthead[data-layout="access"] .description {
+    grid-column: 1 / -1;
+  }
+  .aside {
+    justify-self: start;
+    width: 100%;
+  }
+  .metric {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.55rem;
+  }
+  .metric strong {
+    min-height: auto;
+    font-size: 1.22rem;
+  }
+  .art {
+    opacity: 0.65;
+    mask-image: linear-gradient(90deg, transparent 42%, #000);
+  }
+}

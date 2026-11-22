@@ -21,12 +21,14 @@ import {
 } from "@/components/ui/card";
 import {
   getParticipantApprovals,
+  getRequiredStakeholderApprovals,
+  getRequiredUniversityApprovals,
   getUniversityName,
   isJointFullyApproved,
-  isJointProject,
   knowledgeCardTypeLabels,
   type KnowledgeCard,
 } from "@/lib/knowledge";
+import { roleShortLabels } from "@/lib/auth";
 
 type KnowledgeModerationPanelProps = {
   cards: KnowledgeCard[];
@@ -43,21 +45,29 @@ export function KnowledgeModerationPanel({
 
   if (cards.length === 0) return null;
 
-  const handleAction = async (cardId: string, action: "approve" | "reject") => {
+  const handleAction = async (
+    card: KnowledgeCard,
+    action: "approve" | "reject"
+  ) => {
     if (busyId !== null) return;
-    setBusyId(`${cardId}-${action}`);
+    setBusyId(`${card.id}-${action}`);
 
     try {
       const response = await fetch(
-        `/api/knowledge/cards/${cardId}/moderation`,
+        `/api/knowledge/cards/${card.id}/moderation`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "If-Match": card.updatedAt,
+          },
           body: JSON.stringify({ action }),
         }
       );
       const data = (await response.json().catch(() => null)) as
-        KnowledgeCard | { error?: string } | null;
+        | KnowledgeCard
+        | { error?: string }
+        | null;
 
       if (!response.ok) {
         toast.error(
@@ -75,7 +85,9 @@ export function KnowledgeModerationPanel({
 
       onCardUpdated(data as KnowledgeCard);
       toast.success(
-        action === "approve" ? "Черновик добавлен в канон" : "Черновик отклонён"
+        action === "approve"
+          ? "Черновик добавлен в утверждённую базу"
+          : "Черновик отклонён"
       );
     } catch {
       toast.error("Ошибка сети при модерации карточки");
@@ -85,7 +97,7 @@ export function KnowledgeModerationPanel({
   };
 
   return (
-    <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-amber-200/80">
+    <Card className="data-index-review">
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="flex items-center gap-2 font-heading text-xl">
@@ -97,16 +109,15 @@ export function KnowledgeModerationPanel({
           </Badge>
         </div>
         <CardDescription>
-          Новые карточки от PR-команд и владельцев не попадают в канон, пока
-          координатор их не одобрит. Совместный проект требует подтверждения
-          обоих вузов-участников.
+          Координатор утверждает редакцию после обязательных согласований.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {cards.map((card) => {
-          const joint = isJointProject(card);
+          const requiredUniversityIds = getRequiredUniversityApprovals(card);
           const approvals = getParticipantApprovals(card);
-          const ready = !joint || isJointFullyApproved(card);
+          const waitingRoles = getRequiredStakeholderApprovals(card).filter(role => !card.stakeholderApprovals?.[role]);
+          const ready = isJointFullyApproved(card) && !waitingRoles.length;
 
           return (
             <div
@@ -125,10 +136,10 @@ export function KnowledgeModerationPanel({
                       · {card.owners.join(", ")}
                     </span>
                   </div>
-                  {joint ? (
+                  {requiredUniversityIds.length ? (
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
                       <Handshake className="h-3.5 w-3.5 text-primary" />
-                      {card.participantUniversityIds.map((universityId) => {
+                      {requiredUniversityIds.map((universityId) => {
                         const confirmed = approvals.includes(universityId);
 
                         return (
@@ -167,7 +178,7 @@ export function KnowledgeModerationPanel({
                     type="button"
                     size="sm"
                     className="h-10 flex-1 sm:h-7 sm:flex-none"
-                    onClick={() => handleAction(card.id, "approve")}
+                    onClick={() => handleAction(card, "approve")}
                     disabled={!ready || busyId !== null}
                   >
                     <CheckCircle2 className="h-4 w-4" />
@@ -178,7 +189,7 @@ export function KnowledgeModerationPanel({
                     variant="outline"
                     size="sm"
                     className="h-10 flex-1 sm:h-7 sm:flex-none"
-                    onClick={() => handleAction(card.id, "reject")}
+                    onClick={() => handleAction(card, "reject")}
                     disabled={busyId !== null}
                   >
                     <XCircle className="h-4 w-4" />
@@ -188,8 +199,9 @@ export function KnowledgeModerationPanel({
               </div>
               {!ready ? (
                 <p className="mt-2 text-xs text-amber-900">
-                  Нужно подтверждение второго вуза-участника, прежде чем
-                  добавлять проект в канон.
+                  {waitingRoles.length
+                    ? `Ожидаются согласования: ${waitingRoles.map(role => roleShortLabels[role]).join(", ")}.`
+                    : "Ожидаются подтверждения вузов-участников."}
                 </p>
               ) : null}
             </div>

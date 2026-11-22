@@ -2,60 +2,144 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useLayoutEffect, useRef } from "react";
 import {
   BarChart3,
   BookOpen,
+  ClipboardList,
   Cpu,
   Home,
+  Inbox,
   PenLine,
   ScanText,
   ShieldCheck,
 } from "lucide-react";
+import { campusServices } from "@/lib/campus-services";
 
-import { cn } from "@/lib/utils";
+function navSections(staff: boolean) {
+  return [
+    { href: "/", title: "Главная", navTitle: "Главная" },
+    ...campusServices(undefined, staff).filter(({ href }) => !staff || href !== "/requests"),
+  ];
+}
 
-const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+const sectionIcons = {
+  "/": Home,
+  "/knowledge": BookOpen,
+  "/editor": PenLine,
+  "/check": ScanText,
+  "/requests": Inbox,
+  "/work": ClipboardList,
+  "/analytics": BarChart3,
+  "/comparison": Cpu,
+  "/login": ShieldCheck,
+} as Record<string, typeof Home>;
 
-const HEADER_LINKS = [
-  { href: "/", label: "Обзор", icon: Home, exact: true },
-  { href: "/knowledge", label: "База знаний", icon: BookOpen, exact: false },
-  { href: "/editor", label: "Редактор", icon: PenLine, exact: false },
-  { href: "/check", label: "Фактчекинг", icon: ScanText, exact: false },
-  { href: "/analytics", label: "Аналитика", icon: BarChart3, exact: false },
-  ...(isDemoMode
-    ? [{ href: "/comparison", label: "Архитектура и ИИ", icon: Cpu, exact: false }]
-    : []),
-  { href: "/login", label: "Доступ", icon: ShieldCheck, exact: false },
-] as const;
+function positionIndicator(nav: HTMLElement | null, slide: boolean) {
+  const indicator = nav?.querySelector<HTMLElement>(".atlas-nav-indicator");
+  if (!nav || !indicator) return;
 
-export function HeaderNav() {
+  const active = nav.querySelector('[aria-current="page"]');
+  const target = active?.getBoundingClientRect();
+  if (!target?.width || !target.height) {
+    nav.removeAttribute("data-positioned");
+    nav.removeAttribute("data-sliding");
+    return;
+  }
+
+  const track = indicator.getBoundingClientRect();
+  const left = target.left - track.left;
+  // The clip keeps the pill's ends round as it moves and changes width.
+  const clip = `inset(${target.top - track.top}px ${track.right - target.right}px ${track.bottom - target.bottom}px ${left}px round 999px)`;
+  const positioned = nav.hasAttribute("data-positioned");
+  if (positioned && indicator.dataset.clip === clip) return;
+
+  nav.toggleAttribute("data-sliding", slide && positioned);
+  indicator.dataset.clip = clip;
+  indicator.style.clipPath = clip;
+  nav.setAttribute("data-positioned", "");
+}
+
+function RequestCount({ count }: { count: number }) {
+  return (
+    <span className="atlas-nav-count">
+      <span aria-hidden="true">{count}</span>
+      <span className="sr-only">Входящие запросы: {count}</span>
+    </span>
+  );
+}
+
+export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?: number; staff?: boolean }) {
+  const pathname = usePathname();
+  const navRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    positionIndicator(navRef.current, true);
+  }, [pathname, staff]);
+
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+
+    const realign = () => positionIndicator(nav, false);
+    const observer = new ResizeObserver(realign);
+    observer.observe(nav);
+    nav.querySelectorAll("a").forEach((link) => observer.observe(link));
+    document.fonts.addEventListener("loadingdone", realign);
+    return () => {
+      observer.disconnect();
+      document.fonts.removeEventListener("loadingdone", realign);
+    };
+  }, [staff]);
+
+  return (
+    <nav ref={navRef} aria-label="Основная навигация" className="atlas-nav">
+      <span aria-hidden="true" className="atlas-nav-indicator" />
+      {navSections(staff).map(({ href, navTitle }) =>
+        href === "/login" ? null : (
+          <Link
+            key={href}
+            href={href}
+            aria-current={pathname === href ? "page" : undefined}
+          >
+            {navTitle}
+            {(href === "/requests" || href === "/work") && incomingCount > 0 && (
+              <RequestCount count={incomingCount} />
+            )}
+          </Link>
+        )
+      )}
+    </nav>
+  );
+}
+
+export function MobileNav({
+  incomingCount = 0,
+  staff = false,
+  onNavigate,
+}: {
+  incomingCount?: number;
+  staff?: boolean;
+  onNavigate: () => void;
+}) {
   const pathname = usePathname();
 
   return (
-    <nav
-      aria-label="Основная навигация"
-      className="ml-3 hidden items-center gap-0.5 text-[13px] xl:flex"
-    >
-      {HEADER_LINKS.map((item) => {
-        const Icon = item.icon;
-        const isActive = item.exact
-          ? pathname === item.href
-          : pathname === item.href || pathname.startsWith(`${item.href}/`);
-
+    <nav aria-label="Основная навигация" className="atlas-mobile-nav">
+      {navSections(staff).map(({ href, title }) => {
+        const Icon = sectionIcons[href];
         return (
           <Link
-            key={item.href}
-            href={item.href}
-            aria-current={isActive ? "page" : undefined}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 whitespace-nowrap transition-all",
-              isActive
-                ? "bg-primary/10 font-semibold text-primary ring-1 ring-primary/20 shadow-2xs"
-                : "text-muted-foreground hover:bg-muted/80 hover:text-foreground"
-            )}
+            key={href}
+            href={href}
+            aria-current={pathname === href ? "page" : undefined}
+            onNavigate={onNavigate}
           >
-            <Icon className="h-3.5 w-3.5 shrink-0" />
-            {item.label}
+            {Icon && <Icon size={17} aria-hidden="true" />}
+            {title}
+            {(href === "/requests" || href === "/work") && incomingCount > 0 && (
+              <RequestCount count={incomingCount} />
+            )}
           </Link>
         );
       })}

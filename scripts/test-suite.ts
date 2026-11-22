@@ -32,21 +32,32 @@ function test(name: string, fn: () => void): void {
 
 console.log("\n=== Тесты «Канон кампуса «Южный Урал»» ===\n");
 
-test("1. Эталонная база содержит 18 карточек и 3 статьи со всеми валидными sourceCardIds", () => {
-  assert.equal(knowledgeSeedCards.length, 18);
+test("1. База содержит 18 исходных карточек, 7 паспортов вузов и 3 статьи со всеми валидными sourceCardIds", () => {
+  assert.equal(
+    knowledgeSeedCards.filter((card) => card.type !== "university").length,
+    18
+  );
+  assert.equal(
+    knowledgeSeedCards.filter((card) => card.type === "university").length,
+    7
+  );
   assert.equal(articleSeed.length, 3);
 
   const cardIds = new Set(knowledgeSeedCards.map((c) => c.id));
   for (const article of articleSeed) {
     for (const srcId of article.sourceCardIds) {
-      assert.ok(cardIds.has(srcId), `Missing sourceCardId ${srcId} in ${article.id}`);
+      assert.ok(
+        cardIds.has(srcId),
+        `Missing sourceCardId ${srcId} in ${article.id}`
+      );
     }
   }
 });
 
-test("2. Все 18 эталонных описаний карточек и 3 готовые статьи не содержат красных и жёлтых ошибок", () => {
+test("2. Эталонные описания подтверждены, старые статьи сохраняют подтверждённые части и показывают непроверенные формулировки", () => {
   for (const card of knowledgeSeedCards) {
-    if (!card.referenceDescription.trim()) continue;
+    if (!card.referenceDescription.trim() || card.type === "university")
+      continue;
     const chk = checkFactText(card.referenceDescription, knowledgeSeedCards);
     assert.equal(
       chk.summary.red,
@@ -64,7 +75,10 @@ test("2. Все 18 эталонных описаний карточек и 3 г�
     const fullText = [
       article.title,
       article.lead,
-      ...article.sections.flatMap((s) => [s.heading, ...s.chunks.map((c) => c.content)]),
+      ...article.sections.flatMap((s) => [
+        s.heading,
+        ...s.chunks.map((c) => c.content),
+      ]),
     ].join("\n\n");
     const chk = checkFactText(fullText, knowledgeSeedCards);
     assert.equal(
@@ -72,11 +86,32 @@ test("2. Все 18 эталонных описаний карточек и 3 г�
       0,
       `Seed article ${article.id} has red findings: ${JSON.stringify(chk.findings.filter((f) => f.level === "red"))}`
     );
-    assert.equal(
-      chk.summary.yellow,
-      0,
-      `Seed article ${article.id} has yellow findings: ${JSON.stringify(chk.findings.filter((f) => f.level === "yellow"))}`
+    assert.ok(
+      chk.summary.green > 0,
+      `Seed article ${article.id} has no confirmed facts`
     );
+    const uncertain = chk.findings.filter(
+      (finding) => finding.level === "yellow"
+    );
+    assert.ok(
+      uncertain.every(
+        (finding) =>
+          finding.title === "Утверждение требует подтверждения" &&
+          fullText.includes(finding.quote)
+      ),
+      JSON.stringify(uncertain)
+    );
+    if (article.id === "article-seed-trauma") {
+      // The joint project card confirms VR development and roles, but does
+      // not describe a reduction of workload for the real emergency unit.
+      assert.ok(
+        uncertain.some((finding) =>
+          finding.quote.includes("без нагрузки на приёмное отделение")
+        )
+      );
+      assert.equal(chk.coverage, "partial");
+      assert.equal(chk.canPublish, false);
+    }
   }
 });
 
@@ -129,7 +164,11 @@ test("5. Аналитика: партнёры включают лаборато�
   const inSmartCount = partnerReport.summary.partners.filter((p) =>
     p.toLowerCase().includes("insmart")
   ).length;
-  assert.equal(inSmartCount, 1, "ГК inSmart должна учитываться строго один раз");
+  assert.equal(
+    inSmartCount,
+    1,
+    "ГК inSmart должна учитываться строго один раз"
+  );
 
   const multiUniv = buildAnalyticsReport(
     "Покажи проекты ЮУрГУ и ЧелГУ",
@@ -156,8 +195,9 @@ test("6. 152-ФЗ: санитайзер Alibaba удаляет ПДн, теле�
   assert.ok(!textSanitized.includes("test@susu.ru"));
 
   assert.equal(
-    validateExternalHttpsUrl("https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
-      .valid,
+    validateExternalHttpsUrl(
+      "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    ).valid,
     true
   );
   assert.equal(validateExternalHttpsUrl("http://127.0.0.1:8000").valid, false);
@@ -169,6 +209,7 @@ test("6. 152-ФЗ: санитайзер Alibaba удаляет ПДн, теле�
 });
 
 test("7. Безопасность: HMAC-SHA256 куки, Origin-защита, rate-limit и изоляция ролей 7 вузов", () => {
+  process.env.CAMPUS_DEMO_LOGIN = "true";
   const token = signSessionToken("demo-admin");
   assert.equal(verifySessionToken(token), "demo-admin");
   assert.equal(verifySessionToken("demo-admin"), null);

@@ -1,10 +1,26 @@
 node_modules
 npm-debug.log
 .next
+.next-*
+.codex/
+.impeccable/
+backups/
+tmp/
+output/
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+*.tar
+*.tar.gz
+.next-campus-demo
 out
 .env
-.env.local
-.env*.local
+.env.*
+.data
 .git
 .gitignore
 README.md
@@ -13,3 +29,7 @@ README.md
 .vercel
 .idea
 .vscode
+
+# Local browser audit evidence
+.taste-skill/
+.playwright-cli/

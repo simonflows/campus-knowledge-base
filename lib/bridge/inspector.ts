@@ -142,9 +142,14 @@ export function init() {
   };
 
   const handleToggleInspector = (message: { payload?: unknown }) => {
-    const payload = message.payload as
+    const rawPayload = message.payload;
+    if (rawPayload !== undefined &&
+        (rawPayload === null || typeof rawPayload !== "object" || Array.isArray(rawPayload))) {
+      return;
+    }
+    const payload = rawPayload as
       | {
-          enabled?: boolean;
+          enabled?: unknown;
           appearance?: {
             outlineColor?: unknown;
             overlayColor?: unknown;
@@ -153,7 +158,8 @@ export function init() {
           };
         }
       | undefined;
-    const enabled = payload?.enabled ?? true;
+    const enabled = payload?.enabled;
+    if (enabled !== undefined && typeof enabled !== "boolean") return;
     const appearance = {
       outlineColor: getInspectorColor(
         payload?.appearance?.outlineColor,
@@ -174,7 +180,7 @@ export function init() {
     };
     clearSelectedElementHighlight();
     setState({
-      active: enabled,
+      active: enabled ?? true,
       hoveredElement: null,
       appearance,
     });
@@ -188,6 +194,7 @@ export function init() {
 
   return () => {
     clearSelectedElementHighlight();
+    setState({ active: false, hoveredElement: null, appearance: DEFAULT_APPEARANCE });
     window.removeEventListener("mousemove", handleMouseMove);
     window.removeEventListener("click", handleClick, true);
     window.removeEventListener("keydown", handleKeyDown);

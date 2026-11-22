@@ -1,8 +1,14 @@
 "use client";
+import {
+  MastheadCount,
+  WorkspaceMasthead,
+} from "@/components/workspace-masthead";
+import { AnimatedNumber } from "@/components/motion/animated-number";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
+  ArrowUpRight,
   BarChart3,
   Building2,
   ClipboardList,
@@ -18,10 +24,11 @@ import {
   Search,
   Table2,
   TriangleAlert,
-  Users,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { isCurrentFlashRequest } from "@/components/flash-assist-hint";
+import { CanonAiOption, CanonAiReview } from "@/components/canon-ai-review";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -42,21 +49,20 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { AnalyticsCardRow, AnalyticsReport } from "@/lib/analytics";
+import type { CanonAnalyticsAiReview } from "@/lib/canon-analytics-ai";
 import { cn } from "@/lib/utils";
+import { analyticsQuerySchema } from "@/lib/validation/analytics";
 
 type AnalyticsWorkspaceProps = {
   cardsCount: number;
   dbAvailable: boolean;
+  flashAssistAvailable?: boolean;
+  dynamicExamples?: string[];
 };
 
 type ViewMode = "table" | "list";
 
-const examples = [
-  "Собери все проекты взаимодействия вузов с индустриальными партнёрами в сфере медицины",
-  "Сделай отчёт по взаимодействию вузов между собой в здравоохранении",
-  "Покажи проекты ЮУрГУ в контуре ПИШ",
-  "Собери лаборатории по цифровым технологиям",
-];
+type AnalyticsResponse = AnalyticsReport & { error?: string; ai?: CanonAnalyticsAiReview };
 
 const summaryLabels = [
   { key: "total", label: "Найдено карточек" },
@@ -89,7 +95,7 @@ function SourceLink({
   );
 }
 
-function FilterChips({ report }: { report: AnalyticsReport }) {
+function FilterChips({ report, centered = false }: { report: AnalyticsReport; centered?: boolean }) {
   if (report.filters.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -99,15 +105,15 @@ function FilterChips({ report }: { report: AnalyticsReport }) {
   }
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className={cn("flex flex-wrap gap-2", centered && "justify-center")}>
       {report.filters.map((filter, index) => (
         <Badge
           key={`${filter.key}-${filter.value}-${index}`}
           variant="secondary"
           className="h-auto max-w-full gap-1 whitespace-normal py-1 text-left text-[11px] leading-snug"
         >
-          <span className="font-semibold">{filter.label}:</span>
-          <span>{filter.value}</span>
+          <span className={cn("font-semibold", centered && "shrink-0 whitespace-nowrap")}>{filter.label}:</span>
+          <span className={centered ? "min-w-0 break-words" : undefined}>{filter.value}</span>
         </Badge>
       ))}
     </div>
@@ -118,7 +124,7 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
   const { summary, cards } = report;
 
   return (
-    <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
+    <Card className="data-report-summary atlas-stagger-in">
       <CardHeader>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -131,10 +137,6 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
               контур. Каждое сведение ведёт к карточке-источнику.
             </CardDescription>
           </div>
-          <Badge variant="outline" className="gap-1 text-[11px]">
-            <Search className="size-3" />
-            Без домысливания
-          </Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -147,21 +149,24 @@ function SummaryCard({ report }: { report: AnalyticsReport }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <dl className="data-report-metrics">
           {summaryLabels.map((item) => (
-            <div
-              key={item.key}
-              className="rounded-2xl border bg-muted/30 px-3 py-2"
-            >
-              <div className="text-2xl font-bold tabular-nums">
-                {summary[item.key]}
-              </div>
-              <div className="text-[11px] text-muted-foreground">
-                {item.label}
-              </div>
+            <div key={item.key}>
+              <dt>{item.label}</dt>
+              <dd>
+                <AnimatedNumber value={summary[item.key]} />
+                <span className="data-report-track" aria-hidden="true">
+                  <i
+                    className="atlas-bar-grow"
+                    style={{
+                      inlineSize: `${summary.total > 0 ? (summary[item.key] / summary.total) * 100 : 0}%`,
+                    }}
+                  />
+                </span>
+              </dd>
             </div>
           ))}
-        </div>
+        </dl>
 
         <div className="grid gap-4 md:grid-cols-2">
           <div className="space-y-2">
@@ -447,10 +452,15 @@ function ListView({ cards }: { cards: AnalyticsCardRow[] }) {
   );
 }
 
-function buildReportText(report: AnalyticsReport, origin: string): string {
+function buildReportText(report: AnalyticsResponse, origin: string): string {
   const lines: string[] = [
     "Аналитическая справка по базе",
-    `Запрос: ${report.query}`,
+    ...(report.ai?.appliedQuery
+      ? [
+          `Исходный запрос — ${report.ai.originalQuery}`,
+          `Запрос для расчёта — ${report.ai.appliedQuery}`,
+        ]
+      : [`Запрос: ${report.query}`]),
   ];
 
   if (report.filters.length > 0) {
@@ -504,31 +514,40 @@ function buildReportText(report: AnalyticsReport, origin: string): string {
 export function AnalyticsWorkspace({
   cardsCount,
   dbAvailable,
+  flashAssistAvailable = false,
+  dynamicExamples = [],
 }: AnalyticsWorkspaceProps) {
   const [query, setQuery] = useState("");
-  const [report, setReport] = useState<AnalyticsReport | null>(null);
+  const [report, setReport] = useState<AnalyticsResponse | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [aiEnabled, setAiEnabled] = useState(true);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const handleQueryChange = (value: string) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
     setQuery(value);
-
-    if (report) {
-      setReport(null);
-      setError(null);
-    }
+    setIsLoading(false);
+    setReport(null);
+    setError(null);
   };
 
   const requestAnalytics = async () => {
-    if (isLoading) return;
-    const trimmed = query.trim();
-
-    if (trimmed.length < 3) {
-      toast.error("Опишите запрос хотя бы тремя символами");
+    if (abortRef.current) return;
+    const parsed = analyticsQuerySchema.safeParse({
+      query,
+      ...(flashAssistAvailable && aiEnabled && { useAi: true }),
+    });
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? "Проверьте текст запроса");
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsLoading(true);
     setError(null);
 
@@ -536,12 +555,14 @@ export function AnalyticsWorkspace({
       const response = await fetch("/api/analytics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify(parsed.data),
+        signal: controller.signal,
       });
       const data = (await response.json().catch(() => null)) as
-        | (AnalyticsReport & { error?: string })
+        | AnalyticsResponse
         | null;
 
+      if (!isCurrentFlashRequest(controller, abortRef.current)) return;
       if (!response.ok || !data) {
         const message =
           data?.error ??
@@ -561,7 +582,7 @@ export function AnalyticsWorkspace({
       setView("table");
 
       if (data.cards.length === 0) {
-        toast("Подходящих карточек нет", {
+        toast(data.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет", {
           description: data.notice ?? undefined,
         });
       } else {
@@ -570,12 +591,16 @@ export function AnalyticsWorkspace({
         });
       }
     } catch {
+      if (!isCurrentFlashRequest(controller, abortRef.current)) return;
       const message =
         "Сервис аналитики недоступен. Проверьте соединение и попробуйте ещё раз.";
       setError(message);
       toast.error(message);
     } finally {
-      setIsLoading(false);
+      if (isCurrentFlashRequest(controller, abortRef.current)) {
+        abortRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 
@@ -598,138 +623,102 @@ export function AnalyticsWorkspace({
   };
 
   return (
-    <div className="mx-auto w-full max-w-7xl space-y-8 px-4 py-8 sm:py-10">
-      <section className="gradient-hero-vibrant relative isolate overflow-hidden rounded-[2rem] border border-white/70 px-6 py-8 shadow-sm sm:px-10 lg:px-12">
-        <div
-          aria-hidden
-          className="pattern-grid pointer-events-none absolute inset-0 opacity-[0.12]"
-        />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <Badge className="border-white/80 bg-white/75 text-primary hover:bg-white/75">
-              <BarChart3 className="h-3.5 w-3.5" />
-              Сборная аналитика по базе
+    <div className="atlas-wrap data-workspace data-analytics">
+      <WorkspaceMasthead
+        id="analytics-title"
+        icon={BarChart3}
+        title="Сводная аналитика"
+        description="Собирайте отчёты по отраслям, вузам и партнёрам. Из каждой строки можно открыть утверждённую карточку-источник."
+        note={
+          !dbAvailable && (
+            <Badge variant="outline" className="bg-amber-100 text-amber-900">
+              Статический режим: данные из стартового набора
             </Badge>
-            <div className="space-y-2">
-              <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-                Сводные отчёты по каноническим карточкам
-              </h1>
-              <p className="text-sm leading-relaxed text-foreground/70 sm:text-base">
-                Опишите запрос свободным текстом — система отберёт карточки
-                строго по полям: отрасль, вузы, партнёры, статус и контур.
-                Каждая цифра и факт в отчёте ведут к карточке-источнику, а при
-                отсутствии данных система прямо скажет об этом.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <ClipboardList className="h-3.5 w-3.5 text-primary" />
-                {cardsCount} карточек в базе
-              </Badge>
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <Table2 className="h-3.5 w-3.5 text-primary" />
-                Таблица и список
-              </Badge>
-              <Badge variant="secondary" className="gap-1 bg-white/70">
-                <Copy className="h-3.5 w-3.5 text-primary" />
-                Копирование для отчёта
-              </Badge>
-              {!dbAvailable ? (
-                <Badge
-                  variant="secondary"
-                  className="gap-1 bg-amber-100 text-amber-800"
-                >
-                  Статический режим: данные из стартового набора
-                </Badge>
-              ) : null}
-            </div>
-          </div>
+          )
+        }
+      >
+        <MastheadCount count={cardsCount} label="карточек в базе" />
+      </WorkspaceMasthead>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-3">
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Layers3 className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                отрасль
-              </div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Users className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">вузы</div>
-            </div>
-            <div className="rounded-2xl bg-white/80 px-4 py-3 text-center ring-1 ring-white/90">
-              <Network className="mx-auto size-4 text-primary" />
-              <div className="mt-1 text-[11px] text-muted-foreground">
-                партнёры
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <div className="data-report-grid">
+        <Card className="data-query-card">
+          <CardHeader>
+            <h2 className="data-panel-title">
+              <Search aria-hidden="true" />
+              Запрос к базе
+            </h2>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Label htmlFor="analytics-query" className="sr-only">
+              Запрос к базе
+            </Label>
+            <Textarea
+              id="analytics-query"
+              value={query}
+              onChange={(event) => handleQueryChange(event.target.value)}
+              placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
+              className="data-editor-field data-query-field"
+            />
 
-      <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
-        <CardHeader>
-          <CardTitle className="text-lg">Запрос к базе</CardTitle>
-          <CardDescription>
-            Например: «Собери все проекты взаимодействия вузов с индустриальными
-            партнёрами в сфере медицины».
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <Label htmlFor="analytics-query" className="sr-only">
-            Запрос к базе
-          </Label>
-          <Textarea
-            id="analytics-query"
-            value={query}
-            onChange={(event) => handleQueryChange(event.target.value)}
-            placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
-            className="min-h-28 resize-y"
-          />
+            {flashAssistAvailable && (
+              <CanonAiOption kind="analytics" checked={aiEnabled} disabled={isLoading} onChange={setAiEnabled} />
+            )}
 
-          <div className="flex flex-wrap gap-2">
-            {examples.map((example) => (
+            <div className="data-action-row">
               <Button
-                key={example}
                 type="button"
-                variant="outline"
-                size="sm"
-                className="h-auto whitespace-normal py-1.5 text-left text-[11px] leading-snug"
-                onClick={() => handleQueryChange(example)}
+                onClick={() => void requestAnalytics()}
                 disabled={isLoading}
               >
-                {example}
+                {isLoading ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Search className="size-4" />
+                )}
+                {isLoading ? "Собираем..." : "Собрать аналитику"}
               </Button>
+              <span className="text-xs text-muted-foreground">
+                Карточки и числа в отчёте берутся из утверждённых данных.
+              </span>
+            </div>
+
+            {!isLoading && report?.ai && <CanonAiReview review={report.ai} />}
+
+            {error ? (
+              <Alert variant="destructive">
+                <TriangleAlert className="size-4" />
+                <AlertTitle>Аналитика не собрана</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </CardContent>
+        </Card>
+        <aside
+          className="data-report-examples"
+          aria-labelledby="analytics-examples-title"
+        >
+          <h2 id="analytics-examples-title">Примеры запросов</h2>
+          <ul>
+            {dynamicExamples.map((example) => (
+              <li key={example}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-pressed={query === example}
+                  onClick={() => handleQueryChange(example)}
+                  disabled={isLoading}
+                >
+                  <span>{example}</span>
+                  <ArrowUpRight aria-hidden="true" />
+                </Button>
+              </li>
             ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              onClick={requestAnalytics}
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Search className="size-4" />
-              )}
-              {isLoading ? "Собираем..." : "Собрать аналитику"}
-            </Button>
-            <span className="text-xs text-muted-foreground">
-              Выборка детерминированная: система не придумывает карточки и
-              цифры, которых нет в базе.
-            </span>
-          </div>
-
-          {error ? (
-            <Alert variant="destructive">
-              <TriangleAlert className="size-4" />
-              <AlertTitle>Аналитика не собрана</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-        </CardContent>
-      </Card>
+          </ul>
+          {dynamicExamples.length === 0 && (
+            <p className="text-sm text-muted-foreground">Для текущего набора карточек пока нет примеров.</p>
+          )}
+        </aside>
+      </div>
 
       {report ? (
         report.cards.length === 0 ? (
@@ -740,11 +729,11 @@ export function AnalyticsWorkspace({
                   <EmptyMedia variant="icon">
                     <Search className="size-5" />
                   </EmptyMedia>
-                  <EmptyTitle>Подходящих карточек нет</EmptyTitle>
-                  <EmptyDescription>{report.notice}</EmptyDescription>
+                  <EmptyTitle>{report.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет"}</EmptyTitle>
+                  <EmptyDescription>{report.interpretation?.message ?? report.notice}</EmptyDescription>
                 </EmptyHeader>
                 <div className="w-full max-w-2xl">
-                  <FilterChips report={report} />
+                  <FilterChips report={report} centered />
                 </div>
               </Empty>
             </CardContent>
@@ -770,6 +759,7 @@ export function AnalyticsWorkspace({
                         variant={view === "table" ? "secondary" : "ghost"}
                         size="sm"
                         className="gap-1.5"
+                        aria-pressed={view === "table"}
                         onClick={() => setView("table")}
                       >
                         <Table2 className="size-4" />
@@ -780,6 +770,7 @@ export function AnalyticsWorkspace({
                         variant={view === "list" ? "secondary" : "ghost"}
                         size="sm"
                         className="gap-1.5"
+                        aria-pressed={view === "list"}
                         onClick={() => setView("list")}
                       >
                         <List className="size-4" />

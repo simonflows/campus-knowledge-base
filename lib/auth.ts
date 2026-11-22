@@ -1,4 +1,9 @@
-import { getCardStatus, isJointProject, type KnowledgeCard } from "./knowledge";
+import {
+  cardContent, getCardStatus, getApprovedVersion, getPublicApprovedCard, getLegacyCustomDraftUniversityId,
+  getParticipantApprovals, getRequiredStakeholderApprovals, getRequiredUniversityApprovals,
+  getUniversityFullName, getUniversityIdFromFolder, getUniversityName,
+  STAKEHOLDER_APPROVAL_ROLES, type CardApprovalRecord, type CardOrganizationScope, type KnowledgeCard, type StakeholderApprovalRole,
+} from "./knowledge";
 
 export const ROLES = [
   "admin",
@@ -25,7 +30,9 @@ export type DemoAccount = {
   demoHint: string;
 };
 
-export type SessionUser = Omit<DemoAccount, "demoHint">;
+export type SessionUser = Omit<DemoAccount, "demoHint"> & {
+  soleUniversityOwner?: boolean;
+};
 
 export const roleLabels: Record<Role, string> = {
   admin: "Администратор канона",
@@ -72,6 +79,7 @@ export const roleDefinitions: Record<
       "Проверяет тексты и запрашивает аналитику",
       "Пишет статьи в умном редакторе",
       "Отправляет владельцу запрос на правку комментарием",
+      "Согласует паспорт кампуса и стратегические параметры",
     ],
     restrictions: [
       "Не редактирует чужие карточки напрямую",
@@ -85,6 +93,7 @@ export const roleDefinitions: Record<
       "Редактирует карточки, где указан владельцем или представителем АНО «РИОН»",
       "Читает базу, проверяет тексты, пишет статьи и собирает аналитику",
       "Отправляет запрос на правку владельцу чужой карточки",
+      "Согласует паспорт кампуса, совместные проекты и программы АНО «РИОН»",
     ],
     restrictions: [
       "Не редактирует чужие карточки",
@@ -98,6 +107,7 @@ export const roleDefinitions: Record<
       "Редактирует карточки, где указан владельцем или представителем ООО «ЧКК»",
       "Читает базу, проверяет тексты, пишет статьи и собирает аналитику",
       "Отправляет запрос на правку владельцу чужой карточки",
+      "Согласует паспорт кампуса и параметры объектов УНК",
     ],
     restrictions: [
       "Не редактирует чужие карточки",
@@ -124,11 +134,11 @@ export const roleDefinitions: Record<
     capabilities: [
       "Добавляет карточки только черновиком",
       "Черновик уходит координатору на подтверждение и не попадает в канон до одобрения",
-      "Для совместного проекта требуется подтверждение второго вуза-участника",
+      "Оставляет запросы на правку по карточкам своего вуза",
       "Читает базу, проверяет тексты, пишет статьи и собирает аналитику",
     ],
     restrictions: [
-      "Не редактирует утверждённые карточки других вузов",
+      "Утверждённые карточки меняет через запрос владельцу",
       "Не управляет типами карточек и параметрами кампуса",
     ],
   },
@@ -361,30 +371,133 @@ export function toSessionUser(account: DemoAccount): SessionUser {
     organization: account.organization,
     position: account.position,
     universityId: account.universityId,
+    soleUniversityOwner: account.role === "university_owner",
     ownershipLabel: account.ownershipLabel,
     ownerAliases: account.ownerAliases,
     organizationAliases: account.organizationAliases,
   };
 }
 
-function normalize(value: string): string {
+export function normalizeOwnerLabel(value: string): string {
   return value.toLowerCase().replace(/[«»"]/g, "").replace(/\s+/g, " ").trim();
 }
 
 export function isCardOwner(
   user: SessionUser | null,
-  owners: string[]
+  owners: string[],
+  ownerIds?: string[]
 ): boolean {
   if (!user) return false;
+  if (ownerIds !== undefined) return ownerIds.includes(user.id);
 
-  const normalizedOwners = owners.map(normalize);
-  const aliases = [...user.ownerAliases, ...user.organizationAliases]
-    .map(normalize)
-    .filter(Boolean);
+  const people = new Set(user.ownerAliases.map(normalizeOwnerLabel));
+  const organizations = new Set(user.organizationAliases.map(normalizeOwnerLabel));
+  const ownOrganization = normalizeOwnerLabel(user.organization);
+  return owners.some((owner) => {
+    const label = normalizeOwnerLabel(owner);
+    const separator = label.lastIndexOf(",");
+    if (separator < 0) return people.has(label) || organizations.has(label);
+    const name = label.slice(0, separator).trim();
+    const organization = label.slice(separator + 1).trim();
+    return organizations.has(organization) || (
+      organization === ownOrganization &&
+      ((!name.includes(",") && people.has(name)) || people.has(name + ", " + organization))
+    );
+  });
+}
 
-  return aliases.some((alias) =>
-    normalizedOwners.some((owner) => owner.includes(alias))
-  );
+export type CardOwnerAssignment = Pick<KnowledgeCard, "type" | "folderId" | "owners"> & {
+  universityId?: string;
+  initiatorUniversityId?: string;
+  isJoint?: boolean;
+  participantUniversityIds?: string[];
+  organizationScope?: CardOrganizationScope;
+  requiredApprovalUniversityIds?: string[];
+};
+
+export type CardOwnerCandidate = Pick<SessionUser, "id" | "role" | "universityId" | "ownershipLabel">;
+
+function laboratoryApprovalUniversities(card: Pick<KnowledgeCard, "type" | "requiredApprovalUniversityIds">): string[] {
+  return card.type === "laboratory" ? card.requiredApprovalUniversityIds ?? [] : [];
+}
+
+export function canAssignCardOwner(user: Pick<CardOwnerCandidate, "role" | "universityId">, card: CardOwnerAssignment): boolean {
+  if (card.type === "campus") return false;
+  const folderUniversity = getUniversityIdFromFolder(card.folderId);
+  if (user.role === "rio" || user.role === "chkk") {
+    return card.organizationScope === user.role && canCreateOrganizationCard(user.role, card);
+  }
+  if (!user.universityId || user.role !== "university_owner") return false;
+  if (card.organizationScope && (card.type !== "project" || !card.isJoint)) return false;
+  const laboratoryUniversities = laboratoryApprovalUniversities(card);
+  if (laboratoryUniversities.length) return laboratoryUniversities.includes(user.universityId);
+  if (folderUniversity && folderUniversity !== user.universityId) return false;
+  if (card.type === "university") return card.universityId === user.universityId;
+  if (card.type === "custom" && card.universityId) return card.universityId === user.universityId;
+  if (card.type === "project") {
+    return card.isJoint
+      ? Boolean(card.participantUniversityIds?.includes(user.universityId))
+      : card.initiatorUniversityId === user.universityId;
+  }
+  return true;
+}
+
+export function canCreateOrganizationCard(role: CardOrganizationScope, card: Pick<KnowledgeCard, "type">): boolean {
+  return card.type === "custom" || (role === "rio" ? card.type === "project" : card.type === "laboratory");
+}
+
+function hasCardOwnership(user: SessionUser, card: KnowledgeCard): boolean {
+  if (!canAssignCardOwner(user, card)) return false;
+  return isCardOwner(user, card.owners, card.ownerIds);
+}
+
+function isUniversityParticipant(user: SessionUser, card: KnowledgeCard): boolean {
+  if (!user.universityId) return false;
+  if (card.type === "university") return card.universityId === user.universityId;
+  if (card.type === "custom") return card.universityId === user.universityId;
+  if (card.type === "project") {
+    return card.isJoint ? card.participantUniversityIds.includes(user.universityId)
+      : card.initiatorUniversityId === user.universityId;
+  }
+  const laboratoryUniversities = laboratoryApprovalUniversities(card);
+  if (laboratoryUniversities.length) return laboratoryUniversities.includes(user.universityId);
+  return getUniversityIdFromFolder(card.folderId) === user.universityId;
+}
+
+export function sameCardOwnerScope(previous: CardOwnerAssignment, next: CardOwnerAssignment): boolean {
+  const oldParticipants = new Set(previous.participantUniversityIds);
+  const newParticipants = new Set(next.participantUniversityIds);
+  return previous.folderId === next.folderId &&
+    previous.organizationScope === next.organizationScope &&
+    previous.universityId === next.universityId &&
+    previous.initiatorUniversityId === next.initiatorUniversityId &&
+    Boolean(previous.isJoint) === Boolean(next.isJoint) &&
+    (!next.isJoint || (oldParticipants.size === newParticipants.size &&
+      [...newParticipants].every(id => oldParticipants.has(id))));
+}
+
+export function areCardOwnerIdsAssignable(card: CardOwnerAssignment, ids: string[], directory: SessionUser[]): boolean {
+  const eligible = new Set(directory.filter(user => canAssignCardOwner(user, card)).map(user => user.id));
+  return new Set(ids).size === ids.length && ids.every(id => eligible.has(id));
+}
+
+export function missingJointOwnerUniversityIds(card: KnowledgeCard, directory: SessionUser[]): string[] {
+  return getRequiredUniversityApprovals(card).filter(universityId => !directory.some(user =>
+    user.universityId === universityId && isDesignatedJointOwner(user, card)
+  ));
+}
+
+/** A partial match could discard a co-owner. Leave the entire assignment for manual review. */
+export function resolveLegacyCardOwnerIds(card: CardOwnerAssignment, directory: SessionUser[]): string[] | null {
+  if (!card.owners.length) return null;
+  const ids = new Set<string>();
+  for (const label of card.owners) {
+    const matches = directory.filter(user => isCardOwner(user, [label]));
+    const [owner] = matches;
+    if (matches.length !== 1 || owner.role !== "university_owner" || !canAssignCardOwner(owner, card)) return null;
+    ids.add(owner.id);
+  }
+  return [...ids];
 }
 
 export function canManageTypes(user: SessionUser | null): boolean {
@@ -412,25 +525,48 @@ export function canRequestEdit(
   card: KnowledgeCard
 ): boolean {
   if (!user || user.role === "guest") return false;
+  if (user.role === "university_pr") {
+    const published = getApprovedVersion(card);
+    if (!published || !isUniversityParticipant(user, published)) return false;
+  }
 
-  return !canEditCard(user, card);
+  return !canEditCard(user, card) && (canSeeCard(user, card) || !!getApprovedVersion(card));
+}
+
+export function canManageEditRequests(user: SessionUser | null, card: KnowledgeCard): boolean {
+  return user?.role === "admin" || Boolean(user && user.role !== "university_pr" && canEditCard(user, card));
+}
+
+export function cardRequestOwners(card: KnowledgeCard, directory: SessionUser[]): SessionUser[] {
+  return directory.filter(user => user.role !== "admin" && canManageEditRequests(user, card));
 }
 
 export function canEditCard(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user) return false;
+  if (!user || user.role === "guest" || user.role === "ministry") return false;
 
   if (user.role === "admin") return true;
 
   if (card.type === "campus") return false;
-
-  if (getCardStatus(card) !== "approved" && card.submittedBy === user.id) {
-    return true;
+  if (user.role === "university_pr") {
+    return getCardStatus(card) !== "approved" && !getApprovedVersion(card) && card.submittedBy === user.id &&
+      (card.type === "custom" && !card.organizationScope && !card.universityId || isUniversityParticipant(user, card));
+  }
+  if (user.role === "university_owner" && card.submittedBy === user.id &&
+      getLegacyCustomDraftUniversityId(card) === user.universityId) return true;
+  if (card.type === "university") {
+    if (user.universityId !== card.universityId) return false;
+    if (user.role !== "university_owner") return false;
+    const institutionNames = [user.organization, getUniversityFullName(card.universityId), getUniversityName(card.universityId)]
+      .map(normalizeOwnerLabel);
+    return hasCardOwnership(user, card) ||
+      (card.ownerIds === undefined && user.soleUniversityOwner === true &&
+        card.owners.some(label => institutionNames.includes(normalizeOwnerLabel(label))));
   }
 
-  return isCardOwner(user, card.owners);
+  return hasCardOwnership(user, card);
 }
 
 export function canSeeCard(
@@ -439,28 +575,96 @@ export function canSeeCard(
 ): boolean {
   if (getCardStatus(card) === "approved") return true;
 
-  if (!user) return false;
+  if (!user || user.role === "guest") return false;
 
-  if (user.role === "admin") return true;
+  if (canEditCard(user, card)) return true;
   if (card.submittedBy === user.id) return true;
-  if (isCardOwner(user, card.owners)) return true;
+  if (hasCardOwnership(user, card)) return true;
+  if (canReviewStakeholderScope(user, card)) return true;
 
-  return Boolean(
-    user.universityId &&
-    isJointProject(card) &&
-    card.participantUniversityIds.includes(user.universityId)
-  );
+  return canReviewJointParticipation(user, card);
+}
+
+function isDesignatedJointOwner(user: SessionUser, card: KnowledgeCard): boolean {
+  if (user.role !== "university_owner" || !user.universityId) return false;
+  const universityId = user.universityId;
+  const participatesNow = laboratoryApprovalUniversities(card).includes(universityId) ||
+    (card.type === "project" && card.isJoint && card.participantUniversityIds.includes(universityId));
+  const source = participatesNow ? card : card.approvedSnapshot;
+  return Boolean(source?.ownerIds?.includes(user.id) && canAssignCardOwner(user, source));
+}
+
+export function canReviewJointParticipation(user: SessionUser | null, card: KnowledgeCard): boolean {
+  return Boolean(user?.universityId && getRequiredUniversityApprovals(card).includes(user.universityId) &&
+    isDesignatedJointOwner(user, card));
 }
 
 export function canConfirmJointParticipation(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user?.universityId || !isJointProject(card)) return false;
-  if (getCardStatus(card) === "approved") return false;
-  if (!card.participantUniversityIds.includes(user.universityId)) return false;
+  return Boolean(user?.universityId && getCardStatus(card) === "pending" &&
+    canReviewJointParticipation(user, card) && !getParticipantApprovals(card).includes(user.universityId));
+}
 
-  return !(card.participantApprovals ?? []).includes(user.universityId);
+export function canReviewStakeholderScope(user: SessionUser | null, card: KnowledgeCard): boolean {
+  return Boolean(user && STAKEHOLDER_APPROVAL_ROLES.some(role => role === user.role &&
+    getRequiredStakeholderApprovals(card).includes(role)));
+}
+
+export function canConfirmStakeholderApproval(user: SessionUser | null, card: KnowledgeCard): user is SessionUser & { role: StakeholderApprovalRole } {
+  return Boolean(user && getCardStatus(card) === "pending" && canReviewStakeholderScope(user, card) &&
+    !card.stakeholderApprovals?.[user.role as StakeholderApprovalRole]);
+}
+
+function visibleApprovalRecords(records: Record<string, CardApprovalRecord | undefined> | undefined, user: SessionUser | null) {
+  if (!records || user?.role === "admin") return records;
+  return Object.fromEntries(Object.entries(records).map(([role, record]) => [
+    role, record && { revisionId: record.revisionId, at: record.at, actorId: record.actorId === user?.id ? record.actorId : "" },
+  ]));
+}
+
+export function visibleKnowledgeCard(user: SessionUser | null, card: KnowledgeCard): KnowledgeCard | null {
+  const currentVisible = canSeeCard(user, card);
+  const visible = currentVisible ? cardContent(card) : getPublicApprovedCard(card);
+  if (!visible) return null;
+  if (currentVisible && card.type === "laboratory" && card.requiredApprovalUniversityIds?.length) {
+    visible.requiredApprovalUniversityIds = [...card.requiredApprovalUniversityIds];
+  }
+  if (card.ownerIds !== undefined && user) {
+    // Clients calculate the edit controls from this view. Keep other employees' IDs private.
+    visible.ownerIds = user?.role === "admin" ? card.ownerIds :
+      user && currentVisible && hasCardOwnership(user, card) ? [user.id] : [];
+  }
+  const editor = canEditCard(user, card);
+  if (editor || (currentVisible && getCardStatus(card) !== "approved")) {
+    Object.assign(visible, {
+      submittedBy: card.submittedBy,
+      submittedByName: card.submittedByName,
+      reviewedBy: card.reviewedBy,
+      reviewedAt: card.reviewedAt,
+      reviewComment: card.reviewComment,
+      participantApprovals: card.participantApprovals,
+      participantApprovalRecords: visibleApprovalRecords(card.participantApprovalRecords, user),
+      requiredApprovalUniversityIds: card.requiredApprovalUniversityIds,
+      requiredApprovalStakeholderRoles: card.requiredApprovalStakeholderRoles,
+      stakeholderApprovals: visibleApprovalRecords(card.stakeholderApprovals, user),
+    });
+    if (getCardStatus(card) !== "approved" && card.approvedSnapshot) {
+      visible.approvedSnapshot = getPublicApprovedCard(card) ?? undefined;
+      if (visible.approvedSnapshot && user && card.approvedSnapshot.ownerIds?.includes(user.id)) {
+        visible.approvedSnapshot.ownerIds = [user.id];
+      }
+    }
+  }
+  if (editor) visible.diskSync = card.diskSync;
+  const requests = canManageEditRequests(user, card) ? card.editRequests : user && user.role !== "guest" ? card.editRequests?.filter((r) => r.authorId === user.id) : [];
+  if (requests?.length) visible.editRequests = requests;
+  return visible;
+}
+
+export function visibleKnowledgeCards(user: SessionUser | null, cards: KnowledgeCard[]): KnowledgeCard[] {
+  return cards.flatMap((card) => visibleKnowledgeCard(user, card) ?? []);
 }
 
 export function getUserOwnershipLabel(user: SessionUser): string {

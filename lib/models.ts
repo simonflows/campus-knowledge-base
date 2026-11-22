@@ -3,21 +3,33 @@ import {
   GetCommand,
   PutCommand,
   ScanCommand,
+  TransactWriteCommand,
   UpdateCommand,
+  type ScanCommandOutput,
+  type TransactWriteCommandInput,
 } from "@aws-sdk/lib-dynamodb";
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 
 import {
   articleSeed,
   DEMO_ARTICLE_IDS,
   isDemoArticle,
+  isApprovedArticle,
   type ReadyArticle,
 } from "./articles";
-import { docClient, getStorageMode } from "./db";
-import { createPendingDiskSync, type DiskSyncInfo } from "./disk-sync";
+import { docClient, getStorageMode, getWritableStorageMode } from "./db";
+import { getReadableStorageMode } from "./runtime-storage-policy";
+import { createPendingDiskSync, diskAttemptCondition, diskAttemptMatches, observedExportCondition, type DiskAttemptGuard, type DiskRegistry, type DiskRegistryCommit, type DiskSyncInfo } from "./disk-sync";
 import {
-  getCardStatus,
+  folderIds,
+  getApprovedVersion,
+  getLegacyCustomDraftUniversityId,
+  getPublicApprovedCard,
+  isCardApproved,
+  isCardReadyForPublication,
   knowledgeSeedCards,
   type CardEditRequest,
+  type CardFreshness,
   type CardStatus,
   type CardTypeDefinition,
   type KnowledgeCard,
@@ -25,10 +37,18 @@ import {
 import { mutateLocalStore, readLocalStore } from "./local-store";
 import { TableName } from "./schema";
 import type { SaveArticleInput } from "./validation/articles";
-import type { KnowledgeCardInput } from "./validation/knowledge";
+import { buildCustomFieldValuesSchema, canonicalCustomFieldValues, type KnowledgeCardInput } from "./validation/knowledge";
+import { knowledgeUpdateModeration } from "./knowledge-lifecycle";
+import {
+  describeApprovedCardVersion,
+  getApprovedCardVersion,
+  getCardVersionId,
+  insertCardVersion,
+  type CardVersionActor,
+} from "./knowledge-versions";
 
-export async function getAllKnowledgeCards(): Promise<KnowledgeCard[]> {
-  const mode = await getStorageMode();
+export async function getAllKnowledgeCards(signal?: AbortSignal): Promise<KnowledgeCard[]> {
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
@@ -39,25 +59,34 @@ export async function getAllKnowledgeCards(): Promise<KnowledgeCard[]> {
     return knowledgeSeedCards;
   }
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-    })
-  );
-
-  return (result.Items as KnowledgeCard[]) ?? [];
+  const cards: KnowledgeCard[] = [];
+  let cursor: Record<string, unknown> | undefined;
+  do {
+    const result: ScanCommandOutput = await docClient.send(
+      new ScanCommand({
+        TableName: TableName.KNOWLEDGE_CARDS,
+        ConsistentRead: true,
+        ExclusiveStartKey: cursor,
+      }), { abortSignal: signal }
+    );
+    cards.push(...((result.Items as KnowledgeCard[]) ?? []));
+    cursor = result.LastEvaluatedKey;
+  } while (cursor);
+  return cards;
 }
 
 export async function getCanonicalKnowledgeCards(): Promise<KnowledgeCard[]> {
   const cards = await getAllKnowledgeCards();
 
-  return cards.filter((card) => getCardStatus(card) === "approved");
+  return cards
+    .map(getPublicApprovedCard)
+    .filter((card): card is KnowledgeCard => card !== null);
 }
 
 export async function getKnowledgeCardById(
   id: string
 ): Promise<KnowledgeCard | null> {
-  const mode = await getStorageMode();
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
@@ -72,6 +101,7 @@ export async function getKnowledgeCardById(
     new GetCommand({
       TableName: TableName.KNOWLEDGE_CARDS,
       Key: { id },
+      ConsistentRead: true,
     })
   );
 
@@ -83,7 +113,119 @@ export type KnowledgeCardCreateMeta = {
   submittedBy?: string;
   submittedByName?: string;
   participantApprovals?: string[];
+  requiredApprovalStakeholderRoles?: KnowledgeCard["requiredApprovalStakeholderRoles"];
 };
+
+type CardTransaction = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
+
+function conditionalConflict(message: string, cause?: unknown) {
+  return Object.assign(new Error(message, { cause }), { name: "ConditionalCheckFailedException" });
+}
+
+function isTransactionConflict(error: unknown): boolean {
+  return error instanceof Error && error.name === "TransactionCanceledException" &&
+    (!(error instanceof TransactionCanceledException) ||
+      !error.CancellationReasons?.some(({ Code }) =>
+        Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)));
+}
+
+function typeEpochWrite(definition: CardTypeDefinition): CardTransaction {
+  return {
+    Update: {
+      TableName: TableName.KNOWLEDGE_CARD_TYPES,
+      Key: { id: definition.id },
+      ConditionExpression: "attribute_exists(id) AND updatedAt = :version",
+      UpdateExpression: "SET updatedAt = :next",
+      ExpressionAttributeValues: { ":version": definition.updatedAt, ":next": nextVersion(definition) },
+    },
+  };
+}
+
+function prepareCustomCard(card: KnowledgeCard, definition: CardTypeDefinition | null): KnowledgeCard {
+  if (card.type !== "custom") return card;
+  if (!definition) throw conditionalConflict("Тип карточки удалён");
+  const fields = buildCustomFieldValuesSchema(definition).strict().safeParse(card.customFields);
+  if (!fields.success) throw conditionalConflict("Поля пользовательского типа изменились");
+  if ((card.organizationScope === "chkk") !== (definition.organizationScope === "chkk")) {
+    throw conditionalConflict("Зона доступа карточки расходится с определением её типа");
+  }
+  return {
+    ...card,
+    folderId: definition.organizationScope === "chkk" ? folderIds.chkkParameters
+      : getLegacyCustomDraftUniversityId(card) ? card.folderId : folderIds.customType(definition.id),
+    customFields: canonicalCustomFieldValues(fields.data),
+  };
+}
+
+async function writeKnowledgeCard(
+  next: KnowledgeCard,
+  options: {
+    previous?: KnowledgeCard;
+    actor?: CardVersionActor;
+    reason?: string;
+    guardCustomType?: boolean;
+  } = {}
+): Promise<KnowledgeCard> {
+  const { previous, actor, reason, guardCustomType } = options;
+  const definition = guardCustomType && next.type === "custom"
+    ? await getCardTypeById(next.customTypeId)
+    : null;
+  const card = guardCustomType ? prepareCustomCard(next, definition) : next;
+  const cardWrite = {
+    TableName: TableName.KNOWLEDGE_CARDS,
+    Item: card,
+    ...(previous ? observedExportCondition(previous) : { ConditionExpression: "attribute_not_exists(id)" }),
+  };
+  const prior = previous ? getApprovedVersion(previous) : null;
+  const published = getApprovedVersion(card);
+  const priorId = prior ? getCardVersionId(prior) : null;
+  const newId = published ? getCardVersionId(published) : null;
+  const changesCanonicalContent = newId !== priorId;
+  const recordedAt = new Date().toISOString();
+  const versions = changesCanonicalContent ? [
+    ...(prior ? [describeApprovedCardVersion(prior, { legacyBaseline: true, recordedAt })] : []),
+    ...(published ? [describeApprovedCardVersion(published, { legacyBaseline: false, recordedAt, actor, reason })] : []),
+  ] : [];
+
+  for (let attempt = 0; ; attempt++) {
+    const missing = (await Promise.all(versions.map(async (version) =>
+      (await getApprovedCardVersion(version.id)) ? null : version
+    ))).filter(version => version !== null);
+    if (!definition && missing.length === 0) {
+      await docClient.send(new PutCommand(cardWrite));
+      return card;
+    }
+    try {
+      await docClient.send(new TransactWriteCommand({
+        TransactItems: [
+          { Put: cardWrite },
+          ...(definition ? [typeEpochWrite(definition)] : []),
+          ...missing.map(version => ({ Put: insertCardVersion(version) })),
+        ],
+      }));
+      return card;
+    } catch (error) {
+      if (!isTransactionConflict(error)) throw error;
+      // A simultaneous pin of the same immutable snapshot is compatible with this write.
+      // Retry only against the original card/type conditions to avoid overwriting concurrent edits.
+      if (attempt === 0 && missing.length && (await Promise.all(
+        missing.map(version => getApprovedCardVersion(version.id))
+      )).some(Boolean)) continue;
+      throw conditionalConflict("Карточка или её тип изменились", error);
+    }
+  }
+}
+
+export async function insertApprovedKnowledgeCard(card: KnowledgeCard): Promise<KnowledgeCard> {
+  if (!isCardApproved(card) || !isCardReadyForPublication(card))
+    throw new Error("Импорт утверждённых карточек требует подтверждения и известных параметров проекта");
+  if (await getWritableStorageMode() !== "dynamodb")
+    throw new Error("Импорт утверждённых карточек доступен только в DynamoDB");
+  return writeKnowledgeCard(card, {
+    guardCustomType: true,
+    reason: card.changeReason || "Импорт согласованной карточки",
+  });
+}
 
 export async function createKnowledgeCard(
   data: KnowledgeCardInput,
@@ -98,24 +240,28 @@ export async function createKnowledgeCard(
     updatedAt: now,
     diskSync: createPendingDiskSync(),
   } as KnowledgeCard;
+  if (isCardApproved(card) && !isCardReadyForPublication(card)) card.status = "pending";
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
-    return mutateLocalStore((store) => ({
-      store: { ...store, cards: [...store.cards, card] },
-      result: card,
-    }));
+    return mutateLocalStore((store) => {
+      const definition = card.type === "custom"
+        ? store.cardTypes.find(type => type.id === card.customTypeId) ?? null : null;
+      const checked = prepareCustomCard(card, definition);
+      return {
+        store: { ...store, cards: [...store.cards, checked] },
+        result: checked,
+      };
+    });
   }
 
-  await docClient.send(
-    new PutCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Item: card,
-    })
-  );
-
-  return card;
+  return writeKnowledgeCard(card, {
+    guardCustomType: true,
+    actor: meta.submittedBy && meta.submittedByName
+      ? { id: meta.submittedBy, name: meta.submittedByName } : undefined,
+    reason: card.changeReason || "Создана утверждённая карточка",
+  });
 }
 
 export type KnowledgeCardModerationPatch = {
@@ -124,25 +270,61 @@ export type KnowledgeCardModerationPatch = {
   reviewedAt?: string;
   reviewComment?: string;
   participantApprovals?: string[];
+  participantApprovalRecords?: KnowledgeCard["participantApprovalRecords"];
+  stakeholderApprovals?: KnowledgeCard["stakeholderApprovals"];
   editRequests?: CardEditRequest[];
 };
 
+function checkVersion(current: { updatedAt: string }, expectedUpdatedAt?: string) {
+  if (expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt)
+    throw Object.assign(new Error("Record changed"), { name: "ConditionalCheckFailedException" });
+}
+
+// A second successful write in the same millisecond still needs a distinct version.
+function nextVersion(current: { updatedAt: string }) {
+  return new Date(Math.max(Date.now(), (Date.parse(current.updatedAt) || 0) + 1)).toISOString();
+}
+
+function applyModerationPatch(current: KnowledgeCard, patch: KnowledgeCardModerationPatch): KnowledgeCard {
+  if (patch.status === "approved" && !isCardReadyForPublication(current)) {
+    throw conditionalConflict("Перед согласованием уточните стадию и контур проекта");
+  }
+  const updatedAt = nextVersion(current);
+  const sync = current.diskSync;
+  const onlyRequests = patch.editRequests !== undefined && Object.keys(patch).length === 1;
+  const keepExport = onlyRequests && sync?.status === "synced" && sync.sourceUpdatedAt === current.updatedAt;
+  const next = {
+    ...current,
+    ...patch,
+    updatedAt,
+    ...(keepExport && { diskSync: { ...sync, sourceUpdatedAt: updatedAt } }),
+    ...(!onlyRequests && sync?.status === "pending" && sync.attemptId && { diskSync: createPendingDiskSync(sync) }),
+  };
+  if (patch.status === "approved") {
+    if (next.type === "project" || !next.requiredApprovalUniversityIds?.length) {
+      delete next.requiredApprovalUniversityIds;
+    }
+    delete next.requiredApprovalStakeholderRoles;
+    delete next.approvedSnapshot;
+  }
+  return next;
+}
+
 export async function setKnowledgeCardModeration(
   id: string,
-  patch: KnowledgeCardModerationPatch
+  patch: KnowledgeCardModerationPatch,
+  expectedUpdatedAt?: string,
+  actor?: CardVersionActor
 ): Promise<KnowledgeCard | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
       const current = store.cards.find((card) => card.id === id);
       if (!current) return { store, result: null };
+      checkVersion(current, expectedUpdatedAt);
 
-      const next: KnowledgeCard = {
-        ...current,
-        ...patch,
-        updatedAt: new Date().toISOString(),
-      };
+      const next = applyModerationPatch(current, patch);
 
       return {
         store: {
@@ -157,41 +339,67 @@ export async function setKnowledgeCardModeration(
   const current = await getKnowledgeCardById(id);
 
   if (!current) return null;
+  checkVersion(current, expectedUpdatedAt);
 
-  const next: KnowledgeCard = {
+  const next = applyModerationPatch(current, patch);
+
+  return writeKnowledgeCard(next, {
+    previous: current,
+    actor,
+    reason: next.changeReason || "Утверждена координатором",
+  });
+}
+
+function applyKnowledgeUpdate(
+  current: KnowledgeCard,
+  data: KnowledgeCardInput,
+  editor?: { id: string; name: string; isAdmin: boolean }
+): KnowledgeCard {
+  if (current.type !== data.type || (current.type === "custom" &&
+      data.type === "custom" && current.customTypeId !== data.customTypeId)) {
+    throw conditionalConflict("Тип карточки нельзя изменить после создания");
+  }
+  const updatedAt = nextVersion(current);
+  const next = {
     ...current,
-    ...patch,
-    updatedAt: new Date().toISOString(),
-  };
-
-  await docClient.send(
-    new PutCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Item: next,
-    })
-  );
-
+    ...data,
+    ...knowledgeUpdateModeration(current, data, editor),
+    diskSync: createPendingDiskSync(current.diskSync),
+    id: current.id,
+    createdAt: current.createdAt,
+    updatedAt,
+  } as KnowledgeCard;
+  if (isCardApproved(next) && getCardVersionId(next) !== getCardVersionId(current)) {
+    // A direct publication by the coordinator approves this change at its own time.
+    if (editor?.isAdmin) {
+      next.reviewedAt = updatedAt;
+      next.reviewedBy = editor.name;
+    } else {
+      delete next.reviewedAt;
+      delete next.reviewedBy;
+    }
+    delete next.reviewComment;
+  }
   return next;
 }
 
 export async function updateKnowledgeCard(
   id: string,
-  data: KnowledgeCardInput
+  data: KnowledgeCardInput,
+  editor?: { id: string; name: string; isAdmin: boolean },
+  expectedUpdatedAt?: string
 ): Promise<KnowledgeCard | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
       const current = store.cards.find((card) => card.id === id);
       if (!current) return { store, result: null };
+      checkVersion(current, expectedUpdatedAt);
 
-      const next = {
-        ...current,
-        ...data,
-        id: current.id,
-        createdAt: current.createdAt,
-        updatedAt: new Date().toISOString(),
-      } as KnowledgeCard;
+      const definition = current.type === "custom"
+        ? store.cardTypes.find(type => type.id === current.customTypeId) ?? null : null;
+      const next = prepareCustomCard(applyKnowledgeUpdate(current, data, editor), definition);
 
       return {
         store: {
@@ -206,56 +414,255 @@ export async function updateKnowledgeCard(
   const current = await getKnowledgeCardById(id);
 
   if (!current) return null;
+  checkVersion(current, expectedUpdatedAt);
 
-  const next = {
-    ...current,
-    ...data,
-    id: current.id,
-    createdAt: current.createdAt,
-    updatedAt: new Date().toISOString(),
-  } as KnowledgeCard;
+  const next = applyKnowledgeUpdate(current, data, editor);
+  return writeKnowledgeCard(next, {
+    previous: current,
+    guardCustomType: true,
+    actor: editor,
+    reason: data.changeReason || "Обновлена утверждённая карточка",
+  });
+}
 
-  await docClient.send(
-    new PutCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Item: next,
-    })
-  );
-
+export async function setKnowledgeCardFreshness(
+  id: string, freshness: CardFreshness, expectedUpdatedAt: string
+): Promise<KnowledgeCard | null> {
+  const mode = await getWritableStorageMode();
+  const update = (current: KnowledgeCard) => {
+    checkVersion(current, expectedUpdatedAt);
+    const sync = current.diskSync;
+    const updatedAt = nextVersion(current);
+    return {
+      ...current, freshness, updatedAt,
+      ...(sync?.sourceUpdatedAt === current.updatedAt && {
+        diskSync: { ...sync, sourceUpdatedAt: updatedAt },
+      }),
+    };
+  };
+  if (mode === "local-json") return mutateLocalStore(store => {
+    const current = store.cards.find(card => card.id === id);
+    if (!current) return { store, result: null };
+    const next = update(current);
+    return { store: { ...store, cards: store.cards.map(card => card.id === id ? next : card) }, result: next };
+  });
+  const current = await getKnowledgeCardById(id);
+  if (!current) return null;
+  const next = update(current);
+  await docClient.send(new PutCommand({
+    TableName: TableName.KNOWLEDGE_CARDS, Item: next, ...observedExportCondition(current),
+  }));
   return next;
+}
+
+export async function getDiskRegistry(id: string, signal: AbortSignal): Promise<DiskRegistry | null> {
+  if (await getWritableStorageMode() !== "dynamodb") return null;
+  const { Item } = await docClient.send(new GetCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id }, ConsistentRead: true,
+  }), { abortSignal: signal });
+  return Item?.kind === "disk-registry" ? Item as DiskRegistry : null;
+}
+
+export async function getAllDiskRegistries(signal: AbortSignal): Promise<DiskRegistry[]> {
+  if (await getWritableStorageMode() !== "dynamodb") return [];
+  const registries: DiskRegistry[] = [];
+  let cursor: ScanCommandOutput["LastEvaluatedKey"];
+  do {
+    const page: ScanCommandOutput = await docClient.send(new ScanCommand({
+      TableName: TableName.WORKFLOW_RECORDS, ConsistentRead: true, ExclusiveStartKey: cursor,
+      FilterExpression: "#kind = :kind", ExpressionAttributeNames: { "#kind": "kind" },
+      ExpressionAttributeValues: { ":kind": "disk-registry" },
+    }), { abortSignal: signal });
+    registries.push(...(page.Items ?? []).filter(item => item.kind === "disk-registry") as DiskRegistry[]);
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return registries;
+}
+
+function diskRegistryWrite({ next, expectedVersionId }: DiskRegistryCommit): NonNullable<CardTransaction["Put"]> {
+  return {
+    TableName: TableName.WORKFLOW_RECORDS,
+    Item: next,
+    ConditionExpression: expectedVersionId === undefined ? "attribute_not_exists(id)" : "versionId = :expected",
+    ...(expectedVersionId !== undefined && { ExpressionAttributeValues: { ":expected": expectedVersionId } }),
+  };
+}
+
+export async function replaceDiskRegistry(commit: DiskRegistryCommit, signal: AbortSignal) {
+  await docClient.send(new PutCommand(diskRegistryWrite(commit)), { abortSignal: signal });
+}
+
+export async function noteDiskRegistryRebuildError(registry: DiskRegistry, error: string, signal: AbortSignal) {
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "SET rebuildLastAttemptAt = :attempt, rebuildError = :error",
+    ConditionExpression: "versionId = :version",
+    ExpressionAttributeValues: { ":version": registry.versionId, ":attempt": new Date().toISOString(), ":error": error },
+  }), { abortSignal: signal });
+}
+
+export async function claimDiskRegistryReceipt(registry: DiskRegistry, attemptedAt: string, signal: AbortSignal) {
+  if (await getWritableStorageMode() !== "dynamodb") return false;
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "SET receiptLastAttemptAt = :attempt",
+    ConditionExpression: "versionId = :version AND attribute_not_exists(receiptPath) AND " +
+      (registry.receiptLastAttemptAt ? "receiptLastAttemptAt = :previous" : "attribute_not_exists(receiptLastAttemptAt)"),
+    ExpressionAttributeValues: {
+      ":version": registry.versionId, ":attempt": attemptedAt,
+      ...(registry.receiptLastAttemptAt && { ":previous": registry.receiptLastAttemptAt }),
+    },
+  }), { abortSignal: signal });
+  return true;
+}
+
+export async function finishDiskRegistryReceipt(
+  registry: DiskRegistry, attemptedAt: string, result: { path: string } | { error: string; summaryInvalid?: true }, signal: AbortSignal,
+) {
+  const invalid = "error" in result && result.summaryInvalid;
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "path" in result ? "SET receiptPath = :result REMOVE receiptError" :
+      "SET receiptError = :result" + (invalid ? ", summaryInvalid = :invalid" : ""),
+    ConditionExpression: "versionId = :version AND receiptLastAttemptAt = :attempt AND attribute_not_exists(receiptPath)",
+    ExpressionAttributeValues: {
+      ":version": registry.versionId, ":attempt": attemptedAt, ":result": "path" in result ? result.path : result.error,
+      ...(invalid ? { ":invalid": true } : {}),
+    },
+  }), { abortSignal: signal });
+}
+
+async function commitDiskRegistry(
+  update: NonNullable<CardTransaction["Update"]>,
+  commit: DiskRegistryCommit,
+  signal?: AbortSignal
+) {
+  try {
+    await docClient.send(new TransactWriteCommand({
+      TransactItems: [
+        { Update: update },
+        { Put: diskRegistryWrite(commit) },
+      ],
+    }), { abortSignal: signal });
+  } catch (error) {
+    if (!isTransactionConflict(error)) throw error;
+    throw conditionalConflict("Редакция или подтверждённая сводка изменились", error);
+  }
+}
+
+export async function setKnowledgeSnapshotDiskSync(
+  head: KnowledgeCard, snapshot: KnowledgeCard, diskSync: DiskSyncInfo,
+  guard: DiskAttemptGuard, signal: AbortSignal, registryCommit?: DiskRegistryCommit,
+): Promise<KnowledgeCard | undefined> {
+  const condition = diskAttemptCondition(guard, true);
+  const update = {
+    TableName: TableName.KNOWLEDGE_CARDS, Key: { id: head.id },
+    UpdateExpression: "SET approvedSnapshot.diskSync = :diskSync",
+    ConditionExpression: "updatedAt = :head AND #status <> :approved AND approvedSnapshot.updatedAt = :snapshot" +
+      " AND (attribute_not_exists(approvedSnapshot.#status) OR approvedSnapshot.#status = :approved)" +
+      condition.ConditionExpression,
+    ExpressionAttributeNames: { "#status": "status", ...condition.ExpressionAttributeNames },
+    ExpressionAttributeValues: {
+      ":head": head.updatedAt, ":snapshot": snapshot.updatedAt, ":approved": "approved", ":diskSync": diskSync,
+      ...condition.ExpressionAttributeValues,
+    },
+  };
+  if (registryCommit) {
+    await commitDiskRegistry(update, registryCommit, signal);
+    const { Item } = await docClient.send(new GetCommand({
+      TableName: TableName.KNOWLEDGE_CARDS, Key: { id: head.id }, ConsistentRead: true,
+    }), { abortSignal: signal });
+    return Item as KnowledgeCard | undefined;
+  }
+  const { Attributes } = await docClient.send(new UpdateCommand({ ...update, ReturnValues: "ALL_NEW" }), { abortSignal: signal });
+  return Attributes as KnowledgeCard | undefined;
 }
 
 export async function setKnowledgeCardDiskSync(
   id: string,
-  diskSync: DiskSyncInfo
-): Promise<void> {
-  const mode = await getStorageMode();
-
-  if (mode === "local-json") {
-    await mutateLocalStore((store) => ({
-      store: {
-        ...store,
-        cards: store.cards.map((card) =>
-          card.id === id ? { ...card, diskSync } : card
-        ),
-      },
-      result: undefined,
-    }));
-    return;
+  diskSync: DiskSyncInfo,
+  expectedUpdatedAt: string,
+  guard?: DiskAttemptGuard,
+  signal?: AbortSignal,
+  registryCommit?: DiskRegistryCommit
+): Promise<KnowledgeCard | undefined> {
+  const mode = await getWritableStorageMode();
+  // Content edits and moderation decisions invalidate the attempt. Comments preserve it.
+  function canFinishAfterComment(card: Pick<KnowledgeCard, "diskSync">) {
+    return typeof guard === "string" && card.diskSync?.status === "pending" &&
+      card.diskSync.attemptId === guard && card.diskSync.sourceUpdatedAt === expectedUpdatedAt;
   }
 
-  await docClient.send(
-    new UpdateCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Key: { id },
-      UpdateExpression: "set diskSync = :diskSync",
-      ExpressionAttributeValues: { ":diskSync": diskSync },
-    })
-  );
+  if (mode === "local-json") {
+    return mutateLocalStore((store) => {
+      const card = store.cards.find((item) => item.id === id);
+      if (
+        !card || !isCardApproved(card) ||
+        (card.updatedAt !== expectedUpdatedAt && !canFinishAfterComment(card)) ||
+        !diskAttemptMatches(card.diskSync, guard)
+      ) {
+        throw Object.assign(new Error("Card changed during backup"), {
+          name: "ConditionalCheckFailedException",
+        });
+      }
+      const updated = { ...card, diskSync: { ...diskSync, sourceUpdatedAt: card.updatedAt } };
+      return {
+        store: { ...store, cards: store.cards.map((item) => item.id === id ? updated : item) },
+        result: updated,
+      };
+    });
+  }
+
+  const condition = diskAttemptCondition(guard);
+  const deadline = signal ?? AbortSignal.timeout(5_000);
+  let version = expectedUpdatedAt;
+  for (;;) {
+    deadline.throwIfAborted();
+    const rebased = version !== expectedUpdatedAt;
+    try {
+      const update = {
+        TableName: TableName.KNOWLEDGE_CARDS,
+        Key: { id },
+        UpdateExpression: "set diskSync = :diskSync",
+        ConditionExpression: `attribute_exists(id) AND updatedAt = :version AND (attribute_not_exists(#status) OR #status = :approved)${condition.ConditionExpression}${rebased ? " AND diskSync.#status = :pending AND diskSync.sourceUpdatedAt = :source" : ""}`,
+        ExpressionAttributeNames: { "#status": "status", ...condition.ExpressionAttributeNames },
+        ExpressionAttributeValues: {
+          ":diskSync": rebased ? { ...diskSync, sourceUpdatedAt: version } : diskSync,
+          ":version": version,
+          ":approved": "approved",
+          ...(rebased && { ":pending": "pending", ":source": expectedUpdatedAt }),
+          ...condition.ExpressionAttributeValues,
+        },
+      };
+      if (registryCommit) {
+        await commitDiskRegistry(update, registryCommit, deadline);
+        const { Item } = await docClient.send(new GetCommand({
+          TableName: TableName.KNOWLEDGE_CARDS, Key: { id }, ConsistentRead: true,
+        }), { abortSignal: deadline });
+        return Item as KnowledgeCard | undefined;
+      }
+      const { Attributes } = await docClient.send(new UpdateCommand({
+        ...update, ReturnValues: typeof guard === "string" ? "ALL_NEW" : "NONE",
+      }), { abortSignal: deadline });
+      return Attributes as KnowledgeCard | undefined;
+    } catch (error) {
+      if (typeof guard !== "string" || !(error instanceof Error) || error.name !== "ConditionalCheckFailedException") throw error;
+      const { Item } = await docClient.send(new GetCommand({
+        TableName: TableName.KNOWLEDGE_CARDS,
+        Key: { id },
+        ConsistentRead: true,
+        ProjectionExpression: "updatedAt, diskSync.#status, diskSync.attemptId, diskSync.sourceUpdatedAt",
+        ExpressionAttributeNames: { "#status": "status" },
+      }), { abortSignal: deadline });
+      const observed = Item as Pick<KnowledgeCard, "diskSync" | "updatedAt"> | undefined;
+      if (!observed || observed.updatedAt === version || !canFinishAfterComment(observed)) throw error;
+      version = observed.updatedAt;
+    }
+  }
 }
 
 export async function deleteKnowledgeCard(id: string): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
@@ -268,47 +675,26 @@ export async function deleteKnowledgeCard(id: string): Promise<void> {
     return;
   }
 
-  await docClient.send(
-    new DeleteCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Key: { id },
-    })
-  );
-}
-
-export async function ensureKnowledgeSeed(): Promise<void> {
-  const mode = await getStorageMode();
-
-  if (mode === "local-json") {
-    await readLocalStore();
+  const current = await getKnowledgeCardById(id);
+  if (!current) return;
+  const definition = current.type === "custom" ? await getCardTypeById(current.customTypeId) : null;
+  const deletion = { TableName: TableName.KNOWLEDGE_CARDS, Key: { id }, ...observedExportCondition(current) };
+  if (!definition) {
+    await docClient.send(new DeleteCommand(deletion));
     return;
   }
-
-  if (mode === "static-export") return;
-
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      Limit: 1,
-    })
-  );
-
-  if ((result.Items?.length ?? 0) > 0) return;
-
-  await Promise.all(
-    knowledgeSeedCards.map((card) =>
-      docClient.send(
-        new PutCommand({
-          TableName: TableName.KNOWLEDGE_CARDS,
-          Item: card,
-        })
-      )
-    )
-  );
+  try {
+    await docClient.send(new TransactWriteCommand({
+      TransactItems: [{ Delete: deletion }, typeEpochWrite(definition)],
+    }));
+  } catch (error) {
+    if (!isTransactionConflict(error)) throw error;
+    throw conditionalConflict("Карточка или её тип изменились", error);
+  }
 }
 
-export async function getAllCardTypes(): Promise<CardTypeDefinition[]> {
-  const mode = await getStorageMode();
+export async function getAllCardTypes(signal?: AbortSignal): Promise<CardTypeDefinition[]> {
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
@@ -317,19 +703,26 @@ export async function getAllCardTypes(): Promise<CardTypeDefinition[]> {
 
   if (mode === "static-export") return [];
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARD_TYPES,
-    })
-  );
-
-  return (result.Items as CardTypeDefinition[]) ?? [];
+  const types: CardTypeDefinition[] = [];
+  let cursor: ScanCommandOutput["LastEvaluatedKey"];
+  do {
+    const page: ScanCommandOutput = await docClient.send(
+      new ScanCommand({
+        TableName: TableName.KNOWLEDGE_CARD_TYPES,
+        ConsistentRead: true,
+        ExclusiveStartKey: cursor,
+      }), { abortSignal: signal }
+    );
+    types.push(...((page.Items ?? []) as CardTypeDefinition[]));
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return types;
 }
 
 export async function getCardTypeById(
   id: string
 ): Promise<CardTypeDefinition | null> {
-  const mode = await getStorageMode();
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
@@ -342,6 +735,7 @@ export async function getCardTypeById(
     new GetCommand({
       TableName: TableName.KNOWLEDGE_CARD_TYPES,
       Key: { id },
+      ConsistentRead: true,
     })
   );
 
@@ -358,7 +752,7 @@ export async function createCardType(
     updatedAt: now,
   };
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => ({
@@ -371,29 +765,50 @@ export async function createCardType(
     new PutCommand({
       TableName: TableName.KNOWLEDGE_CARD_TYPES,
       Item: cardType,
+      ConditionExpression: "attribute_not_exists(id)",
     })
   );
 
   return cardType;
 }
 
+export class CardTypeInUseError extends Error {
+  constructor(public count: number) {
+    super("Этот тип уже используется в карточках");
+  }
+}
+
+function typeFieldsChanged(current: CardTypeDefinition, fields?: CardTypeDefinition["fields"]) {
+  if (!fields) return false;
+  const shape = (list: CardTypeDefinition["fields"]) => list.map(
+    ({ id, name, type, required, options }) => [id, name, type, required, options]
+  );
+  return JSON.stringify(shape(current.fields)) !== JSON.stringify(shape(fields));
+}
+
 export async function updateCardType(
   id: string,
-  data: Partial<Pick<CardTypeDefinition, "name" | "description" | "fields">>
+  data: Partial<Pick<CardTypeDefinition, "name" | "description" | "fields">>,
+  expectedUpdatedAt?: string
 ): Promise<CardTypeDefinition | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
       const current = store.cardTypes.find((type) => type.id === id);
       if (!current) return { store, result: null };
+      checkVersion(current, expectedUpdatedAt);
+      if (typeFieldsChanged(current, data.fields)) {
+        const count = customCardCounts(store.cards)[id] ?? 0;
+        if (count) throw new CardTypeInUseError(count);
+      }
 
       const next: CardTypeDefinition = {
         ...current,
         ...data,
         id: current.id,
         createdAt: current.createdAt,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nextVersion(current),
       };
 
       return {
@@ -411,129 +826,138 @@ export async function updateCardType(
   const current = await getCardTypeById(id);
 
   if (!current) return null;
+  checkVersion(current, expectedUpdatedAt);
+  // Read the epoch before scanning legacy and new cards. Every type-aware card writer
+  // invalidates that epoch in the same transaction, including the first writer.
+  if (typeFieldsChanged(current, data.fields)) {
+    const count = await countKnowledgeCardsByCustomType(id);
+    if (count) throw new CardTypeInUseError(count);
+  }
 
   const next: CardTypeDefinition = {
     ...current,
     ...data,
     id: current.id,
     createdAt: current.createdAt,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nextVersion(current),
   };
 
   await docClient.send(
     new PutCommand({
       TableName: TableName.KNOWLEDGE_CARD_TYPES,
       Item: next,
+      ConditionExpression: "attribute_exists(id) AND updatedAt = :version",
+      ExpressionAttributeValues: { ":version": current.updatedAt },
     })
   );
 
   return next;
 }
 
-export async function deleteCardType(id: string): Promise<void> {
-  const mode = await getStorageMode();
+export async function deleteCardType(id: string, expectedUpdatedAt?: string): Promise<void> {
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
-    await mutateLocalStore((store) => ({
-      store: {
-        ...store,
-        cardTypes: store.cardTypes.filter((type) => type.id !== id),
-      },
-      result: undefined,
-    }));
+    await mutateLocalStore((store) => {
+      const current = store.cardTypes.find(type => type.id === id);
+      if (!current) return { store, result: undefined };
+      checkVersion(current, expectedUpdatedAt);
+      const count = customCardCounts(store.cards)[id] ?? 0;
+      if (count) throw new CardTypeInUseError(count);
+      return {
+        store: { ...store, cardTypes: store.cardTypes.filter(type => type.id !== id) },
+        result: undefined,
+      };
+    });
     return;
   }
 
+  const current = await getCardTypeById(id);
+  if (!current) return;
+  checkVersion(current, expectedUpdatedAt);
+  const count = await countKnowledgeCardsByCustomType(id);
+  if (count) throw new CardTypeInUseError(count);
   await docClient.send(
     new DeleteCommand({
       TableName: TableName.KNOWLEDGE_CARD_TYPES,
       Key: { id },
+      ConditionExpression: "attribute_exists(id) AND updatedAt = :version",
+      ExpressionAttributeValues: { ":version": current.updatedAt },
     })
   );
 }
 
-export async function getCustomCardCounts(): Promise<Record<string, number>> {
-  const mode = await getStorageMode();
+export function customCardCounts(cards: KnowledgeCard[]): Record<string, number> {
+  const counts: Record<string, number> = Object.create(null);
+  for (const card of cards) {
+    if (card.type === "custom") counts[card.customTypeId] = (counts[card.customTypeId] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export async function countKnowledgeCardsByCustomType(typeId: string): Promise<number> {
+  return customCardCounts(await getAllKnowledgeCards())[typeId] ?? 0;
+}
+
+export async function getAllArticles(signal?: AbortSignal): Promise<ReadyArticle[]> {
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
-    return store.cards.reduce<Record<string, number>>((counts, card) => {
-      if (card.type === "custom" && card.customTypeId) {
-        counts[card.customTypeId] = (counts[card.customTypeId] ?? 0) + 1;
-      }
-      return counts;
-    }, {});
+    return store.articles.filter(isApprovedArticle);
   }
 
-  if (mode === "static-export") return {};
+  if (mode === "static-export")
+    return articleSeed.filter(isApprovedArticle);
 
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.KNOWLEDGE_CARDS,
-      FilterExpression: "#type = :type",
-      ExpressionAttributeNames: { "#type": "type" },
-      ExpressionAttributeValues: { ":type": "custom" },
-      ProjectionExpression: "customTypeId",
-    })
-  );
-
-  return (result.Items ?? []).reduce<Record<string, number>>((counts, item) => {
-    const cardTypeId = item.customTypeId as string | undefined;
-
-    if (cardTypeId) {
-      counts[cardTypeId] = (counts[cardTypeId] ?? 0) + 1;
-    }
-
-    return counts;
-  }, {});
-}
-
-export async function countKnowledgeCardsByCustomType(
-  typeId: string
-): Promise<number> {
-  const counts = await getCustomCardCounts();
-  return counts[typeId] ?? 0;
-}
-
-export async function getAllArticles(): Promise<ReadyArticle[]> {
-  const mode = await getStorageMode();
-
-  if (mode === "local-json") {
-    const store = await readLocalStore();
-    return store.articles;
-  }
-
-  if (mode === "static-export") return articleSeed;
-
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.ARTICLES,
-    })
-  );
-
-  return (result.Items as ReadyArticle[]) ?? [];
+  const articles: ReadyArticle[] = [];
+  let cursor: ScanCommandOutput["LastEvaluatedKey"];
+  do {
+    const page: ScanCommandOutput = await docClient.send(
+      new ScanCommand({
+        TableName: TableName.ARTICLES,
+        ExclusiveStartKey: cursor,
+        ConsistentRead: true,
+      }), { abortSignal: signal }
+    );
+    articles.push(
+      ...((page.Items ?? []) as ReadyArticle[]).filter(isApprovedArticle)
+    );
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return articles;
 }
 
 export async function getArticleById(id: string): Promise<ReadyArticle | null> {
-  const mode = await getStorageMode();
+  const mode = await getReadableStorageMode();
 
   if (mode === "local-json") {
     const store = await readLocalStore();
-    return store.articles.find((article) => article.id === id) ?? null;
+    return (
+      store.articles.find(
+        (article) => article.id === id && isApprovedArticle(article)
+      ) ?? null
+    );
   }
 
   if (mode === "static-export") {
-    return articleSeed.find((article) => article.id === id) ?? null;
+    return (
+      articleSeed.find(
+        (article) => article.id === id && isApprovedArticle(article)
+      ) ?? null
+    );
   }
 
   const result = await docClient.send(
     new GetCommand({
       TableName: TableName.ARTICLES,
       Key: { id },
+      ConsistentRead: true,
     })
   );
 
-  return (result.Item as ReadyArticle) ?? null;
+  const article = result.Item as ReadyArticle | undefined;
+  return article && isApprovedArticle(article) ? article : null;
 }
 
 export async function createArticle(
@@ -548,7 +972,7 @@ export async function createArticle(
     diskSync: createPendingDiskSync(),
   };
 
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => ({
@@ -571,7 +995,7 @@ export async function updateArticle(
   id: string,
   data: SaveArticleInput
 ): Promise<ReadyArticle | null> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     return mutateLocalStore((store) => {
@@ -624,35 +1048,58 @@ export async function updateArticle(
 
 export async function setArticleDiskSync(
   id: string,
-  diskSync: DiskSyncInfo
+  diskSync: DiskSyncInfo,
+  expectedUpdatedAt: string,
+  expectedRevisionId: string,
+  guard?: DiskAttemptGuard,
+  signal?: AbortSignal,
+  registryCommit?: DiskRegistryCommit
 ): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
       store: {
         ...store,
-        articles: store.articles.map((article) =>
-          article.id === id ? { ...article, diskSync } : article
-        ),
+        articles: store.articles.map((article) => {
+          if (article.id !== id) return article;
+          if (
+            !isApprovedArticle(article) ||
+            article.updatedAt !== expectedUpdatedAt ||
+            article.approval?.revisionId !== expectedRevisionId ||
+            !diskAttemptMatches(article.diskSync, guard)
+          )
+            throw Object.assign(new Error("Article changed during backup"), {
+              name: "ConditionalCheckFailedException",
+            });
+          return { ...article, diskSync };
+        }),
       },
       result: undefined,
     }));
     return;
   }
 
-  await docClient.send(
-    new UpdateCommand({
+  const condition = diskAttemptCondition(guard);
+  const update = {
       TableName: TableName.ARTICLES,
       Key: { id },
       UpdateExpression: "set diskSync = :diskSync",
-      ExpressionAttributeValues: { ":diskSync": diskSync },
-    })
-  );
+      ConditionExpression: `attribute_exists(id) AND updatedAt = :version AND approval.revisionId = :revision${condition.ConditionExpression}`,
+      ...(condition.ExpressionAttributeNames && Object.keys(condition.ExpressionAttributeNames).length ? { ExpressionAttributeNames: condition.ExpressionAttributeNames } : {}),
+      ExpressionAttributeValues: {
+        ":diskSync": diskSync,
+        ":version": expectedUpdatedAt,
+        ":revision": expectedRevisionId,
+        ...condition.ExpressionAttributeValues,
+      },
+  };
+  if (registryCommit) await commitDiskRegistry(update, registryCommit, signal);
+  else await docClient.send(new UpdateCommand(update), { abortSignal: signal });
 }
 
 export async function deleteArticle(id: string): Promise<void> {
-  const mode = await getStorageMode();
+  const mode = await getWritableStorageMode();
 
   if (mode === "local-json") {
     await mutateLocalStore((store) => ({
@@ -673,10 +1120,7 @@ export async function deleteArticle(id: string): Promise<void> {
   );
 }
 
-let demoArticlesClearedInMemory = process.env.SEED_DEMO_ARTICLES === "false";
-
 export async function clearDemoArticles(): Promise<number> {
-  demoArticlesClearedInMemory = true;
   const mode = await getStorageMode();
 
   if (mode === "local-json") {
@@ -697,7 +1141,7 @@ export async function clearDemoArticles(): Promise<number> {
     });
   }
 
-  if (mode === "static-export") return 0;
+  if (mode === "static-export" || mode === "read-only") return 0;
 
   let removed = 0;
   await Promise.all(
@@ -716,37 +1160,4 @@ export async function clearDemoArticles(): Promise<number> {
   );
 
   return removed;
-}
-
-export async function ensureArticleSeed(): Promise<void> {
-  if (demoArticlesClearedInMemory) return;
-
-  const mode = await getStorageMode();
-
-  if (mode === "local-json") {
-    await readLocalStore();
-    return;
-  }
-
-  if (mode === "static-export") return;
-
-  const result = await docClient.send(
-    new ScanCommand({
-      TableName: TableName.ARTICLES,
-      Limit: 1,
-    })
-  );
-
-  if ((result.Items?.length ?? 0) > 0) return;
-
-  await Promise.all(
-    articleSeed.map((article) =>
-      docClient.send(
-        new PutCommand({
-          TableName: TableName.ARTICLES,
-          Item: article,
-        })
-      )
-    )
-  );
 }

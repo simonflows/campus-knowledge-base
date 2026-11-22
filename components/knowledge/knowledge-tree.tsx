@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import {
   BookOpen,
-  ChevronDown,
   ChevronRight,
   Folder,
   FolderOpen,
@@ -13,6 +12,7 @@ import {
   Layers,
 } from "lucide-react";
 
+import { getFolderDisplayName } from "./folder-labels";
 import { Badge } from "@/components/ui/badge";
 import {
   getCardsForFolder,
@@ -45,7 +45,18 @@ export function KnowledgeTree({
   selectedFolderId,
   onSelect,
 }: KnowledgeTreeProps) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState(() => {
+    const universities = tree.find((node) => node.kind === "universities-root");
+    return new Set(
+      universities?.children
+        ?.filter(
+          (node) =>
+            selectedFolderId !== node.id &&
+            !selectedFolderId.startsWith(`${node.id}/`)
+        )
+        .map((node) => node.id)
+    );
+  });
 
   const counts = useMemo(() => {
     const result = new Map<string, number>();
@@ -63,23 +74,25 @@ export function KnowledgeTree({
 
   const renderNode = (node: KnowledgeFolderNode, depth: number) => {
     const Icon = folderIcons[node.kind];
+    const name = getFolderDisplayName(node);
     const hasChildren = Boolean(node.children?.length);
     const isExpanded = !collapsed.has(node.id);
     const isSelected = selectedFolderId === node.id;
     const count = counts.get(node.id) ?? 0;
 
     return (
-      <li key={node.id}>
+      <li key={node.id} data-tree-depth={depth}>
         <div
+          data-selected={isSelected}
           className={cn(
-            "group flex items-center gap-1 rounded-lg pr-1 transition-colors",
+            "data-tree-row group flex items-center gap-1 rounded-lg pr-1 transition-colors",
             isSelected ? "bg-primary/10" : "hover:bg-muted/60"
           )}
         >
           {hasChildren ? (
             <button
               type="button"
-              aria-label={`${isExpanded ? "Свернуть" : "Развернуть"} папку «${node.name}»`}
+              aria-label={`${isExpanded ? "Свернуть" : "Развернуть"} папку «${name}»`}
               aria-expanded={isExpanded}
               className="flex h-10 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-primary lg:h-8 lg:w-6"
               onClick={() =>
@@ -91,11 +104,12 @@ export function KnowledgeTree({
                 })
               }
             >
-              {isExpanded ? (
-                <ChevronDown className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronRight className="h-3.5 w-3.5" />
-              )}
+              <ChevronRight
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform duration-200",
+                  isExpanded && "rotate-90"
+                )}
+              />
             </button>
           ) : (
             <span className="h-10 w-8 shrink-0 lg:h-8 lg:w-6" />
@@ -104,7 +118,16 @@ export function KnowledgeTree({
           <button
             type="button"
             aria-current={isSelected ? "true" : undefined}
-            onClick={() => onSelect(node.id)}
+            onClick={() => {
+              if (!isSelected && hasChildren && !isExpanded) {
+                setCollapsed((current) => {
+                  const next = new Set(current);
+                  next.delete(node.id);
+                  return next;
+                });
+              }
+              onSelect(node.id);
+            }}
             style={{ paddingLeft: `${Math.min(depth, 3) * 10}px` }}
             className={cn(
               "flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md py-1.5 text-left text-[13px] leading-tight outline-none focus-visible:ring-2 focus-visible:ring-primary lg:min-h-8",
@@ -115,19 +138,23 @@ export function KnowledgeTree({
           >
             <Icon
               className={cn(
-                "h-4 w-4 shrink-0",
+                "h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-110",
                 isSelected ? "text-primary" : "text-muted-foreground"
               )}
             />
-            <span className="min-w-0 break-words" title={node.name}>{node.name}</span>
+            <span className="min-w-0 break-words" title={name}>
+              {name}
+            </span>
           </button>
 
-          <Badge
-            variant="secondary"
-            className="h-5 min-w-5 justify-center px-1.5 text-[10px] text-muted-foreground"
-          >
-            {count}
-          </Badge>
+          {node.name !== "Готовые_статьи" ? (
+            <Badge
+              variant="secondary"
+              className="h-5 min-w-5 justify-center px-1.5 text-[10px] text-muted-foreground"
+            >
+              {count}
+            </Badge>
+          ) : null}
         </div>
 
         {hasChildren && isExpanded ? (
@@ -145,9 +172,7 @@ export function KnowledgeTree({
         <FolderOpen className="h-3.5 w-3.5" />
         Папки базы
       </div>
-      <ul className="space-y-1">
-        {tree.map((node) => renderNode(node, 0))}
-      </ul>
+      <ul className="space-y-1">{tree.map((node) => renderNode(node, 0))}</ul>
     </nav>
   );
 }

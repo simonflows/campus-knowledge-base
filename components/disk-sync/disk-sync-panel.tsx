@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -19,6 +19,8 @@ import {
   createPendingDiskSync,
   diskSyncStatusLabels,
   formatDiskSyncTime,
+  lastSuccessfulDiskExport,
+  type DiskRegistryView,
   type DiskSyncInfo,
 } from "@/lib/disk-sync";
 import { cn } from "@/lib/utils";
@@ -43,9 +45,40 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
   compact = false,
 }: DiskSyncPanelProps<T>) {
   const [isRetrying, setIsRetrying] = useState(false);
+  const [refresh, setRefresh] = useState(0);
+  const [registryResult, setRegistryResult] = useState<{
+    key: string;
+    value: DiskRegistryView | null;
+  } | null>(null);
   const sync = diskSync ?? createPendingDiskSync();
   const isSynced = sync.status === "synced";
   const isFailed = sync.status === "failed";
+  const lastComplete = lastSuccessfulDiskExport(sync);
+  const key =
+    canRetry && diskSync
+      ? [retryEndpoint, sync.attemptId, sync.lastSyncedAt, refresh].join("|")
+      : null;
+  const registry =
+    registryResult && registryResult.key === key ? registryResult.value : null;
+
+  useEffect(() => {
+    if (!key) return;
+    const controller = new AbortController();
+    fetch(retryEndpoint, { signal: controller.signal })
+      .then(async (response) =>
+        response.ok
+          ? ((await response.json()) as { registry: DiskRegistryView | null })
+          : null
+      )
+      .then((data) => {
+        if (!controller.signal.aborted)
+          setRegistryResult({ key, value: data?.registry ?? null });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setRegistryResult({ key, value: null });
+      });
+    return () => controller.abort();
+  }, [key, retryEndpoint]);
 
   const handleRetry = async () => {
     if (isRetrying) return;
@@ -65,17 +98,23 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
       }
 
       onSynced?.(data as T);
+      setRefresh((value) => value + 1);
 
       if (data.diskSync?.status === "synced") {
         toast.success(
           `${entityLabel[0].toUpperCase()}${entityLabel.slice(1)} выгружена на Яндекс Диск`
         );
       } else {
-        toast.warning("Выгрузка на Яндекс Диск не удалась", {
-          description:
-            data.diskSync?.message ||
-            "Карточка сохранена. Можно повторить выгрузку позже.",
-        });
+        toast.warning(
+          data.diskSync?.status === "pending"
+            ? "Нужен повтор выгрузки"
+            : "Выгрузка на Яндекс Диск не удалась",
+          {
+            description:
+              data.diskSync?.message ||
+              "Карточка сохранена. Можно повторить выгрузку позже.",
+          }
+        );
       }
     } catch {
       toast.error("Ошибка сети при выгрузке на Яндекс Диск");
@@ -156,14 +195,14 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
         </Button>
       </div>
 
-      {isFailed && sync.message ? (
+      {!isSynced && sync.message ? (
         <p className="mt-3 rounded-xl bg-background/70 px-3 py-2 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
           {sync.message} {entityLabel[0].toUpperCase()}
           {entityLabel.slice(1)} сохранена, можно повторить выгрузку.
         </p>
       ) : null}
 
-      {sync.filePath ? (
+      {sync.filePath && (isSynced || sync.fileUploaded) ? (
         <div className="mt-3 grid gap-1.5 text-[11px] text-muted-foreground">
           <p className="flex items-start gap-1.5">
             <FolderTree className="mt-0.5 size-3.5 shrink-0" />
@@ -177,23 +216,58 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
           <p className="flex items-start gap-1.5">
             <FileText className="mt-0.5 size-3.5 shrink-0" />
             <span className="min-w-0">
-              Файл:{" "}
+              {isSynced ? "Файл материала" : "Промежуточный Markdown"}:{" "}
               <span className="break-all font-medium text-foreground/80">
                 {sync.filePath}
               </span>
             </span>
           </p>
-          {sync.summaryPath ? (
-            <p className="flex items-start gap-1.5">
-              <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0" />
-              <span className="min-w-0">
-                Сводная таблица:{" "}
-                <span className="break-all font-medium text-foreground/80">
-                  {sync.summaryPath}
-                </span>
-              </span>
+        </div>
+      ) : null}
+
+      {registry ? (
+        <div className="mt-3 flex min-w-0 items-start gap-1.5 text-xs">
+          <FileSpreadsheet className="mt-0.5 size-3.5 shrink-0" />
+          <div className="min-w-0">
+            <p className="font-medium">
+              {registry.current
+                ? "Сводка папки совпала с опубликованными данными"
+                : "Предыдущая полная сводка папки"}
             </p>
-          ) : null}
+            <p className="break-all text-muted-foreground">
+              {registry.summaryPath}
+            </p>
+            <p className="text-muted-foreground">
+              {registry.current
+                ? "Проверено " + formatDiskSyncTime(registry.checkedAt)
+                : "Требуется актуальная сводка. Полная копия от " +
+                  formatDiskSyncTime(registry.confirmedAt)}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {key ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-2"
+          onClick={() => setRefresh((value) => value + 1)}
+        >
+          Сверить сводку папки
+        </Button>
+      ) : null}
+
+      {lastComplete && (!isSynced || !registry) ? (
+        <div className="mt-3 min-w-0 text-xs">
+          <p className="font-medium">Последняя полная копия материала</p>
+          <p className="break-all text-muted-foreground">
+            {lastComplete.filePath}
+          </p>
+          <p className="break-all text-muted-foreground">
+            {lastComplete.summaryPath}
+          </p>
         </div>
       ) : null}
 

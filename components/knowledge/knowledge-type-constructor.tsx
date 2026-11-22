@@ -90,6 +90,7 @@ export function KnowledgeTypeConstructor({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [chkkOnly, setChkkOnly] = useState(false);
   const [fields, setFields] = useState<EditableField[]>([
     {
       id: "initial-field",
@@ -103,14 +104,14 @@ export function KnowledgeTypeConstructor({
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const editingType =
-    customTypes.find((type) => type.id === editingId) ?? null;
+  const editingType = customTypes.find((type) => type.id === editingId) ?? null;
   const locked = Boolean(editingType && editingType.cardCount > 0);
 
   const resetEditor = () => {
     setEditingId(null);
     setName("");
     setDescription("");
+    setChkkOnly(false);
     setFields([createEmptyField()]);
     setFormError(null);
   };
@@ -124,6 +125,7 @@ export function KnowledgeTypeConstructor({
     setEditingId(type.id);
     setName(type.name);
     setDescription(type.description);
+    setChkkOnly(type.organizationScope === "chkk");
     setFields(
       type.fields.map((field) => ({
         id: field.id,
@@ -141,9 +143,7 @@ export function KnowledgeTypeConstructor({
     patch: Partial<Omit<EditableField, "id">>
   ) => {
     setFields((current) =>
-      current.map((field) =>
-        field.id === id ? { ...field, ...patch } : field
-      )
+      current.map((field) => (field.id === id ? { ...field, ...patch } : field))
     );
   };
 
@@ -218,13 +218,13 @@ export function KnowledgeTypeConstructor({
     const payload = {
       name,
       description,
+      ...(chkkOnly ? { organizationScope: "chkk" as const } : {}),
       fields: fields.map((field) => ({
         id: field.id,
         name: field.name,
         type: field.type,
         required: field.required,
-        options:
-          field.type === "select" ? splitOptions(field.optionsText) : [],
+        options: field.type === "select" ? splitOptions(field.optionsText) : [],
       })),
     };
 
@@ -321,14 +321,12 @@ export function KnowledgeTypeConstructor({
               `/api/knowledge/card-types/${type.id}`,
               { method: "DELETE" }
             );
-            const data = (await response.json().catch(() => null)) as
-              | { error?: string }
-              | null;
+            const data = (await response.json().catch(() => null)) as {
+              error?: string;
+            } | null;
 
             if (!response.ok) {
-              toast.error(
-                data?.error ?? "Не удалось удалить тип карточки"
-              );
+              toast.error(data?.error ?? "Не удалось удалить тип карточки");
               return;
             }
 
@@ -348,7 +346,7 @@ export function KnowledgeTypeConstructor({
   };
 
   return (
-    <Card className="animate-in fade-in slide-in-from-top-2 rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10 duration-300">
+    <Card className="data-index-editor animate-in fade-in slide-in-from-top-2 duration-300">
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <CardTitle className="flex items-center gap-2 font-heading text-xl">
@@ -517,10 +515,7 @@ export function KnowledgeTypeConstructor({
               />
             </div>
             <div className="space-y-2">
-              <label
-                className="text-sm font-medium"
-                htmlFor="type-description"
-              >
+              <label className="text-sm font-medium" htmlFor="type-description">
                 Описание
               </label>
               <Input
@@ -530,6 +525,18 @@ export function KnowledgeTypeConstructor({
                 placeholder="Коротко поясните, для чего этот тип"
               />
             </div>
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Кто может создавать карточки
+              <select
+                value={chkkOnly ? "chkk" : "standard"}
+                disabled={Boolean(editingId)}
+                onChange={event => setChkkOnly(event.target.value === "chkk")}
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="standard">Сотрудники с доступом к базе</option>
+                <option value="chkk">ООО «ЧКК» и координатор</option>
+              </select>
+            </label>
           </div>
 
           <div className="space-y-3">
@@ -658,13 +665,22 @@ export function KnowledgeTypeConstructor({
           </div>
 
           {formError ? (
-            <p role="alert" className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/20">
+            <p
+              role="alert"
+              className="rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive ring-1 ring-destructive/20"
+            >
               {formError}
             </p>
           ) : null}
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end">
-            <Button type="button" variant="outline" className="h-10 sm:h-8" onClick={resetEditor} disabled={isSaving}>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 sm:h-8"
+              onClick={resetEditor}
+              disabled={isSaving}
+            >
               Очистить
             </Button>
             <Button type="submit" className="h-10 sm:h-8" disabled={isSaving}>

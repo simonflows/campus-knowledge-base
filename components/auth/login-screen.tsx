@@ -1,57 +1,53 @@
 "use client";
+import { WorkspaceMasthead } from "@/components/workspace-masthead";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  CheckCircle2,
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronDown,
   KeyRound,
+  LockKeyhole,
   LogOut,
   ShieldCheck,
   UserRound,
-  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
-
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   demoAccountsByRole,
   roleDefinitions,
   roleLabels,
   roleShortLabels,
+  type Role,
   type SessionUser,
 } from "@/lib/auth";
-import { cn } from "@/lib/utils";
+import "@/app/campus-workspaces.css";
+
+const demoGroups = demoAccountsByRole();
 
 type LoginScreenProps = {
   currentUser: SessionUser | null;
+  demo: boolean;
+  returnTo?: string;
+  staffRequired?: boolean;
 };
 
-function formatAccountCount(count: number): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return `${count} аккаунт`;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-    return `${count} аккаунта`;
-  }
-  return `${count} аккаунтов`;
-}
-
-export function LoginScreen({ currentUser }: LoginScreenProps) {
+export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffRequired = false }: LoginScreenProps) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pinForAdmin, setPinForAdmin] = useState("");
   const [showPinInput, setShowPinInput] = useState(false);
-  const groups = demoAccountsByRole();
+  const [login, setLogin] = useState("");
+  const [key, setKey] = useState("");
+  const [activeRole, setActiveRole] = useState<Role>(
+    currentUser?.role ?? "university_owner"
+  );
 
   const handleLogin = async (accountId: string, pin?: string) => {
     setBusyId(accountId);
@@ -60,7 +56,11 @@ export function LoginScreen({ currentUser }: LoginScreenProps) {
       const response = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId, ...(pin ? { pin } : {}) }),
+        body: JSON.stringify({
+          accountId,
+          ...(pin ? { pin } : {}),
+          ...(!demo ? { accessKey: key } : {}),
+        }),
       });
       const data = (await response.json().catch(() => null)) as {
         user?: SessionUser;
@@ -79,11 +79,17 @@ export function LoginScreen({ currentUser }: LoginScreenProps) {
         return;
       }
 
+      if (currentUser && currentUser.id !== data.user.id) {
+        const { clearEditorialRecovery } =
+          await import("@/lib/editorial-recovery");
+        clearEditorialRecovery();
+      }
+      setKey("");
       toast.success(`Вы вошли как ${data.user.name}`, {
         description: roleLabels[data.user.role],
       });
       router.refresh();
-      router.push("/knowledge");
+      router.push(returnTo);
     } catch {
       toast.error("Ошибка сети при входе");
     } finally {
@@ -95,7 +101,11 @@ export function LoginScreen({ currentUser }: LoginScreenProps) {
     setBusyId("logout");
 
     try {
-      await fetch("/api/auth/session", { method: "DELETE" });
+      const response = await fetch("/api/auth/session", { method: "DELETE" });
+      if (!response.ok) throw new Error("Logout failed");
+      const { clearEditorialRecovery } =
+        await import("@/lib/editorial-recovery");
+      clearEditorialRecovery();
       toast.success("Сессия завершена");
       router.refresh();
     } catch {
@@ -105,212 +115,234 @@ export function LoginScreen({ currentUser }: LoginScreenProps) {
     }
   };
 
-  return (
-    <div className="mx-auto w-full max-w-7xl space-y-8 px-4 py-8 sm:py-10">
-      <section className="gradient-hero-vibrant relative isolate overflow-hidden rounded-[2rem] border border-white/70 px-6 py-8 shadow-sm sm:px-10 lg:px-12">
-        <div
-          aria-hidden
-          className="pattern-grid pointer-events-none absolute inset-0 opacity-[0.12]"
-        />
-        <div className="relative flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-3xl space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge className="border-white/80 bg-white/75 text-primary hover:bg-white/75">
-                <ShieldCheck className="h-3.5 w-3.5" />
-                Роли и права доступа
-              </Badge>
-              <Badge
-                variant="outline"
-                className="border-emerald-300 bg-emerald-50/90 text-emerald-800"
-              >
-                HMAC-SHA256 HttpOnly Session
-              </Badge>
-            </div>
-            <div className="space-y-2">
-              <h1 className="font-heading text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
-                Вход по демонстрационным ролям
-              </h1>
-              <p className="max-w-2xl text-sm leading-relaxed text-foreground/70 sm:text-base">
-                Все авторизованные пользователи читают базу, проверяют тексты,
-                пишут статьи и запрашивают аналитику. Изменять карточки могут
-                только администратор канона и владельцы, а PR-команды вузов
-                отправляют черновики на подтверждение.
-              </p>
-            </div>
-          </div>
+  const group =
+    demoGroups.find(({ role }) => role === activeRole) ?? demoGroups[0];
+  const definition = roleDefinitions[group.role];
 
+  return (
+    <div className="atlas-wrap campus-workspace">
+      <section className="desk-access" aria-labelledby="access-title">
+        <WorkspaceMasthead
+          access
+          id="access-title"
+          icon={LockKeyhole}
+          title="Вход в справочник кампуса"
+          description={
+            demo
+              ? "Выберите демонстрационный аккаунт, чтобы посмотреть права доступа каждой роли."
+              : "Логин и персональный ключ выдаёт координатор кампуса."
+          }
+        >
+          <Link href="/knowledge" className="desk-text-link">
+            <ArrowLeft size={16} aria-hidden="true" /> К базе знаний
+          </Link>
+        </WorkspaceMasthead>
+        <div className="desk-access-body">
+          {staffRequired && (
+            <p className="text-sm text-muted-foreground" role="status">
+              Аналитика доступна сотрудникам. Войдите с персональным доступом или попробуйте локальное демо.
+            </p>
+          )}
           {currentUser ? (
-            <div className="rounded-2xl bg-white/85 p-4 ring-1 ring-white/90">
-              <p className="text-xs text-muted-foreground">Текущий аккаунт</p>
-              <p className="mt-1 font-semibold">{currentUser.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {roleLabels[currentUser.role]} · {currentUser.organization}
-              </p>
+            <div className="desk-active-account">
+              <span className="desk-icon" aria-hidden="true">
+                <UserRound />
+              </span>
+              <div>
+                <h2>{currentUser.name}</h2>
+                <p className="desk-footnote">
+                  {roleLabels[currentUser.role]} · {currentUser.organization}
+                </p>
+              </div>
               <Button
-                type="button"
                 variant="outline"
-                size="sm"
-                className="mt-3"
                 onClick={handleLogout}
-                disabled={busyId !== null}
+                disabled={!!busyId}
               >
-                <LogOut className="h-4 w-4" />
-                Выйти
+                <LogOut /> Выйти
               </Button>
             </div>
           ) : null}
-        </div>
-      </section>
-
-      <section className="space-y-3">
-        <div className="space-y-1">
-          <h2 className="font-heading text-2xl font-semibold tracking-tight">
-            Матрица ролей
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Ограничения одинаковы для всех семи вузов-резидентов: ни один вуз не
-            может редактировать утверждённые карточки другого.
-          </p>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {groups.map(({ role }) => {
-            const definition = roleDefinitions[role];
-
-            return (
-              <Card
-                key={role}
-                className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10"
-              >
-                <CardHeader className="gap-2">
-                  <CardTitle className="flex items-center gap-2 font-heading text-lg">
-                    <ShieldCheck className="h-4 w-4 text-primary" />
-                    {roleLabels[role]}
-                  </CardTitle>
-                  <CardDescription>{definition.description}</CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3 text-sm">
-                  <div className="space-y-1.5">
-                    {definition.capabilities.map((item) => (
-                      <p key={item} className="flex gap-2 leading-relaxed">
-                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
-                        <span>{item}</span>
-                      </p>
-                    ))}
-                  </div>
-                  <div className="space-y-1.5">
-                    {definition.restrictions.map((item) => (
-                      <p
-                        key={item}
-                        className="flex gap-2 leading-relaxed text-muted-foreground"
-                      >
-                        <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" />
-                        <span>{item}</span>
-                      </p>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="space-y-1">
-          <h2 className="font-heading text-2xl font-semibold tracking-tight">
-            Демонстрационные аккаунты
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Выберите роль и проверьте ограничения в дереве базы знаний. Вход
-            работает без пароля и предназначен только для демонстрации.
-          </p>
-        </div>
-
-        <div className="space-y-5">
-          {groups.map(({ role, accounts }) => (
-            <div key={role} className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-semibold">{roleLabels[role]}</h3>
-                <Badge variant="secondary">{formatAccountCount(accounts.length)}</Badge>
+          {!demo && !currentUser ? (
+            <div className="desk-credentials">
+              <div>
+                <p className="desk-kicker">
+                  <ShieldCheck size={15} /> Доступ сотрудников
+                </p>
+                <h2>Вход по ключу</h2>
               </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleLogin(login.trim());
+                }}
+              >
+                <Field>
+                  <FieldLabel htmlFor="pilot-login">Логин</FieldLabel>
+                  <Input
+                    id="pilot-login"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    required
+                    maxLength={64}
+                    value={login}
+                    onChange={(event) => setLogin(event.target.value)}
+                  />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="pilot-key">Персональный ключ</FieldLabel>
+                  <Input
+                    id="pilot-key"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    maxLength={100}
+                    value={key}
+                    onChange={(event) => setKey(event.target.value)}
+                  />
+                </Field>
+                <Button type="submit" disabled={!!busyId}>
+                  {busyId ? "Входим…" : "Войти"}
+                  <ArrowRight data-icon="inline-end" />
+                </Button>
+              </form>
+            </div>
+          ) : null}
+          {!demo && (
+            <div className="flex flex-wrap items-center gap-4">
+              <Link href="/demo" className="desk-text-link">Попробовать в демо-режиме</Link>
+              {currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
+                <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
+              )}
+            </div>
+          )}
+          {demo ? (
+            <section aria-labelledby="demo-accounts">
+              <div className="desk-access-selection">
+                <div>
+                  <p className="desk-kicker">
+                    <KeyRound size={14} /> Демонстрационный доступ
+                  </p>
+                  <h2 id="demo-accounts">Аккаунты</h2>
+                </div>
+                <Field>
+                  <FieldLabel htmlFor="demo-role">Роль</FieldLabel>
+                  <select
+                    id="demo-role"
+                    value={activeRole}
+                    disabled={!!busyId}
+                    onChange={(event) => {
+                      setActiveRole(event.target.value as Role);
+                      setPinForAdmin("");
+                      setShowPinInput(false);
+                    }}
+                  >
+                    {demoGroups.map(({ role }) => (
+                      <option key={role} value={role}>
+                        {roleShortLabels[role]}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              </div>
+              <div key={group.role} className="desk-role-panel desk-panel-in">
+                <details className="desk-disclosure desk-role-permissions">
+                  <summary>
+                    <ShieldCheck size={17} /> Права роли
+                    <ChevronDown className="desk-chevron" size={16} />
+                  </summary>
+                  <p>{definition.description}</p>
+                  <ul>
+                    {definition.capabilities.map((item) => (
+                      <li key={item}>
+                        <Check size={14} /> {item}
+                      </li>
+                    ))}
+                    {definition.restrictions.map((item) => (
+                      <li key={item}>
+                        <LockKeyhole size={14} /> {item}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+                <ul className="desk-account-list">
+                  {group.accounts.map((account) => {
+                    const isCurrent = currentUser?.id === account.id;
+                    const needsPinInput =
+                      account.role === "admin" && showPinInput;
 
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {accounts.map((account) => {
-                  const isCurrent = currentUser?.id === account.id;
-                  const needsPinInput = account.role === "admin" && showPinInput;
-
-                  return (
-                    <Card
-                      key={account.id}
-                      className={cn(
-                        "rounded-2xl border-0 shadow-sm ring-1",
-                        isCurrent ? "ring-primary/40" : "ring-foreground/10"
-                      )}
-                    >
-                      <CardContent className="space-y-3 p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="space-y-1">
-                            <p className="flex items-center gap-1.5 text-sm font-semibold">
-                              <UserRound className="h-3.5 w-3.5 text-muted-foreground" />
-                              {account.name}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {account.position}
-                            </p>
-                            <p className="text-xs text-muted-foreground">
-                              {account.organization}
+                    return (
+                      <li className="desk-account-row" key={account.id}>
+                        <div className="desk-account-main">
+                          <span className="desk-icon" aria-hidden="true">
+                            <UserRound />
+                          </span>
+                          <div>
+                            <strong>{account.name}</strong>
+                            <p className="desk-footnote">
+                              {account.position.includes(account.organization)
+                                ? account.position
+                                : `${account.position} · ${account.organization}`}
                             </p>
                           </div>
-                          <Badge variant="outline">
-                            {roleShortLabels[account.role]}
-                          </Badge>
                         </div>
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {account.demoHint}
-                        </p>
-                        {needsPinInput ? (
-                          <div className="space-y-1.5">
-                            <Label htmlFor="admin-access-pin" className="text-xs">
-                              ПИН-код администратора (ADMIN_ACCESS_PIN)
-                            </Label>
-                            <Input
-                              id="admin-access-pin"
-                              type="password"
-                              value={pinForAdmin}
-                              onChange={(event) => setPinForAdmin(event.target.value)}
-                              placeholder="Введите ПИН-код..."
-                              className="h-9"
-                            />
-                          </div>
-                        ) : null}
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant={isCurrent ? "outline" : "default"}
-                          className="w-full"
-                          onClick={() =>
-                            handleLogin(
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void handleLogin(
                               account.id,
                               account.role === "admin" ? pinForAdmin : undefined
-                            )
-                          }
-                          disabled={busyId !== null || isCurrent}
+                            );
+                          }}
                         >
-                          <KeyRound className="h-4 w-4" />
-                          {isCurrent
-                            ? "Текущий аккаунт"
-                            : busyId === account.id
-                              ? "Входим..."
-                              : "Войти под ролью"}
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
+                          {needsPinInput ? (
+                            <Field>
+                              <FieldLabel htmlFor="admin-access-pin">
+                                ПИН-код администратора
+                              </FieldLabel>
+                              <Input
+                                id="admin-access-pin"
+                                type="password"
+                                autoComplete="off"
+                                required
+                                value={pinForAdmin}
+                                onChange={(event) =>
+                                  setPinForAdmin(event.target.value)
+                                }
+                              />
+                              <FieldDescription>
+                                ПИН-код выдаёт координатор.
+                              </FieldDescription>
+                            </Field>
+                          ) : null}
+                          <Button
+                            type="submit"
+                            variant="outline"
+                            aria-label={
+                              isCurrent
+                                ? "Текущий аккаунт"
+                                : `Войти под ролью: ${account.name}`
+                            }
+                            disabled={busyId !== null || isCurrent}
+                          >
+                            {isCurrent
+                              ? "Текущий аккаунт"
+                              : busyId === account.id
+                                ? "Входим…"
+                                : "Войти"}
+                            {!isCurrent ? (
+                              <ArrowRight data-icon="inline-end" />
+                            ) : null}
+                          </Button>
+                        </form>
+                      </li>
+                    );
+                  })}
+                </ul>
               </div>
-            </div>
-          ))}
+            </section>
+          ) : null}
         </div>
       </section>
     </div>

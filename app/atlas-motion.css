@@ -1,0 +1,660 @@
+/* ==========================================================================
+   Atlas Motion & Bento Layer
+   Живой переливающийся фон, анимации переходов, текста, иконок и карточек
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   1. Иерархия слоёв поверх фиксированного живого фона
+   -------------------------------------------------------------------------- */
+body {
+  position: relative;
+}
+
+body > .atlas-mode {
+  position: relative;
+  z-index: 2;
+}
+
+body > main#main-content,
+body > .atlas-footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* --------------------------------------------------------------------------
+   2. Живой переливающийся фон всего сервиса (Ural Aurora Pastel Mesh)
+   -------------------------------------------------------------------------- */
+.atlas-ambient-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+.atlas-ambient-orb {
+  position: absolute;
+  border-radius: 9999px;
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+}
+
+.atlas-ambient-orb--sky {
+  top: -18vmax;
+  left: -12vmax;
+  width: 68vmax;
+  height: 62vmax;
+  background: radial-gradient(
+    circle at 46% 48%,
+    rgba(135, 159, 174, 0.08) 0%,
+    rgba(135, 159, 174, 0.035) 40%,
+    transparent 70%
+  );
+  animation: atlas-orb-sky 22s ease-in-out infinite alternate;
+}
+
+.atlas-ambient-orb--mint {
+  top: 20vh;
+  right: -18vmax;
+  width: 64vmax;
+  height: 60vmax;
+  background: radial-gradient(
+    circle at 52% 45%,
+    rgba(128, 161, 157, 0.055) 0%,
+    rgba(128, 161, 157, 0.025) 42%,
+    transparent 72%
+  );
+  animation: atlas-orb-mint 26s ease-in-out infinite alternate;
+}
+
+.atlas-ambient-orb--copper {
+  bottom: -22vmax;
+  left: 16vw;
+  width: 66vmax;
+  height: 54vmax;
+  background: radial-gradient(
+    circle at 50% 52%,
+    rgba(169, 150, 128, 0.06) 0%,
+    rgba(169, 150, 128, 0.025) 44%,
+    transparent 72%
+  );
+  animation: atlas-orb-copper 20s ease-in-out infinite alternate;
+}
+
+.atlas-ambient-grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    rgba(16, 35, 50, 0.025) 1px,
+    transparent 1px
+  );
+  background-size: 28px 28px;
+  mask-image: radial-gradient(
+    ellipse 86% 78% at 50% 38%,
+    #000 35%,
+    transparent 96%
+  );
+}
+
+.atlas-ambient-bg[data-paused="true"] * {
+  animation-play-state: paused !important;
+}
+
+@keyframes atlas-orb-sky {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.85;
+  }
+  50% {
+    transform: translate3d(6vw, 4vh, 0) scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translate3d(11vw, -2vh, 0) scale(0.96);
+    opacity: 0.82;
+  }
+}
+
+@keyframes atlas-orb-mint {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: translate3d(-7vw, 5vh, 0) scale(1.08);
+    opacity: 0.98;
+  }
+  100% {
+    transform: translate3d(-3vw, -6vh, 0) scale(0.95);
+    opacity: 0.84;
+  }
+}
+
+@keyframes atlas-orb-copper {
+  0% {
+    transform: translate3d(0, 0, 0) scale(0.98);
+    opacity: 0.78;
+  }
+  50% {
+    transform: translate3d(-5vw, -5vh, 0) scale(1.07);
+    opacity: 0.96;
+  }
+  100% {
+    transform: translate3d(7vw, -2vh, 0) scale(1);
+    opacity: 0.8;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   3. Полоса перехода между страницами
+   -------------------------------------------------------------------------- */
+.atlas-route-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2.5px;
+  z-index: 90;
+  pointer-events: none;
+  transform-origin: left center;
+  transform: scaleX(0);
+  opacity: 0;
+  background: #6a9db6;
+}
+
+/* --------------------------------------------------------------------------
+   4. Живая обложка на главной и анимации текста
+   -------------------------------------------------------------------------- */
+@keyframes atlas-hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+html:not([data-motion="off"]) .atlas-hero .atlas-kicker {
+  animation: atlas-hero-rise 520ms cubic-bezier(0.22, 1, 0.36, 1) 40ms backwards;
+}
+
+html:not([data-motion="off"]) .atlas-hero h1 {
+  animation: atlas-hero-rise 600ms cubic-bezier(0.22, 1, 0.36, 1) 110ms backwards;
+}
+
+html:not([data-motion="off"]) .atlas-hero .atlas-lead {
+  animation: atlas-hero-rise 600ms cubic-bezier(0.22, 1, 0.36, 1) 180ms backwards;
+}
+
+html:not([data-motion="off"]) .atlas-hero .campus-home-search {
+  animation: atlas-hero-rise 620ms cubic-bezier(0.22, 1, 0.36, 1) 250ms backwards;
+}
+
+html:not([data-motion="off"]) .atlas-scene {
+  animation: atlas-hero-rise 640ms cubic-bezier(0.22, 1, 0.36, 1) 310ms backwards;
+}
+
+/* Микроанимации фирменного знака CampusMark */
+.atlas-mark-svg,
+.atlas-mark-peaks,
+.atlas-mark-wave {
+  transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), filter 280ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .brand:hover .atlas-mark-svg {
+    transform: scale(1.04);
+  }
+  .brand:hover .atlas-mark-peaks {
+    transform: translateY(-1.2px);
+    filter: drop-shadow(0 2px 4px rgba(246, 162, 115, 0.35));
+  }
+  .brand:hover .atlas-mark-wave {
+    transform: translateY(0.8px);
+  }
+}
+
+/* Микроанимации иконок инструментов, карточек и стрелок */
+.atlas-tool-icon,
+.atlas-tool-icon svg,
+.atlas-metric-icon,
+.atlas-metric-icon svg,
+.atlas-uni-monogram,
+.atlas-arrow,
+.atlas-uni-arrow,
+.atlas-footer-grid li a svg {
+  transition:
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 220ms ease,
+    border-color 220ms ease,
+    color 220ms ease,
+    box-shadow 240ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .atlas-tool-card:hover .atlas-tool-icon {
+    transform: scale(1.06);
+  }
+  .atlas-tool-card:hover [data-icon-motion="book"] svg {
+    transform: scale(1.08) rotate(-6deg);
+  }
+  .atlas-tool-card:hover [data-icon-motion="scan"] svg {
+    transform: scale(1.12);
+  }
+  .atlas-tool-card:hover [data-icon-motion="pen"] svg {
+    transform: translate(1.5px, -1.5px) rotate(-10deg);
+  }
+  .atlas-tool-card:hover [data-icon-motion="chart"] svg {
+    transform: translateY(-2px) scale(1.08);
+  }
+  .atlas-tool-card:hover .atlas-arrow,
+  .atlas-uni-card:hover .atlas-uni-arrow,
+  .atlas-footer-grid li a:hover svg {
+    transform: translate(3px, -3px);
+  }
+  .atlas-metric-card:hover .atlas-metric-icon {
+    transform: scale(1.08) rotate(-4deg);
+  }
+  .atlas-uni-card:hover .atlas-uni-monogram {
+    transform: scale(1.06) rotate(-3deg);
+  }
+  .atlas-inline:hover svg {
+    transform: translate(2.5px, -2.5px);
+  }
+}
+
+.atlas-inline svg {
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* --------------------------------------------------------------------------
+   6. Bento-доска показателей кампуса (Главная)
+   -------------------------------------------------------------------------- */
+.atlas-metrics.atlas-bento-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.atlas-metrics.atlas-bento-metrics > div {
+  border-top: 0;
+  padding-block: 0;
+  height: 100%;
+}
+
+.atlas-metric-card {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.atlas-metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.atlas-metric-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.atlas-metric-card dt {
+  color: #445a61;
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+
+.atlas-metric-card dd:not(.atlas-metric-note) {
+  margin-block: 12px 4px;
+  font-size: clamp(21px, 2.15vw, 31px);
+  font-weight: 620;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+  color: #102332;
+  font-variant-numeric: tabular-nums;
+}
+
+.atlas-metric-card .atlas-metric-note {
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.atlas-metric-note summary svg {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.atlas-metric-note details[open] p {
+  animation: atlas-fade-soft 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes atlas-fade-soft {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   7. Bento-доска «Рабочие инструменты» (Асимметричная 12-колоночная сетка)
+   -------------------------------------------------------------------------- */
+.atlas-tools.atlas-bento-tools {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.atlas-tool-slot {
+  height: 100%;
+  grid-column: span 6;
+}
+
+@media (min-width: 1024px) {
+  .atlas-tool-slot:nth-child(1),
+  .atlas-tool-slot:nth-child(4) {
+    grid-column: span 7;
+  }
+  .atlas-tool-slot:nth-child(2),
+  .atlas-tool-slot:nth-child(3) {
+    grid-column: span 5;
+  }
+}
+
+.atlas-tool-card,
+.atlas-uni-card {
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  transition: border-color 180ms ease, background-color 180ms ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .atlas-tool-card:hover,
+  .atlas-uni-card:hover {
+    background: #f3f5f3;
+    border-color: #a9bcbc;
+  }
+}
+
+.atlas-tools.atlas-bento-tools a.atlas-tool-link {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  height: 100%;
+  padding: 20px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  transform: none;
+}
+
+.atlas-tools.atlas-bento-tools a.atlas-tool-link:hover {
+  transform: none;
+  border-color: transparent;
+}
+
+.atlas-tool-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.atlas-tools.atlas-bento-tools .atlas-tool-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--primary);
+}
+
+.atlas-tools.atlas-bento-tools .atlas-arrow {
+  position: static;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+
+.atlas-tool-body h3 {
+  margin-top: 0;
+  font-size: clamp(18px, 1.45vw, 21px);
+  font-weight: 630;
+  letter-spacing: -0.04em;
+  color: #102332;
+}
+
+.atlas-tool-body p {
+  margin-top: 6px;
+  max-width: 46ch;
+}
+
+/* --------------------------------------------------------------------------
+   8. Bento-витрина 7 вузов + карточка каталога (4x2 на десктопе)
+   -------------------------------------------------------------------------- */
+.atlas-bento-universities {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.atlas-bento-universities > div {
+  height: 100%;
+}
+
+.atlas-uni-link {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  padding: 18px;
+}
+
+.atlas-uni-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.atlas-uni-monogram {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  flex-shrink: 0;
+}
+
+.atlas-uni-arrow {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.atlas-uni-name strong {
+  display: block;
+  font-size: 18px;
+  font-weight: 630;
+  letter-spacing: -0.035em;
+  color: #102332;
+}
+
+.atlas-uni-name span {
+  display: block;
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.atlas-uni-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.atlas-uni-tags span {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.atlas-uni-tags span + span::before {
+  content: "·";
+  margin-inline-end: 6px;
+}
+
+.atlas-uni-card.atlas-uni-cta {
+  border-color: #b7c9cc;
+  background: #eaf1f2;
+}
+
+.atlas-uni-card.atlas-uni-cta .atlas-uni-monogram {
+  background: #dce9ec;
+  color: var(--primary);
+}
+
+@media (max-width: 1023px) {
+  .atlas-metrics.atlas-bento-metrics,
+  .atlas-bento-universities {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .atlas-tools.atlas-bento-tools {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .atlas-tool-slot {
+    grid-column: auto !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .atlas-tools.atlas-bento-tools,
+  .atlas-bento-universities {
+    grid-template-columns: 1fr;
+  }
+  .atlas-tools.atlas-bento-tools a.atlas-tool-link {
+    padding: 18px;
+    gap: 14px;
+  }
+}
+
+@media (max-width: 540px) {
+  .atlas-metrics.atlas-bento-metrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   9. Каскадные списки, индикаторы и прогресс-бары рабочих разделов
+   -------------------------------------------------------------------------- */
+@keyframes atlas-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes atlas-bar-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes atlas-live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(43, 121, 92, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(43, 121, 92, 0);
+  }
+}
+
+html:not([data-motion="off"]) .atlas-stagger-in {
+  animation: atlas-item-enter 380ms cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+html:not([data-motion="off"]) .atlas-stagger-item {
+  animation: atlas-item-enter 360ms cubic-bezier(0.22, 1, 0.36, 1)
+    calc(min(var(--stagger-i, 0), 8) * 38ms) backwards;
+}
+
+html:not([data-motion="off"]) .atlas-bar-grow {
+  transform-origin: left center;
+  animation: atlas-bar-grow 680ms cubic-bezier(0.22, 1, 0.36, 1) 120ms backwards;
+}
+
+html:not([data-motion="off"]) .atlas-live-dot {
+  animation: atlas-live-pulse 2.4s ease-in-out infinite;
+}
+
+/* --------------------------------------------------------------------------
+   10. Полное уважение prefers-reduced-motion и data-motion="off"
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .atlas-ambient-orb,
+  .atlas-live-dot,
+  .atlas-stagger-in,
+  .atlas-stagger-item,
+  .atlas-bar-grow,
+  .atlas-hero .atlas-kicker,
+  .atlas-hero h1,
+  .atlas-hero .atlas-lead,
+  .atlas-hero .campus-home-search,
+  .atlas-scene {
+    animation: none !important;
+  }
+}
+
+html[data-motion="off"] .atlas-ambient-orb,
+html[data-motion="off"] .atlas-live-dot,
+html[data-motion="off"] .atlas-stagger-in,
+html[data-motion="off"] .atlas-stagger-item,
+html[data-motion="off"] .atlas-bar-grow,
+html[data-motion="off"] .atlas-hero .atlas-kicker,
+html[data-motion="off"] .atlas-hero h1,
+html[data-motion="off"] .atlas-hero .atlas-lead,
+html[data-motion="off"] .atlas-hero .campus-home-search,
+html[data-motion="off"] .atlas-scene {
+  animation: none !important;
+}
+
+@media (forced-colors: active) {
+  .atlas-ambient-bg {
+    display: none;
+  }
+}
