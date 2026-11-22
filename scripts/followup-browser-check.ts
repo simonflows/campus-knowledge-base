@@ -31,6 +31,9 @@ export async function runFollowupBrowserChecks(page: Page, base: string) {
   const identityBefore = await (await page.request.get(base + "/api/auth/session")).json();
   const attempts: string[] = [];
   const onRequest = (request: import("playwright-core").Request) => {
+    // The previous working document may finish its route prefetch during handoff.
+    // Observe bootstrap and all subsequent fetches belonging to the demo document.
+    if (new URL(request.frame().url()).pathname !== "/demo") return;
     if (new URL(request.url()).pathname.startsWith("/api/") || ["fetch", "xhr"].includes(request.resourceType()))
       attempts.push(request.method() + " " + new URL(request.url()).pathname);
   };
