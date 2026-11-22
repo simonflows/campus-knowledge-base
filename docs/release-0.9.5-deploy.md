@@ -99,8 +99,10 @@ test ! -e "$BACKUP_DIR"
 install -d -m 0700 "$BACKUP_DIR"
 systemctl stop kanon.service
 test -z "$(docker ps --filter name=campus-kb-prod-app-1 --format '{{.ID}}')"
-docker run -d --name kanon095-maintenance --user 0:0 --read-only --tmpfs /tmp:mode=1777 \
+docker run -d --name kanon095-maintenance --user 0:0 --read-only --no-healthcheck --tmpfs /tmp:mode=1777 \
   --cap-drop ALL --security-opt no-new-privileges --env-file /run/campus/runtime.env \
+  -e USE_DATABASE=true -e CAMPUS_DEMO_LOGIN=false -e CAMPUS_LOCAL_DEMO=false \
+  -e CAMPUS_FULL_LOCAL_DEMO=false -e SEED_DEMO_ARTICLES=false \
   -v "$BACKUP_DIR:/backup" -v "$PWD/data:/package:ro" \
   --entrypoint tail "$IMAGE" -f /dev/null
 ```
