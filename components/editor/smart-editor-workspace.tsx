@@ -58,7 +58,13 @@ import { EditorialReadinessPanel } from "./editorial-readiness-panel";
 import "@/app/campus-workspaces.css";
 import { universities } from "@/lib/data";
 import type { SessionUser } from "@/lib/auth";
-import type { ReadyArticle } from "@/lib/articles";
+import {
+  articleBasisLocation,
+  hasCurrentArticleBasis,
+  sameArticleBasisReference,
+  type ArticleBasisReference,
+  type ReadyArticle,
+} from "@/lib/articles";
 import type { FactCheckResult } from "@/lib/fact-check";
 import type { EditorAssistSuggestion } from "@/lib/editor-assist";
 import {
@@ -123,6 +129,16 @@ function AssistSources({ sourceVersions, staleSources }: Pick<EditorAssistPrevie
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function ArticleBlockDetails({ reference }: { reference: ArticleBasisReference }) {
+  return (
+    <div className="min-w-0 space-y-1 text-sm [overflow-wrap:anywhere]">
+      <p className="font-medium">{reference.articleTitle}</p>
+      {reference.sectionHeading && <p>{reference.sectionHeading}</p>}
+      <p className="text-xs text-muted-foreground">{articleBasisLocation(reference)}</p>
     </div>
   );
 }
@@ -251,6 +267,9 @@ function EditorSession({
   );
   const [mobileDrafts, setMobileDrafts] = useState(false);
   const draftHeading = useRef<HTMLHeadingElement>(null);
+  const generationPanel = useRef<HTMLDetailsElement>(null);
+  const generationQuery = useRef<HTMLTextAreaElement>(null);
+  const [generationBasis, setGenerationBasis] = useState<ArticleBasisReference | null>(null);
   const showDraft = () => {
     setMobileDrafts(false);
     setSurface("write");
@@ -437,6 +456,7 @@ function EditorSession({
     reviewers?: typeof reviewers;
   };
   const openDocument = (data: Details | null, recovery?: EditorialRecovery) => {
+    setGenerationBasis(null);
     const next = data?.document || null;
     acceptVersion(next);
     replaceText(recovery?.content || next?.content || blank(currentUser));
@@ -692,9 +712,27 @@ function EditorSession({
   const change = (key: keyof EditorialContent, value: unknown) => {
     edit({ ...contentRef.current, [key]: value });
   };
+  const chooseArticleBlock = async (reference: ArticleBasisReference) => {
+    if (!canWork || busy) return;
+    if (!editable) {
+      setBusy(true);
+      try {
+        if (!(await flush()) || !active.current) return;
+        openDocument(null);
+      } finally {
+        setBusy(false);
+      }
+    }
+    setGenerationBasis(reference);
+    showDraft();
+    requestAnimationFrame(() => {
+      if (generationPanel.current) generationPanel.current.open = true;
+      generationQuery.current?.focus();
+    });
+  };
   const generate = async () => {
     const query = content.query.trim() || content.topic.trim();
-    if (query.length < 10) {
+    if (!generationBasis && query.length < 10) {
       toast.error("Опишите тему подробнее — минимум 10 знаков");
       return;
     }
@@ -708,6 +746,13 @@ function EditorSession({
           audience: content.audience,
           outlet: content.outlet,
           length: content.length,
+          ...(generationBasis && {
+            basis: {
+              articleId: generationBasis.articleId,
+              revisionId: generationBasis.revisionId,
+              chunkIds: [generationBasis.chunkId],
+            },
+          }),
         }),
       });
       if (!active.current) return;
@@ -721,6 +766,7 @@ function EditorSession({
         editorialContentSchema.parse({
           ...c,
           ...a,
+          articleBasis: a.articleBasis ?? [],
           audience: c.audience,
           outlet: c.outlet,
           length: c.length,
@@ -1296,7 +1342,7 @@ function EditorSession({
                     </Alert>
                   ) : null}
 
-                  <details className="desk-disclosure desk-generation">
+                  <details className="desk-disclosure desk-generation" ref={generationPanel}>
                     <summary>
                       <Sparkles size={17} aria-hidden="true" /> Подготовить
                       текст по данным
@@ -1319,6 +1365,7 @@ function EditorSession({
                           </FieldLabel>
                           <Textarea
                             id="editor-query"
+                            ref={generationQuery}
                             disabled={!editable || busy}
                             value={content.query}
                             onChange={(e) => change("query", e.target.value)}
@@ -1326,6 +1373,17 @@ function EditorSession({
                           />
                         </Field>
                       </FieldGroup>
+                      {generationBasis ? (
+                        <div className="space-y-2 rounded-lg border p-3">
+                          <p className="text-xs font-medium text-muted-foreground">Выбранный утверждённый блок</p>
+                          <ArticleBlockDetails reference={generationBasis} />
+                          <Button type="button" variant="ghost" size="sm" disabled={busy}
+                            onClick={() => setGenerationBasis(null)}>Снять выбор блока</Button>
+                        </div>
+                      ) : (
+                        <Button type="button" variant="outline" size="sm" disabled={!editable || busy}
+                          onClick={() => setSurface("library")}>Выбрать блок из библиотеки</Button>
+                      )}
                       <div className="desk-generation-meta">
                         {(
                           [
@@ -1651,6 +1709,39 @@ function EditorSession({
                         Источники ещё не приложены.
                       </p>
                     ) : null}
+                    {!!content.articleBasis?.length && (
+                      <details className="desk-disclosure">
+                        <summary>Опорные блоки черновика</summary>
+                        <ul className="space-y-2">
+                          {content.articleBasis.map((reference) => {
+                            const current = articles.some((article) => hasCurrentArticleBasis(article, reference));
+                            return (
+                              <li key={JSON.stringify([reference.articleId, reference.revisionId, reference.chunkId])}>
+                                <ArticleBlockDetails reference={reference} />
+                                <p className="desk-footnote">
+                                  {current
+                                    ? "Редакция доступна в библиотеке"
+                                    : "Историческая опора · блок изменился или снят с публикации"}
+                                </p>
+                                {editable && !current && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    disabled={busy}
+                                    onClick={() => change("articleBasis", content.articleBasis?.filter(
+                                      (item) => !sameArticleBasisReference(item, reference)
+                                    ))}
+                                  >
+                                    Убрать историческую опору
+                                  </Button>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </details>
+                    )}
                     {flashAssistAvailable && (
                       <CanonAiOption kind="fact" checked={useAiCheck} disabled={busy} onChange={setUseAiCheck} />
                     )}
@@ -1966,11 +2057,12 @@ function EditorSession({
       ) : null}
       <div hidden={surface !== "library"}>
         <EditorialLibrary
-          articles={focusedArticleId ? initialArticles : articles}
+          articles={articles}
           focusedArticleId={focusedArticleId}
           legacy={legacy}
           busy={busy}
           onImport={canWork ? importArchive : undefined}
+          onUseBlock={canWork ? (reference) => void chooseArticleBlock(reference) : undefined}
         />
       </div>
     </div>

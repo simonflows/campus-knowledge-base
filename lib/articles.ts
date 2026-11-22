@@ -14,6 +14,15 @@ export type ArticleSection = {
   chunks: ArticleChunk[];
 };
 
+export type ArticleBasisReference = {
+  articleId: string;
+  revisionId: string;
+  sectionId: string;
+  chunkId: string;
+  articleTitle: string;
+  sectionHeading: string;
+};
+
 export type ReadyArticle = {
   approval?: { revisionId: string; approvedBy: string; approvedAt: string };
   originalDraftId?: string;
@@ -25,6 +34,7 @@ export type ReadyArticle = {
   sourceCardIds: string[];
   sourceCardTitles: string[];
   sourceVersions?: SourceVersionReference[];
+  articleBasis?: ArticleBasisReference[];
   universityId: string;
   projectTitle: string;
   topic: string;
@@ -69,6 +79,7 @@ export type ArticleSourceSummary = {
 
 export type FlatArticleChunk = {
   articleId: string;
+  approvedRevisionId?: string;
   articleTitle: string;
   sectionId: string;
   sectionHeading: string;
@@ -79,9 +90,11 @@ export type FlatArticleChunk = {
 export function flattenArticleChunks(
   article: ReadyArticle
 ): FlatArticleChunk[] {
+  const revision = isApprovedArticle(article) ? article.approval?.revisionId : undefined;
   return article.sections.flatMap((section) =>
     section.chunks.map((chunk) => ({
       articleId: article.id,
+      ...(revision && { approvedRevisionId: revision }),
       articleTitle: article.title,
       sectionId: section.id,
       sectionHeading: section.heading,
@@ -89,6 +102,35 @@ export function flattenArticleChunks(
       content: chunk.content,
     }))
   );
+}
+
+export function articleBasisReference(chunk: FlatArticleChunk): ArticleBasisReference | null {
+  if (!chunk.approvedRevisionId || !chunk.content.trim()) return null;
+  return {
+    articleId: chunk.articleId,
+    revisionId: chunk.approvedRevisionId,
+    sectionId: chunk.sectionId,
+    chunkId: chunk.chunkId,
+    articleTitle: chunk.articleTitle,
+    sectionHeading: chunk.sectionHeading,
+  };
+}
+
+export function sameArticleBasisReference(first: ArticleBasisReference, second: ArticleBasisReference) {
+  return first.articleId === second.articleId && first.revisionId === second.revisionId &&
+    first.sectionId === second.sectionId && first.chunkId === second.chunkId &&
+    first.articleTitle === second.articleTitle && first.sectionHeading === second.sectionHeading;
+}
+
+export function articleBasisLocation(reference: ArticleBasisReference): string {
+  return `Статья ${reference.articleId} · редакция ${reference.revisionId} · раздел ${reference.sectionId} · блок ${reference.chunkId}`;
+}
+
+export function hasCurrentArticleBasis(article: ReadyArticle, reference: ArticleBasisReference): boolean {
+  if (article.id !== reference.articleId || article.approval?.revisionId !== reference.revisionId) return false;
+  const matching = flattenArticleChunks(article).filter(({ chunkId }) => chunkId === reference.chunkId);
+  const block = matching.length === 1 ? articleBasisReference(matching[0]) : null;
+  return Boolean(block && sameArticleBasisReference(block, reference));
 }
 
 export function countArticleChars(article: ReadyArticle): number {

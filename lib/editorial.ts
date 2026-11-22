@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { SessionUser } from "./auth";
 import { sourceVersionsSchema } from "./source-references";
+import { articleBasisReferencesSchema } from "./validation/editor-basis";
 
 export const editorialContentSchema = z
   .object({
@@ -16,6 +17,7 @@ export const editorialContentSchema = z
     sourceCardIds: z.array(z.string().min(1).max(200)).max(100).default([]),
     sourceCardTitles: z.array(z.string().max(500)).max(100).default([]),
     sourceVersions: sourceVersionsSchema.optional(),
+    articleBasis: articleBasisReferencesSchema.optional(),
     sections: z
       .array(
         z.object({

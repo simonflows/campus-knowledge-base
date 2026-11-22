@@ -119,6 +119,18 @@ function matchesRoot(haystack: string, root: string): boolean {
   return haystack.includes(root);
 }
 
+function splitArticleSupport(query: string) {
+  const cue = /(?:^|\s)(?:с\s+опорой\s+на|на\s+основе|взяв\s+за\s+основу)\s+/iu.exec(query);
+  return cue ? { subject: query.slice(0, cue.index), support: query.slice(cue.index + cue[0].length) }
+    : { subject: query, support: "" };
+}
+
+export function isBasisOnlyArticleRequest(query: string): boolean {
+  if (!query.trim()) return true;
+  const words = query.toLowerCase().replace(/ё/g, "е").replace(/[\p{P}\s]+/gu, " ").trim();
+  return /^(?:пожалуйста )?(?:(?:напиши|написать|подготовь|подготовить|составь|сделай|собери|создай) )?(?:(?:кратк|коротк|подробн)[а-я]+ )?(?:стать[яю]|материал|текст|заметк[ау]|справк[ау]|очерк)(?:(?: по| на основе| с опорой на) (?:выбранному блоку|выбранного блока|выбранный блок))?$/u.test(words);
+}
+
 export type ScoredCard = {
   card: KnowledgeCard;
   score: number;
@@ -131,7 +143,7 @@ export function selectRelevantCards(
 ): ScoredCard[] {
   // Remove the editorial format from the start of the request. Every remaining
   // subject and qualifier is required in the approved card's searchable fields.
-  const subject = query
+  const subject = splitArticleSupport(query).subject
     .trim()
     .replace(
       /^(?:пожалуйста[\s,]+)?(?:напиши|написать|подготовь|составь|сделай|собери|создай)\s+/iu,
@@ -176,11 +188,18 @@ export function selectRelevantArticles(
   query: string,
   limit = 4
 ): ReadyArticle[] {
-  const roots = queryTokens(query);
+  const { support } = splitArticleSupport(query);
+  const roots = queryTokens(support || query);
+  const ownerScope = new Set(universities.filter((university) => {
+    const explicit = ` ${normalize(support)} `;
+    return [university.id, university.shortName, university.fullName, university.fullName.replace(/\s*\([^)]*\)\s*$/u, "")]
+      .some((name) => explicit.includes(` ${normalize(name)} `));
+  }).map((university) => university.id));
 
-  if (roots.length === 0) return [];
+  if (roots.length === 0 && !ownerScope.size) return [];
 
   return articles
+    .filter((article) => !ownerScope.size || ownerScope.has(article.universityId))
     .map((article) => {
       const text = normalize(
         [
@@ -192,7 +211,7 @@ export function selectRelevantArticles(
         ].join(" ")
       );
       const title = normalize(article.title);
-      let score = 0;
+      let score = ownerScope.size ? 1 : 0;
 
       new Set(roots).forEach((root) => {
         if (matchesRoot(text, root)) score += 2;
@@ -325,6 +344,7 @@ export function serializeCardForPrompt(card: KnowledgeCard): string {
 export function serializeApprovedChunk(chunk: FlatArticleChunk): string {
   return [
     `Статья: ${chunk.articleTitle}`,
+    `Опора: статья ${chunk.articleId}, редакция ${chunk.approvedRevisionId ?? "не зафиксирована"}, блок ${chunk.chunkId}`,
     `Смысловой блок: ${chunk.sectionHeading}`,
     `Живая формулировка: ${chunk.content}`,
   ].join("\n");
@@ -336,7 +356,7 @@ const systemPrompt = `Ты — редактор пресс-службы камп
 1. Не используй общие знания модели и не добавляй факты, цифры, имена или сроки, которых нет в карточках.
 2. Если для запроса не хватает данных, не придумывай текст: верни noData=true и короткое честное сообщение в noDataMessage.
 3. Заголовок H1 — title. Подзаголовки только H2 или H3 — sections[].heading и sections[].level.
-4. Первые 1000 знаков (поле lead и первый chunk) должны ясно раскрывать: кто с кем сотрудничает, что создано, в каком контуре, в чём практическая польза.
+4. Первые 1000 знаков (поле lead и первый chunk) должны ясно раскрывать: кто с кем сотрудничает, что создано и в каком контуре. Укажи практическую пользу только если она подтверждена в карточке.
 5. Пиши живым языком без канцелярита. Избегай штампов «в рамках», «в целях», «осуществляется».
 6. Дели текст на самодостаточные чанки по 1–2 абзаца. В каждом чанке явно называй участников, проект и факты, чтобы блок можно было понять отдельно от статьи.
 7. Не приписывай совместный проект одному вузу или партнёру. Не меняй статус лаборатории и контур проекта.
@@ -712,7 +732,8 @@ export function isGroundedArticleText(
 
 export function groundGeneratedArticle(
   candidate: GeneratedArticlePayload,
-  selectedCards: KnowledgeCard[]
+  selectedCards: KnowledgeCard[],
+  { requireStandaloneLead = false }: { requireStandaloneLead?: boolean } = {},
 ): string | null {
   const ids = new Set(candidate.sourceCardIds);
   const sources = selectedCards.filter((card) => ids.has(card.id));
@@ -728,6 +749,43 @@ export function groundGeneratedArticle(
     return "Ответ модели содержит противоречие или факт без подтверждения. Черновик собран по утверждённым карточкам.";
   if (candidate.lead.length > 1000)
     return "Лид модели превышает 1000 знаков. Использован черновик по утверждённым карточкам.";
+  const prose = (value: string) => normalize(value.replace(/\[[^\]\n]+\]/gu, ""));
+  const lead = prose(candidate.lead);
+  const title = prose(candidate.title);
+  const paragraphs = new Set<string>();
+  if (!lead || lead === title || sources.some((card) => lead === prose(card.title)))
+    return "Лид повторяет только название. Использован черновик по утверждённым карточкам.";
+  for (const section of candidate.sections) {
+    if (/^(?:введение|заключение|вступление|основной текст)$/u.test(prose(section.heading)))
+      return "Подзаголовки должны называть содержание блока. Использован черновик по утверждённым карточкам.";
+    for (const chunk of section.chunks) {
+      const parts = chunk.content.split(/(?:\r?\n)+/u).map(prose).filter(Boolean);
+      if (parts.length === 0 || parts.length > 2)
+        return "Смысловой блок должен содержать один или два абзаца. Использован черновик по утверждённым карточкам.";
+      for (const part of parts) {
+        if (part === title || paragraphs.has(part) || requireStandaloneLead && part === lead)
+          return "Обнаружен повтор заголовка или блока. Использован черновик по утверждённым карточкам.";
+        paragraphs.add(part);
+      }
+    }
+  }
+  if (requireStandaloneLead) {
+    const primary = sources.find((card) => candidate.lead.includes(`[${card.id}]`)) ?? sources[0];
+    const contains = (value: string) => {
+      const subject = prose(value);
+      return Boolean(subject) && ` ${lead} `.includes(` ${subject} `);
+    };
+    const hasUniversity = (id: string) => contains(getUniversityName(id)) || contains(getUniversityFullName(id));
+    const participants = primary?.type === "project"
+      ? primary.isJoint ? primary.participantUniversityIds : [primary.initiatorUniversityId].filter(Boolean)
+      : [];
+    const lacksContext = primary?.type === "project" && (
+      participants.some((id) => !hasUniversity(id)) ||
+      (primary.contour !== "не уточнён" && !contains(primary.contour))
+    );
+    if (lacksContext || (primary?.type === "laboratory" && !contains(primary.affiliation)))
+      return "Лид не называет известных участников, вуз или контур. Использован черновик по утверждённым карточкам.";
+  }
   return null;
 }
 
@@ -778,8 +836,8 @@ export function buildDeterministicArticleDraft(params: {
       : `${primary.title} — проект ${participants} в контуре «${primary.contour}»`;
 
     lead = [
+      `${primary.title} — ${primary.isJoint ? "совместный проект" : "проект"} ${participants} в контуре «${primary.contour}». Стадия — «${primary.readinessStage}».`,
       primary.referenceDescription,
-      `Контур реализации — «${primary.contour}», текущая стадия готовности — «${primary.readinessStage}».`,
       primary.confirmedFigures.length > 0
         ? `Ключевые подтверждённые факты: ${primary.confirmedFigures.join("; ")}.`
         : "",
@@ -804,7 +862,7 @@ export function buildDeterministicArticleDraft(params: {
 
     sections.push({
       id: "section-results",
-      heading: `Практическая польза и подтверждённые результаты (${primary.sphere})`,
+      heading: `Направление работы и подтверждённые результаты (${primary.sphere})`,
       level: 2,
       chunks: [
         {
@@ -966,9 +1024,9 @@ export function buildDeterministicArticleDraft(params: {
       id: "section-colleagues-context",
       heading: "Опорный контекст из библиотеки «Готовые статьи»",
       level: 3,
-      chunks: params.referenceChunks.slice(0, 2).map((chunk, index) => ({
+      chunks: params.referenceChunks.map((chunk, index) => ({
         id: `section-colleagues-chunk-${index + 1}`,
-        content: `${chunk.content} (опора на материал «${chunk.articleTitle}»)`,
+        content: chunk.content,
       })),
     });
   }

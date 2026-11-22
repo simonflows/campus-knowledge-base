@@ -16,6 +16,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import { TableName, TABLE_SCHEMAS } from "../lib/schema";
 import type { KnowledgeCard } from "../lib/knowledge";
+import type { ReadyArticle } from "../lib/articles";
 import { installPilotFixture } from "./pilot-fixture";
 
 let phase = "scope-guard";
@@ -171,14 +172,14 @@ async function main() {
   const { docClient, resetDbAvailableCache } = await import("../lib/db");
   closeClient = () => docClient.destroy();
   const send = docClient.send.bind(docClient);
-  let beforeApprovalWrite: ((operation: TransactWriteCommand) => Promise<void>) | undefined;
+  let beforeEditorialWrite: ((operation: TransactWriteCommand) => Promise<void>) | undefined;
   // Guard every routed read/write, including nested transaction operations, before invoking any model.
   docClient.send = (async (command: unknown, ...rest: unknown[]) => {
     const forward = async (operation: unknown) => {
       checkTableOperation(operation, allowed);
       if (operation instanceof TransactWriteCommand &&
-          operation.input.TransactItems?.some(item => item.Put?.TableName === TableName.ARTICLES)) {
-        await beforeApprovalWrite?.(operation);
+          operation.input.TransactItems?.some(item => item.Put?.TableName === TableName.EDITORIAL_DOCUMENTS)) {
+        await beforeEditorialWrite?.(operation);
       }
       return Reflect.apply(send, docClient, [operation, ...rest]);
     };
@@ -362,7 +363,7 @@ async function main() {
   );
 
   phase = "editorial-receipt";
-  const { createEditorial, mutateEditorial } =
+  const { createEditorial, getCurrentEditorialSnapshot, mutateEditorial } =
     await import("../lib/editorial-models");
   const { createEditorialSchema } = await import("../lib/editorial");
   const { updateEditorialReadiness } =
@@ -542,6 +543,12 @@ async function main() {
     { status: "approved" },
   );
 
+  async function submitEditorialDocument(document: { id: string; version: number; revisionId: string }) {
+    return (await mutateEditorial(document.id, author, {
+      action: "submit", version: document.version, revisionId: document.revisionId, reviewerId: reviewer.id, comment: "",
+    })).document;
+  }
+
   async function submitArticle(heads: KnowledgeCard[], options: { lead?: string; pins?: boolean } = {}) {
     const sources = heads.map(head => {
       const approved = getApprovedVersion(head);
@@ -561,9 +568,7 @@ async function main() {
           level: 2, chunks: [{ id: "qa-body", content: lead }] }],
       },
     }));
-    return (await mutateEditorial(document.id, author, {
-      action: "submit", version: document.version, revisionId: document.revisionId, reviewerId: reviewer.id, comment: "",
-    })).document;
+    return submitEditorialDocument(document);
   }
 
   const approveArticle = (document: Awaited<ReturnType<typeof submitArticle>>) =>
@@ -581,7 +586,7 @@ async function main() {
   const raceSource = await createSource("race");
   const racedArticle = await submitArticle([raceSource]);
   let insertedRace = false;
-  beforeApprovalWrite = async operation => {
+  beforeEditorialWrite = async operation => {
     const sourceGuard = operation.input.TransactItems?.find(item => item.ConditionCheck?.Key?.id === raceSource.id)?.ConditionCheck;
     assert.equal(sourceGuard?.TableName, TableName.KNOWLEDGE_CARDS);
     assert.equal(sourceGuard?.ExpressionAttributeValues?.[":sourceHead"], raceSource.updatedAt);
@@ -598,7 +603,7 @@ async function main() {
   try {
     await assert.rejects(approveArticle(racedArticle), { status: 409 });
   } finally {
-    beforeApprovalWrite = undefined;
+    beforeEditorialWrite = undefined;
   }
   assert.ok(insertedRace);
   assert.equal(await models.getArticleById(racedArticle.id), null);
@@ -619,7 +624,7 @@ async function main() {
   assert.ok(snapshotHead?.approvedSnapshot);
   assert.equal(snapshotHead.status, "pending");
   const snapshotArticle = await submitArticle([snapshotHead]);
-  beforeApprovalWrite = async operation => {
+  beforeEditorialWrite = async operation => {
     const guard = operation.input.TransactItems?.find(item => item.ConditionCheck?.Key?.id === snapshotHead.id)?.ConditionCheck;
     assert.match(guard?.ConditionExpression ?? "", /approvedSnapshot\.updatedAt/);
     assert.equal(guard?.ExpressionAttributeValues?.[":sourceHead"], snapshotHead.updatedAt);
@@ -628,7 +633,7 @@ async function main() {
   try {
     await approveArticle(snapshotArticle);
   } finally {
-    beforeApprovalWrite = undefined;
+    beforeEditorialWrite = undefined;
   }
   const publishedSnapshotArticle = await models.getArticleById(snapshotArticle.id);
   assert.equal(publishedSnapshotArticle?.sourceCardTitles[0], snapshotSource.title);
@@ -642,16 +647,142 @@ async function main() {
     ));
   }
   const manySourcesArticle = await submitArticle(manySources);
-  beforeApprovalWrite = async operation => {
+  beforeEditorialWrite = async operation => {
     assert.equal(operation.input.TransactItems?.length, 25);
     assert.equal(operation.input.TransactItems?.filter(item => item.ConditionCheck?.TableName === TableName.KNOWLEDGE_CARDS).length, 22);
   };
   try {
     await approveArticle(manySourcesArticle);
   } finally {
-    beforeApprovalWrite = undefined;
+    beforeEditorialWrite = undefined;
   }
   assert.equal((await models.getArticleById(manySourcesArticle.id))?.sourceCardIds.length, 22);
+
+  function basisReference(publication: ReadyArticle) {
+    assert.ok(publication.approval);
+    const section = publication.sections[0];
+    assert.ok(section?.chunks[0]?.content.trim());
+    return {
+      articleId: publication.id,
+      revisionId: publication.approval.revisionId,
+      sectionId: section.id,
+      chunkId: section.chunks[0].id,
+      articleTitle: publication.title,
+      sectionHeading: section.heading,
+    };
+  }
+
+  function basisGuard(operation: TransactWriteCommand, publication: ReadyArticle) {
+    const guard = operation.input.TransactItems?.find(item =>
+      item.ConditionCheck?.TableName === TableName.ARTICLES && item.ConditionCheck?.Key?.id === publication.id,
+    )?.ConditionCheck;
+    assert.match(guard?.ConditionExpression ?? "", /approval\.revisionId\s*=\s*:basisRevision/);
+    assert.match(guard?.ConditionExpression ?? "", /updatedAt\s*=\s*:basisUpdated/);
+    assert.equal(guard?.ExpressionAttributeValues?.[":basisRevision"], publication.approval?.revisionId);
+    assert.equal(guard?.ExpressionAttributeValues?.[":basisUpdated"], publication.updatedAt);
+  }
+
+  phase = "article-library-basis-readback";
+  assert.ok(ordinary.publication);
+  const externalPublication = ordinary.publication;
+  const basis = basisReference(externalPublication);
+  const basisDraftInput = (publication: ReadyArticle) => createEditorialSchema.parse({
+    content: { title: "QA draft based on an approved publication", universityId: author.universityId,
+      articleBasis: [basisReference(publication)] },
+  });
+  let observedBasisGuard = false;
+  beforeEditorialWrite = async operation => {
+    basisGuard(operation, externalPublication);
+    observedBasisGuard = true;
+  };
+  const basisDraft = await createEditorial(author, basisDraftInput(externalPublication)).finally(() => {
+    beforeEditorialWrite = undefined;
+  });
+  assert.ok(observedBasisGuard);
+  const storedBasis = await getCurrentEditorialSnapshot(basisDraft.id, author);
+  assert.deepEqual(storedBasis.document.content.articleBasis, [basis]);
+  assert.deepEqual(storedBasis.revision.content.articleBasis, [basis]);
+
+  phase = "article-library-basis-race";
+  for (const race of ["withdraw", "advance"] as const) {
+    const publication = { ...externalPublication, id: "qa-basis-race-" + randomUUID() };
+    await docClient.send(new PutCommand({
+      TableName: TableName.ARTICLES, Item: publication, ConditionExpression: "attribute_not_exists(id)",
+    }));
+    const rejectedWrites: { table: string; id: string }[] = [];
+    const advancedTimestamp = new Date(Date.parse(publication.updatedAt) + 1).toISOString();
+    beforeEditorialWrite = async operation => {
+      basisGuard(operation, publication);
+      for (const { Put } of operation.input.TransactItems ?? []) {
+        if (!Put) continue;
+        const id: unknown = Put.Item?.id;
+        assert.ok(Put.TableName && typeof id === "string");
+        rejectedWrites.push({ table: Put.TableName, id });
+      }
+      assert.deepEqual(rejectedWrites.map(write => write.table).sort(),
+        [TableName.EDITORIAL_DOCUMENTS, TableName.EDITORIAL_REVISIONS, TableName.EDITORIAL_REVISIONS].sort());
+      // Change exactly one guard operand after the model validated the approved block.
+      await docClient.send(new UpdateCommand({
+        TableName: TableName.ARTICLES, Key: { id: publication.id },
+        ...(race === "withdraw" ? { UpdateExpression: "REMOVE approval" } : {
+          UpdateExpression: "SET updatedAt = :next", ExpressionAttributeValues: { ":next": advancedTimestamp },
+        }),
+        ConditionExpression: "attribute_exists(id)",
+      }));
+    };
+    try {
+      await assert.rejects(createEditorial(author, basisDraftInput(publication)), { status: 409 });
+    } finally {
+      beforeEditorialWrite = undefined;
+    }
+    assert.equal(rejectedWrites.length, 3);
+    for (const write of rejectedWrites) {
+      const { Item } = await docClient.send(new GetCommand({
+        TableName: write.table, Key: { id: write.id }, ConsistentRead: true,
+      }));
+      assert.equal(Item, undefined, "Rejected basis must leave no draft, revision or event");
+    }
+    const { Item: racedBasis } = await docClient.send(new GetCommand({
+      TableName: TableName.ARTICLES, Key: { id: publication.id }, ConsistentRead: true,
+    }));
+    assert.equal(racedBasis?.updatedAt, race === "withdraw" ? publication.updatedAt : advancedTimestamp);
+    assert.deepEqual(racedBasis?.approval, race === "withdraw" ? undefined : publication.approval);
+  }
+
+  phase = "article-library-own-basis-ceiling";
+  const previousEdition = await models.getArticleById(manySourcesArticle.id);
+  assert.ok(previousEdition);
+  const ownReference = basisReference(previousEdition);
+  const { document: ownDraft } = await mutateEditorial(manySourcesArticle.id, author, {
+    action: "save", version: (await getCurrentEditorialSnapshot(manySourcesArticle.id, author)).document.version,
+    content: { ...manySourcesArticle.content, title: "QA revised edition based on its predecessor", articleBasis: [ownReference] },
+  });
+  const ownSubmitted = await submitEditorialDocument(ownDraft);
+  let observedOwnBasisWrite = false;
+  beforeEditorialWrite = async operation => {
+    const items = operation.input.TransactItems ?? [];
+    assert.equal(items.length, 25);
+    assert.equal(items.filter(item => item.ConditionCheck?.TableName === TableName.KNOWLEDGE_CARDS).length, 22);
+    assert.equal(items.filter(item => item.ConditionCheck?.TableName === TableName.ARTICLES).length, 0);
+    const publicationPuts = items.filter(item => item.Put?.TableName === TableName.ARTICLES);
+    assert.equal(publicationPuts.length, 1);
+    const put = publicationPuts[0].Put;
+    assert.equal(put?.Item?.id, previousEdition.id);
+    assert.match(put?.ConditionExpression ?? "", /approval\.revisionId\s*=\s*:basisRevision/);
+    assert.match(put?.ConditionExpression ?? "", /updatedAt\s*=\s*:basisUpdated/);
+    assert.equal(put?.ExpressionAttributeValues?.[":basisRevision"], ownReference.revisionId);
+    assert.equal(put?.ExpressionAttributeValues?.[":basisUpdated"], previousEdition.updatedAt);
+    observedOwnBasisWrite = true;
+  };
+  try {
+    await approveArticle(ownSubmitted);
+  } finally {
+    beforeEditorialWrite = undefined;
+  }
+  assert.ok(observedOwnBasisWrite);
+  const ownPublication = await models.getArticleById(ownDraft.id);
+  assert.equal(ownPublication?.approval?.revisionId, ownDraft.revisionId);
+  assert.deepEqual(ownPublication?.articleBasis, [ownReference]);
 
   phase = "article-corpus-contradiction";
   const corpusCampus = structuredClone(knowledgeSeedCards.find(item => item.type === "campus")!);
@@ -861,6 +992,9 @@ async function main() {
         "article-source-commit-race",
         "article-approved-snapshot-condition",
         "article-transaction-ceiling-25-actions",
+        "article-library-basis-readback",
+        "article-library-basis-race",
+        "article-library-own-basis-transaction-ceiling",
         "article-corpus-contradiction",
         "campus-stakeholder-cas",
         "nested-snapshot-disk-registry",

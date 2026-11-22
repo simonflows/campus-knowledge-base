@@ -14,7 +14,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { isApprovedArticle, type ReadyArticle } from "@/lib/articles";
+import {
+  articleBasisLocation,
+  articleBasisReference,
+  flattenArticleChunks,
+  hasCurrentArticleBasis,
+  isApprovedArticle,
+  type ArticleBasisReference,
+  type ReadyArticle,
+} from "@/lib/articles";
 
 const articleDate = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
@@ -28,6 +36,7 @@ type Props = {
   legacy: ReadyArticle[];
   busy: boolean;
   onImport?: (article: ReadyArticle) => Promise<void>;
+  onUseBlock?: (block: ArticleBasisReference) => void;
   focusedArticleId?: string;
 };
 
@@ -35,15 +44,24 @@ function Publication({
   article,
   action,
   focused = false,
+  busy = false,
+  onUseBlock,
+  articles = [],
 }: {
   article: ReadyArticle;
   action?: React.ReactNode;
   focused?: boolean;
+  busy?: boolean;
+  onUseBlock?: Props["onUseBlock"];
+  articles?: ReadyArticle[];
 }) {
   const heading = useRef<HTMLElement>(null);
   useEffect(() => {
     if (focused) heading.current?.focus({ preventScroll: true });
   }, [focused]);
+  const approved = isApprovedArticle(article);
+  const approvedTime = approved && article.approval ? Date.parse(article.approval.approvedAt) : NaN;
+  const blocks = new Map(flattenArticleChunks(article).map((block) => [block.chunkId, articleBasisReference(block)]));
   return (
     <details className="desk-disclosure desk-publication" open={focused}>
       <summary ref={heading}>
@@ -53,9 +71,9 @@ function Publication({
         <span>
           <strong>{article.title}</strong>
           <span className="desk-footnote">
-            {article.approval
-              ? `${article.channel || "Оригинал"} · ${articleDate.format(new Date(article.approval.approvedAt))}`
-              : "Статус согласования неизвестен"}
+            {approved
+              ? [article.channel || "Оригинал", Number.isFinite(approvedTime) && articleDate.format(approvedTime)].filter(Boolean).join(" · ")
+              : "Исторический материал · редакция не зафиксирована"}
           </span>
         </span>
         <ChevronDown size={18} className="desk-chevron" aria-hidden="true" />
@@ -65,9 +83,20 @@ function Publication({
         {article.sections.map((section) => (
           <section key={section.id}>
             <h3>{section.heading}</h3>
-            {section.chunks.map((chunk) => (
-              <p key={chunk.id}>{chunk.content}</p>
-            ))}
+            {section.chunks.map((chunk) => {
+              const reference = blocks.get(chunk.id);
+              return (
+                <div key={chunk.id} className="min-w-0 space-y-1">
+                  <p>{chunk.content}</p>
+                  {reference && chunk.content.trim() && onUseBlock && (
+                    <Button type="button" variant="outline" size="sm" disabled={busy}
+                      onClick={() => onUseBlock(reference)}>
+                      Использовать блок как опору
+                    </Button>
+                  )}
+                </div>
+              );
+            })}
           </section>
         ))}
         {article.sourceCardTitles.length ? (
@@ -79,7 +108,7 @@ function Publication({
                 const pinned = article.sourceVersions?.find((source) => source.cardId === cardId);
                 return (
                   <li key={`${index}-${title}`}>
-                    {article.approval && cardId ? (
+                    {approved && cardId ? (
                       <Link
                         href={`/knowledge?card=${encodeURIComponent(cardId)}${pinned ? `&version=${encodeURIComponent(pinned.versionId)}` : ""}`}
                         className="desk-text-link"
@@ -96,9 +125,33 @@ function Publication({
             </ul>
           </div>
         ) : null}
-        {article.approval ? (
+        {!!article.articleBasis?.length && (
+          <div className="desk-publication-sources [overflow-wrap:anywhere]">
+            <h3>Опорные блоки из библиотеки</h3>
+            <ul>
+              {article.articleBasis.map((reference) => {
+                const current = articles.some((item) => hasCurrentArticleBasis(item, reference));
+                return (
+                  <li key={JSON.stringify([reference.articleId, reference.revisionId, reference.chunkId])}>
+                    {current ? (
+                      <Link href={`/editor?article=${encodeURIComponent(reference.articleId)}`} className="desk-text-link">
+                        {reference.articleTitle}
+                        <ArrowUpRight size={15} className="shrink-0" aria-hidden="true" />
+                      </Link>
+                    ) : (
+                      <p>{reference.articleTitle} · историческая опора</p>
+                    )}
+                    {reference.sectionHeading && <p>{reference.sectionHeading}</p>}
+                    <p className="desk-footnote">{articleBasisLocation(reference)}</p>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+        {approved ? (
           <p className="desk-footnote">
-            Согласованная редакция {article.approval.revisionId}
+            Согласованная редакция {article.approval?.revisionId}
           </p>
         ) : null}
         {action}
@@ -107,7 +160,7 @@ function Publication({
   );
 }
 
-export function EditorialLibrary({ articles, legacy, busy, onImport, focusedArticleId }: Props) {
+export function EditorialLibrary({ articles, legacy, busy, onImport, onUseBlock, focusedArticleId }: Props) {
   const [query, setQuery] = useState("");
   const keyword = query.trim().toLocaleLowerCase("ru");
   const matches = (article: ReadyArticle) =>
@@ -158,7 +211,7 @@ export function EditorialLibrary({ articles, legacy, busy, onImport, focusedArti
         )}
         {published.length ? (
           published.map((article) => (
-            <Publication article={article} key={article.id} focused={article.id === focusedArticle?.id} />
+            <Publication article={article} articles={articles} key={article.id} focused={article.id === focusedArticle?.id} busy={busy} onUseBlock={onUseBlock} />
           ))
         ) : (
           <div className="desk-workspace-empty">

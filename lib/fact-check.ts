@@ -487,16 +487,15 @@ export function factCheckSentenceRanges(line: string) {
 }
 
 /** Respect paragraph boundaries, then split the independent sides of a contrast. */
+function lineStatements(line: string): string[] {
+  return factCheckSentenceRanges(line)
+    .flatMap(({ text }) => text.split(/;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu))
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
 export function factCheckStatements(text: string): string[] {
-  return text.split(/[\r\n]/u).flatMap((line) =>
-    factCheckSentenceRanges(line)
-      .map((sentence) => sentence.text)
-      .flatMap((sentence) =>
-        sentence.split(/;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu)
-      )
-      .map((statement) => statement.trim())
-      .filter(Boolean)
-  );
+  return text.split(/[\r\n]/u).flatMap(lineStatements);
 }
 
 function locallyNegated(claim: string, index: number): boolean {
@@ -928,13 +927,456 @@ function evidenceKey(text: string): string {
     .trim();
 }
 
+type OfficialField = "head" | "partner" | "title" | "organization";
+type OfficialClaim = {
+  field: OfficialField;
+  predicate: string;
+  value: string;
+  subject?: string;
+  negated?: boolean;
+};
+
+const position =
+  /(?:(?:заместител[а-яё]*|исполняющ[а-яё]*\s+обязанности)\s+)?(?:руководител[а-яё]*|заведующ[а-яё]*|директор[а-яё]*)/i;
+const partnerRole =
+  /(?:(?:индустриальн[а-яё]*|промышленн[а-яё]*|будущ[а-яё]*|планируем[а-яё]*|действующ[а-яё]*|бывш[а-яё]*|прежн[а-яё]*|предыдущ[а-яё]*)\s+){0,2}партн[её]р[а-яё]*/i;
+const titleRole =
+  /(?:(?:официальн[а-яё]*|полн[а-яё]*|кратк[а-яё]*)\s+)?(?:название|наименование)/i;
+const organizationRole =
+  /(?:техническ[а-яё]*\s+заказчик[а-яё]*|финансов[а-яё]*\s+партн[её]р[а-яё]*|концессионер[а-яё]*|оператор[а-яё]*|инвестор[а-яё]*|кредитор[а-яё]*)/i;
+const officialRoles = [
+  { field: "head", pattern: position },
+  { field: "partner", pattern: partnerRole },
+  { field: "title", pattern: titleRole },
+  { field: "organization", pattern: organizationRole },
+] satisfies Array<{ field: OfficialField; pattern: RegExp }>;
+const namedRelation = new RegExp(
+  "^(?<predicate>" +
+    officialRoles.map(({ pattern }) => pattern.source).join("|") +
+    ")(?:\\s+(?<subject>.+?))?(?:\\s*:\\s*|\\s+[—–-]\\s+|\\s+(?<negated>не\\s+)?(?:является|выступает)\\s+)(?<value>\\S.*)$",
+  "iu"
+);
+const reversedRelation = new RegExp(
+  "^(?<value>.+?)(?:\\s+[—–-]\\s+|\\s+(?<negated>не\\s+)?является\\s+|\\s+(?<denial>не)\\s+)" +
+    "(?<predicate>" +
+    [position, partnerRole, organizationRole]
+      .map(({ source }) => source)
+      .join("|") +
+    ")(?:\\s+(?<subject>.+))?$",
+  "iu"
+);
+const unconfirmedField =
+  /(?:^\s*(?:н\/д|нет|[-—–]|уточняется)\s*$|(?:^|\s)не\s+(?:установ|подтвержд|извест|уточн[её]н|указан|определ[её]н)|нет\s+(?:сведений|данных))/iu;
+const personName =
+  /^(?:[А-ЯЁA-Z]\.|[А-ЯЁA-Z][\p{L}’'-]{1,38})(?:\s+(?:[А-ЯЁA-Z]\.|[А-ЯЁA-Z][\p{L}’'-]{1,38})){1,3}$/u;
+
+const roleDefinitions = officialRoles.map(({ field, pattern }) => ({
+  field,
+  pattern: new RegExp("^(?:" + pattern.source + ")$", "iu"),
+}));
+function officialField(predicate: string): OfficialField | undefined {
+  return roleDefinitions.find(({ pattern }) => pattern.test(predicate))?.field;
+}
+
+function namedClaim(pattern: RegExp, text: string): OfficialClaim | undefined {
+  const groups = pattern.exec(text)?.groups;
+  const field = groups && officialField(groups.predicate);
+  if (field && groups) {
+    const deniedValue = /^не\s+(?!только(?:\s|$))(.+)$/iu.exec(groups.value);
+    return {
+      field,
+      predicate: groups.predicate,
+      subject: groups.subject,
+      value: deniedValue?.[1] ?? groups.value,
+      negated: Boolean(groups.negated || groups.denial || deniedValue),
+    };
+  }
+}
+
+function officialClaims(statement: string): OfficialClaim[] {
+  if (statement.length > 500) return [];
+  const text = statement
+    .replace(referenceLead, "")
+    .replace(/[.;:!?]+$/u, "")
+    .trim();
+  const named =
+    namedClaim(namedRelation, text) ?? namedClaim(reversedRelation, text);
+  if (named) return [named];
+  const head =
+    /^(.+?)\s+(не\s+)?(руководит|возглавляет|заведует)\s+(.+)$/iu.exec(text);
+  if (head) {
+    const [, first, negated, predicate, last] = head;
+    return [
+      {
+        field: "head",
+        predicate,
+        value: last,
+        subject: first,
+        negated: Boolean(negated),
+      },
+      {
+        field: "head",
+        predicate,
+        value: first,
+        subject: last,
+        negated: Boolean(negated),
+      },
+    ];
+  }
+  const partner =
+    /^(.+?)\s+(не\s+)?(?:работает|сотрудничает)\s+с\s+(партн[её]ром)\s+(.+)$/iu.exec(
+      text
+    );
+  if (partner) {
+    const [, subject, negated, predicate, value] = partner;
+    return [
+      {
+        field: "partner",
+        predicate,
+        value,
+        subject,
+        negated: Boolean(negated),
+      },
+    ];
+  }
+  const inline = /^([^:]{1,180})\s*:\s*(.+)$/u.exec(text);
+  if (inline) {
+    const first = namedClaim(namedRelation, inline[2]);
+    if (first && !first.subject) return [{ ...first, subject: inline[1] }];
+  }
+  return [];
+}
+
+function equivalentWords(first: string, second: string): boolean {
+  const left = tokenizeKnowledgeText(first);
+  const right = tokenizeKnowledgeText(second);
+  return (
+    left.length === right.length &&
+    left.length > 0 &&
+    left.every((word, index) => sameKnowledgeWord(word, right[index]))
+  );
+}
+
+function scopeAliases(card: KnowledgeCard): string[] {
+  const names = [card.title, projectTitle(card), card.id];
+  if (card.type === "university") {
+    names.push(
+      getUniversityName(card.universityId),
+      getUniversityFullName(card.universityId)
+    );
+  } else if (card.type === "campus") {
+    names.push("кампус", "кампус Южный Урал");
+  }
+  return names;
+}
+
+/** Only a complete subject can bind an official role. A title in a nearby clause is insufficient. */
+function officialScope(
+  subject: string,
+  cards: KnowledgeCard[],
+  heading = false
+): KnowledgeCard | undefined {
+  const names = [subject];
+  if (!heading) {
+    names.push(
+      subject.replace(
+        /^(?:проект[а-яё]*|вуз[а-яё]*|университет[а-яё]*)\s+(?=[«"„“]|[А-ЯЁ\d])/u,
+        ""
+      )
+    );
+  }
+  const matches = cards.filter((card) =>
+    scopeAliases(card).some((alias) =>
+      names.some(
+        (name) =>
+          normalize(name) === normalize(alias) ||
+          (!heading && equivalentWords(name, alias))
+      )
+    )
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function positionKind(predicate: string) {
+  if (/заместител/iu.test(predicate)) return "deputy";
+  if (/исполняющ/iu.test(predicate)) return "acting";
+  if (/заведу/iu.test(predicate)) return "chair";
+  if (/директор/iu.test(predicate)) return "director";
+  return "leader";
+}
+
+function headComparison(
+  claim: OfficialClaim,
+  lab: LaboratoryCard
+): FactCheckLevel {
+  const [name, detail = ""] = lab.head.trim().split(/\s*[,—]\s*/, 2);
+  if (!name || unconfirmedField.test(lab.head)) return "yellow";
+  const matchesName = normalize(claim.value) === normalize(name);
+  if (!matchesName)
+    return personName.test(claim.value) &&
+      personName.test(name) &&
+      !claim.negated
+      ? "red"
+      : "yellow";
+  const requested = positionKind(claim.predicate);
+  const actual = positionKind(detail);
+  if (requested === "leader" && actual === "deputy") return "yellow";
+  if (requested !== "leader" && actual === "leader") return "yellow";
+  if (requested !== "leader" && requested !== actual)
+    return claim.negated ? "yellow" : "red";
+  return claim.negated ? "red" : "green";
+}
+
+const legalForm = /^(?:ооо|оао|зао|пао|ао|ано|нпо|гауз|гку|фгбу|гау|гбу)\s+/u;
+function partnerPeriod(text: string) {
+  const period =
+    /(?<![\p{L}])(будущ|планируем|бывш|прежн|предыдущ)[а-яё]*\s+(?:(?:индустриальн|промышленн)[а-яё]*\s+)?партн[её]р/iu
+      .exec(text)?.[1]
+      .toLowerCase();
+  if (!period) return "current";
+  return period === "будущ" || period === "планируем" ? "future" : "past";
+}
+
+function organizationKey(text: string): string {
+  return normalize(text).replace(/^компания\s+/u, "");
+}
+
+function organizationParts(value: string): string[] {
+  // Quoted names can contain conjunctions and commas. Provenance outside the
+  // quoted name does not form part of an entity's official name.
+  const quoted = /[«"][^»"]*[»"]/gu;
+  return value
+    .replace(quoted, (name) =>
+      name.replace(/[,/]/gu, "\u0001").replace(/\s+и\s+/giu, "\u0002")
+    )
+    .split(/\s+(?:и|\/)\s+|,\s+(?!\d)/iu)
+    .map((piece) =>
+      piece.replaceAll("\u0001", ",").replaceAll("\u0002", " и ").trim()
+    );
+}
+
+const organizationAttribution =
+  /\s+(?:по\s+(?:сообщени|сведени|публикаци|данным)|назван[а-яё]*\s+(?:будущ|планируем|бывш|прежн|предыдущ)|в\s+анонс)/iu;
+const exactOrganizationSpelling =
+  /^(?:(?:[А-ЯЁA-Z]{2,8}|[Кк]омпания)\s+)?(?:«[^»]+»|"[^"]+"|[А-ЯЁA-Z][\p{L}\p{N}.'’-]*(?:\s+[А-ЯЁA-Z][\p{L}\p{N}.'’-]*){0,4})$/u;
+
+function companyMatches(claimed: string, source: string): boolean {
+  return (
+    claimed === source ||
+    (!legalForm.test(claimed) && claimed === source.replace(legalForm, ""))
+  );
+}
+
+function companyComparison(
+  claim: OfficialClaim,
+  expected: string
+): FactCheckLevel {
+  if (unconfirmedField.test(expected)) return "yellow";
+  if (
+    claim.field === "partner" &&
+    partnerPeriod(expected) !== partnerPeriod(claim.predicate)
+  )
+    return "yellow";
+  if (evidenceKey(claim.value) === evidenceKey(expected)) {
+    return claim.negated ? "red" : "green";
+  }
+  const sourceLabel =
+    /^(?:будущ|планируем|бывш|прежн|предыдущ)[а-яё]*\s+партн[её]р[а-яё]*\s*:\s*/iu;
+  const sourceParts = organizationParts(expected.replace(sourceLabel, "")).map(
+    (piece) => piece.split(organizationAttribution, 1)[0]
+  );
+  const sourceNames = sourceParts.map(organizationKey).filter(Boolean);
+  const claimedParts = organizationParts(claim.value);
+  const claimedNames = claimedParts.map(organizationKey).filter(Boolean);
+  if (
+    !sourceNames.length ||
+    !claimedNames.length ||
+    claim.value.length > 140 ||
+    organizationAttribution.test(claim.value) ||
+    !claimedParts.length ||
+    claimedParts.some((piece) => !piece) ||
+    /(?<![\p{L}])(?:не|только|новый|бывший|между)(?![\p{L}])/iu.test(
+      claim.value
+    )
+  )
+    return "yellow";
+  const equal = claimedNames.every((name) =>
+    sourceNames.some((source) => companyMatches(name, source))
+  );
+  if (equal) return claim.negated ? "red" : "green";
+  // A generic description of a partner category cannot contradict a named company.
+  return !claim.negated &&
+    claimedParts.every((piece) => exactOrganizationSpelling.test(piece)) &&
+    sourceParts.every((piece) => exactOrganizationSpelling.test(piece.trim()))
+    ? "red"
+    : "yellow";
+}
+
+function canonicalOfficialField(
+  claim: OfficialClaim,
+  card: KnowledgeCard
+): string | undefined {
+  switch (claim.field) {
+    case "head":
+      return card.type === "laboratory" ? card.head : undefined;
+    case "partner":
+      return card.type === "laboratory"
+        ? card.partner
+        : card.type === "project"
+          ? card.industrialPartner
+          : undefined;
+    case "title":
+      if (card.type === "university")
+        return /кратк/iu.test(claim.predicate)
+          ? getUniversityName(card.universityId)
+          : getUniversityFullName(card.universityId);
+      if (card.type === "project" || card.type === "laboratory")
+        return projectTitle(card);
+      return undefined;
+    case "organization": {
+      if (card.type !== "campus") return undefined;
+      const role = organizationRole.exec(claim.predicate)?.[0];
+      const roles = card.legalEntities.filter(
+        (item) =>
+          role &&
+          [
+            ...item.role.matchAll(new RegExp(organizationRole.source, "giu")),
+          ].some(([value]) => equivalentWords(value, role))
+      );
+      return roles.length === 1 ? roles[0].name : undefined;
+    }
+  }
+}
+
+function officialComparison(
+  claim: OfficialClaim,
+  card: KnowledgeCard,
+  expected: string
+): FactCheckLevel {
+  if (!expected) return "yellow";
+  if (claim.field === "head" && card.type === "laboratory") {
+    return headComparison(claim, card);
+  }
+  if (claim.field === "title") {
+    const same = normalize(claim.value) === normalize(expected);
+    if (same) return claim.negated ? "red" : "green";
+    return claim.negated ? "yellow" : "red";
+  }
+  return companyComparison(claim, expected);
+}
+
+const attributeValue = /^[^:\n]{1,150}(?::\s*|\s+[—–]\s+)\S/u;
+const standaloneOfficialTitle =
+  /(?:^|\s)(?:руководит|руководят|возглавляет|возглавляют|заведует|заведуют)(?![\p{L}])/iu;
+
+type DraftStatement = { text: string; standalone: boolean };
+
+function collectOfficialFindings(
+  statements: DraftStatement[],
+  cards: KnowledgeCard[]
+) {
+  const findings: FactCheckFinding[] = [];
+  const headings: (KnowledgeCard | undefined)[] = [];
+  const unbound = new Set<number>();
+  const checkedStatements = new Set<number>();
+  const scopeCache = new Map<string, KnowledgeCard | undefined>();
+  const resolve = (text: string, heading: boolean) => {
+    const key = heading + ":" + text;
+    if (!scopeCache.has(key))
+      scopeCache.set(key, officialScope(text, cards, heading));
+    return scopeCache.get(key);
+  };
+  let heading: KnowledgeCard | undefined;
+  for (const [index, { text: statement, standalone }] of statements.entries()) {
+    if (statement.endsWith("?")) {
+      headings.push(undefined);
+      heading = undefined;
+      continue;
+    }
+    const namedHeading = standalone ? resolve(statement, true) : undefined;
+    if (namedHeading) {
+      heading = namedHeading;
+      headings.push(undefined);
+      findings.push(
+        createFinding({
+          level: "green",
+          checkpoint: "names",
+          title: "Название совпадает с утверждённой карточкой",
+          quote: statement,
+          explanation: "В тексте указано имя сущности из утверждённой базы.",
+          suggestion: "Сохраните ссылку на официальную карточку.",
+          ...sourceFromCard(namedHeading),
+        })
+      );
+      checkedStatements.add(index);
+      continue;
+    }
+    const claims = officialClaims(statement);
+    const checked = claims.flatMap((claim) => {
+      const card = claim.subject ? resolve(claim.subject, false) : heading;
+      const expected = card && canonicalOfficialField(claim, card);
+      return card && expected !== undefined ? [{ claim, card, expected }] : [];
+    });
+    if (checked.length === 1) {
+      const { claim, card, expected } = checked[0];
+      const level = officialComparison(claim, card, expected);
+      findings.push(
+        createFinding({
+          level,
+          checkpoint: "names",
+          title:
+            level === "green"
+              ? "Сведения совпадают с официальной карточкой"
+              : level === "red"
+                ? "Сведения не совпадают с официальной карточкой"
+                : "Утверждение требует подтверждения",
+          quote: statement,
+          explanation:
+            level === "yellow"
+              ? "В утверждённой карточке этой сущности нет достаточных сведений для такой формулировки."
+              : "В утверждённой карточке этой сущности указано: " + expected,
+          suggestion:
+            level === "red"
+              ? "Используйте сведения из утверждённой карточки именно этой сущности."
+              : level === "green"
+                ? "Сохраните ссылку на официальную карточку."
+                : "Уточните связь, имя или должность по официальному источнику.",
+          ...sourceFromCard(card),
+        })
+      );
+      checkedStatements.add(index);
+    } else if (claims.some((claim) => !claim.subject)) {
+      unbound.add(index);
+    }
+    const attribute = attributeValue.test(statement);
+    headings.push(attribute ? heading : undefined);
+    if (!attribute) heading = undefined;
+  }
+  return { findings, headings, unbound, checkedStatements };
+}
+
 function cardEvidenceStatements(card: KnowledgeCard): string[] {
   const text = [card.title, projectTitle(card), card.referenceDescription];
   if (card.type === "project") {
     text.push(
       ...card.confirmedFigures,
       ...card.confirmedFigures.map((figure) => card.title + ": " + figure),
-      card.sphere
+      card.sphere,
+      "Инициатор: " + getUniversityName(card.initiatorUniversityId),
+      "Участники: " +
+        [
+          ...new Set(
+            card.isJoint
+              ? card.participantUniversityIds.map(getUniversityName)
+              : [
+                  getUniversityName(card.initiatorUniversityId),
+                  ...card.coExecutors,
+                ]
+          ),
+        ].join(", "),
+      "Индустриальный партнёр: " + card.industrialPartner,
+      "Контур: " + card.contour,
+      "Стадия готовности: " + card.readinessStage
     );
   } else if (card.type === "laboratory") {
     text.push(
@@ -963,28 +1405,59 @@ const claimVerb =
   /(?<![\p{L}])(?:\p{L}{3,}(?:ается|яется|уются|иваются|ются|ется|ится|ают|яют|уют|яет|ает|или|али|ели|яла|ила|ала|овал[аи]?|ил[аи]?|ён[аыо]|ен[аыо])|создал[аи]?|получил[аи]?|стал[аи]?|был[аио]?|есть)(?![\p{L}])/iu;
 const referenceLead =
   /^(?:по данным|согласно) (?:официальной |утвержденной )?карточк[а-я]*\s*[,—:]?\s*/iu;
-const editorialHeading =
-  /^(?:(?:кто|что|где|когда|как|где|зачем|почему|в чем)\s+[^.,;!?]+[?]?$|(?:нельзя|не следует|запрещено)(?![\p{L}]))/iu;
+const neutralQuestionHeading =
+  /^(?:кто\s+участвует(?:\s+в\s+проекте)?|что\s+это(?:\s+такое)?|что\s+дальше|что\s+известно(?:\s+о\s+проекте)?|как\s+это\s+работает|зачем\s+это\s+нужно|где\s+найти\s+источники|где\s+отрабатывают\s+технологию)\s*[?]?$/iu;
+const questionLead =
+  /^(?:кто|что|где|когда|как(?:ой|ая|ое|ие|ого|ому|ую|их|им|ими)?|зачем|почему|в\s+ч[её]м|сколько)(?![\p{L}])/iu;
+const editorialDirective = /^(?:нельзя|не следует|запрещено)(?![\p{L}])/iu;
+
+function checkableStatement(statement: string): boolean {
+  const text = statement.replace(/^#{1,6}\s+/u, "").trim();
+  if (neutralQuestionHeading.test(text)) return false;
+  if (
+    text.endsWith("?") ||
+    questionLead.test(text) ||
+    attributeValue.test(text) ||
+    /\d/u.test(text)
+  ) {
+    return true;
+  }
+  return (
+    !editorialDirective.test(text) &&
+    (claimVerb.test(text) || standaloneOfficialTitle.test(text))
+  );
+}
 
 function uncoveredStatements(
   statements: string[],
   cards: KnowledgeCard[],
-  covered: Set<string>
+  covered: Set<string>,
+  official: ReturnType<typeof collectOfficialFindings>
 ): FactCheckFinding[] {
-  const candidates = [...new Set(statements)].filter(
-    (statement) =>
-      !statement.endsWith("?") &&
-      !editorialHeading.test(statement) &&
-      claimVerb.test(statement) &&
-      !covered.has(evidenceKey(statement))
-  );
+  const candidates = statements
+    .map((statement, index) => ({ statement, index }))
+    .filter(
+      ({ statement, index }) =>
+        (checkableStatement(statement) || official.unbound.has(index)) &&
+        !official.checkedStatements.has(index) &&
+        !covered.has(evidenceKey(statement))
+    );
   if (!candidates.length) return [];
-  const references = new Set(
-    cards.flatMap(cardEvidenceStatements).map(evidenceKey)
+  const records = new Map(
+    cards.map((card) => [
+      card.id,
+      cardEvidenceStatements(card).map(evidenceKey),
+    ])
   );
-  return candidates.flatMap((statement) => {
+  const references = new Set([...records.values()].flat());
+  return candidates.flatMap(({ statement, index }) => {
+    const scope = official.headings[index];
     const key = evidenceKey(statement).replace(referenceLead, "");
-    if (references.has(key)) return [];
+    if (
+      !official.unbound.has(index) &&
+      (scope ? records.get(scope.id)?.includes(key) : references.has(key))
+    )
+      return [];
     return [
       createFinding({
         level: "yellow",
@@ -1039,7 +1512,13 @@ export function checkFactText(
   const primaryProject =
     referencedProjects.find((card) => card.isJoint) ?? referencedProjects[0];
 
-  const statements = factCheckStatements(draft);
+  const draftStatements = draft.split(/[\r\n]/u).flatMap((line) => {
+    const statements = lineStatements(line);
+    return statements.map((text) => ({ text, standalone: statements.length === 1 }));
+  });
+  const statements = draftStatements.map(({ text }) => text);
+  const official = collectOfficialFindings(draftStatements, cards);
+  findings.push(...official.findings);
   const projectCards = cards.filter(
     (card): card is ProjectCard => card.type === "project"
   );
@@ -1138,6 +1617,8 @@ export function checkFactText(
 
     const placesRegex =
       /(\d[\d\s.,]*)\s*(?:учебн[а-яё]*\s+|жилых\s+)?мест[а-яё]*/gi;
+    const hotelCapacityStatement =
+      /^(?:(?:общая|проектная)\s+)?вместимость\s+гостиниц(?:\s+кампуса)?\s*[:—–-]?\s*\d[\d\s]*\s+мест[.!]?$/iu;
     let placesMatch: RegExpExecArray | null;
 
     while ((placesMatch = placesRegex.exec(draft)) !== null) {
@@ -1147,13 +1628,14 @@ export function checkFactText(
 
       const value = parseNumeric(placesMatch[1] ?? "");
 
+      if (!Number.isFinite(value)) continue;
+      const scope = campusMeasureContext(draft, placesMatch.index);
       if (
-        Number.isFinite(value) &&
         !isOfficialCampusMeasure(
           campusCard,
           "places",
           value,
-          campusMeasureContext(draft, placesMatch.index)
+          scope
         )
       ) {
         findings.push(
@@ -1173,6 +1655,21 @@ export function checkFactText(
             ...sourceFromCard(campusCard),
           })
         );
+      } else {
+        const clause = claimClause(draft, placesMatch.index);
+        if (hotelCapacityStatement.test(clause) &&
+          isOfficialCampusMeasure(campusCard, "places", value, clause)) {
+          confirmedFigures.add(evidenceKey(clause));
+          findings.push(createFinding({
+            level: "green",
+            checkpoint: "campus",
+            title: "Вместимость гостиниц подтверждена паспортом",
+            quote: clause,
+            explanation: "Число относится к проектной вместимости гостиниц кампуса.",
+            suggestion: "Сохраните вид показателя и ссылку на официальный паспорт.",
+            ...sourceFromCard(campusCard),
+          }));
+        }
       }
     }
 
@@ -1334,7 +1831,7 @@ export function checkFactText(
             title: matches
               ? "Показатель вуза подтверждён"
               : "Показатель вуза противоречит официальной карточке",
-            quote,
+            quote: clause,
             explanation: `${getUniversityName(universityCard.universityId)}: ${metric.label} — ${metric.value} ${metric.unit}, ${metric.year}, ${metric.kind === "plan" ? "план" : "факт"}. Проверено ${metric.verifiedAt}; ответственный: ${metric.owner}.`,
             suggestion: matches
               ? "Сохраните год, статус и ссылку на документ."
@@ -1550,7 +2047,7 @@ export function checkFactText(
           confirmedFigures.add(evidenceKey(statement));
       }
     }
-    findings.push(...uncoveredStatements(statements, cards, confirmedFigures));
+    findings.push(...uncoveredStatements(statements, cards, confirmedFigures, official));
   }
 
   if (findings.length === 0) {
@@ -1709,6 +2206,7 @@ function buildProjectRewrite(
       ];
   const sections = [
     rewriteSection("participants", "Вузы и партнёры", [
+      project.title,
       "Инициатор: " + getUniversityName(project.initiatorUniversityId),
       "Участники: " + [...new Set(participants)].join(", "),
       project.industrialPartner

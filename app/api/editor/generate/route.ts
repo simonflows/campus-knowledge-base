@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 
 import { runWithAiProvider, type AiExecutionResult } from "@/lib/ai-providers";
 import { runLimitedAi } from "@/lib/flash-assist";
@@ -6,6 +7,7 @@ import { demoLoginEnabled } from "@/lib/pilot-auth";
 import { isYandexAiConfigured } from "@/lib/yandex-ai";
 import { JsonBodyError, readBoundedJson } from "@/lib/http-json";
 import {
+  articleBasisReference,
   flattenArticleChunks,
   isApprovedArticle,
 } from "@/lib/articles";
@@ -18,6 +20,7 @@ import {
   extractJsonObject,
   getBasisChunks,
   groundGeneratedArticle,
+  isBasisOnlyArticleRequest,
   isGroundedArticleText,
   normalizeGeneratedArticle,
   selectRelevantArticles,
@@ -28,9 +31,24 @@ import type { KnowledgeCard } from "@/lib/knowledge";
 import { getCardVersionId } from "@/lib/knowledge-versions";
 import {
   getAllArticles,
+  getArticleById,
   getCanonicalKnowledgeCards,
 } from "@/lib/models";
 import { generateArticleInputSchema } from "@/lib/validation/articles";
+import { articleBasisRequestSchema } from "@/lib/validation/editor-basis";
+
+const versionedInputSchema = generateArticleInputSchema.extend({
+  query: z.string().trim().max(2_000, "Слишком длинный запрос").default(""),
+  basis: articleBasisRequestSchema.optional(),
+}).refine(({ query, basis }) => Boolean(basis) || query.length >= 10, {
+  path: ["query"],
+  message: "Опишите задачу подробнее",
+});
+const privateHeaders = { "Cache-Control": "private, no-store" };
+
+function unavailableBasis(detail: string, status: number) {
+  return NextResponse.json({ error: detail }, { status, headers: privateHeaders });
+}
 
 function sourceSummary(card: KnowledgeCard) {
   return {
@@ -66,12 +84,14 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const parsed = generateArticleInputSchema.safeParse(body);
+  const parsed = versionedInputSchema.safeParse(body);
 
   if (!parsed.success) {
     return NextResponse.json(
       {
-        error: "Опишите задачу подробнее",
+        error: parsed.error.issues.some(issue => issue.path[0] === "basis")
+          ? "Снова выберите утверждённый блок в библиотеке, чтобы указать его редакцию."
+          : "Опишите задачу подробнее",
         details: parsed.error.flatten(),
       },
       { status: 400 }
@@ -83,7 +103,21 @@ export async function POST(request: NextRequest) {
   if (!data) return unavailableStorageResponse();
   const [cards, articles] = data;
 
-  const metricCards = selectUniversityMetricCards(query, cards);
+  const basisArticle = basis ? articles.find((article) =>
+    article.id === basis.articleId && isApprovedArticle(article)
+  ) : undefined;
+  if (basis && !basisArticle)
+    return unavailableBasis("Утверждённая статья недоступна. Выберите другой блок в библиотеке.", 404);
+  if (basis && basisArticle?.approval?.revisionId !== basis.revisionId)
+    return unavailableBasis("Статья обновилась. Выберите блок из её актуальной редакции.", 409);
+  const basisChunks = getBasisChunks(basisArticle, basis?.chunkIds);
+  if (basis && (basisChunks.length !== basis.chunkIds.length ||
+    new Set(basisChunks.map((chunk) => chunk.chunkId)).size !== basis.chunkIds.length))
+    return unavailableBasis("Выбранный блок отсутствует в утверждённой редакции.", 422);
+
+  const basisOnly = basisArticle && isBasisOnlyArticleRequest(query);
+  const draftingQuery = basisOnly ? basisArticle.title : query;
+  const metricCards = basisOnly ? null : selectUniversityMetricCards(query, cards);
   if (
     metricCards &&
     !metricCards.some((card) => card.structuredMetrics.length)
@@ -97,26 +131,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const basisArticle =
-    !metricCards && basis
-      ? articles.find(
-          (article) =>
-            article.id === basis.articleId && isApprovedArticle(article)
-        )
-      : undefined;
-  const basisChunks = getBasisChunks(basisArticle, basis?.chunkIds);
-
-  const selectedCards: KnowledgeCard[] =
-    metricCards ?? selectRelevantCards(cards, query).map((item) => item.card);
-
-  if (basisArticle) {
-    basisArticle.sourceCardIds.forEach((cardId) => {
-      const card = cards.find((item) => item.id === cardId);
-      if (card && !selectedCards.some((item) => item.id === card.id)) {
-        selectedCards.push(card);
-      }
-    });
-  }
+  const selectedCards: KnowledgeCard[] = basisOnly
+    ? cards.filter((card) => basisArticle.sourceCardIds.includes(card.id))
+    : metricCards ?? selectRelevantCards(cards, query).map((item) => item.card);
 
   if (selectedCards.length === 0) {
     return NextResponse.json(
@@ -128,11 +145,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const matchedArticles = metricCards
+  const matchedArticles = metricCards || basisArticle
     ? []
-    : selectRelevantArticles(articles.filter(isApprovedArticle), query).filter(
-        (article) => article.id !== basisArticle?.id
-      );
+    : selectRelevantArticles(articles.filter(isApprovedArticle), query);
   const sourceArticles = basisArticle
     ? [basisArticle, ...matchedArticles]
     : matchedArticles;
@@ -141,7 +156,6 @@ export async function POST(request: NextRequest) {
     ...basisChunks,
     ...matchedArticles.flatMap((article) => flattenArticleChunks(article)),
   ]
-    .slice(0, 10)
     .filter((chunk) => {
       const article = sourceArticles.find(
         (item) => item.id === chunk.articleId
@@ -150,17 +164,20 @@ export async function POST(request: NextRequest) {
         article?.sourceCardIds.includes(card.id)
       );
       return (
-        sourceCards.length > 0 &&
+        Boolean(articleBasisReference(chunk)) && sourceCards.length > 0 &&
         isGroundedArticleText(chunk.content, sourceCards)
       );
-    });
+    })
+    .slice(0, 10);
+  if (basis && referenceChunks.length !== basisChunks.length)
+    return unavailableBasis("Выбранный блок не подтверждается карточками по этой теме. Выберите другую опору или уберите выбранный блок.", 422);
   const usedArticles = sourceArticles.filter((article) =>
     referenceChunks.some((chunk) => chunk.articleId === article.id)
   );
 
   const messages = buildArticleMessages({
       query: [
-        query,
+        draftingQuery,
         audience && `Аудитория: ${audience}`,
         outlet && `Площадка: ${outlet}`,
         length && `Желаемый объём: ${length}`,
@@ -180,11 +197,25 @@ export async function POST(request: NextRequest) {
       fallbackReason: limited.status === "busy" ? "ИИ занят или ещё действует интервал между запросами. Подготовлен черновик по карточкам." : "ИИ недоступен. Подготовлен черновик по карточкам.",
     };
   } else execution = await runWithAiProvider(messages, selectedProvider, { signal: request.signal });
-  if (execution.text) {
-    const latest = await getCanonicalKnowledgeCards().catch(() => null);
+  if (execution.text || referenceChunks.length) {
+    const latest = await Promise.all([
+      getCanonicalKnowledgeCards(),
+      Promise.all(usedArticles.map(async (article) => [article.id, await getArticleById(article.id)] as const)),
+    ]).catch(() => null);
     if (!latest) return unavailableStorageResponse();
-    if (selectedCards.some(source => !latest.some(card => card.id === source.id && getCardVersionId(card) === getCardVersionId(source)))) {
+    const [currentCards, currentArticles] = latest;
+    const originalVersions = new Map(cards.map(card => [card.id, getCardVersionId(card)]));
+    const latestVersions = new Map(currentCards.map(card => [card.id, getCardVersionId(card)]));
+    if (selectedCards.some(source => latestVersions.get(source.id) !== originalVersions.get(source.id))) {
       return NextResponse.json({ error: "Карточки изменились во время генерации. Повторите запрос, чтобы использовать актуальные сведения." }, { status: 409 });
+    }
+    const current = new Map(currentArticles);
+    const currentBlocks = new Map(currentArticles.map(([id, article]) => [id, article ? flattenArticleChunks(article) : []]));
+    if (referenceChunks.some((chunk) => !current.get(chunk.articleId) ||
+      !currentBlocks.get(chunk.articleId)?.some((block) => block.chunkId === chunk.chunkId &&
+        block.sectionId === chunk.sectionId && block.approvedRevisionId === chunk.approvedRevisionId &&
+        block.content === chunk.content && block.sectionHeading === chunk.sectionHeading && block.articleTitle === chunk.articleTitle))) {
+      return unavailableBasis("Статья или выбранный блок изменились во время генерации. Обновите библиотеку и повторите запрос.", 409);
     }
   }
 
@@ -215,7 +246,7 @@ export async function POST(request: NextRequest) {
         selectedCards,
         matchedArticles: usedArticles,
       });
-      const reason = groundGeneratedArticle(candidate, selectedCards);
+      const reason = groundGeneratedArticle(candidate, selectedCards, { requireStandaloneLead: true });
       if (reason) {
         actualProvider = "canonical";
         modelLabel = "Подготовка по проверенным фактам";
@@ -237,7 +268,7 @@ export async function POST(request: NextRequest) {
   if (!articlePayload) {
     try {
       articlePayload = buildDeterministicArticleDraft({
-        query,
+        query: draftingQuery,
         selectedCards,
         matchedArticles: usedArticles,
         referenceChunks,
@@ -264,16 +295,21 @@ export async function POST(request: NextRequest) {
     cardId: card.id,
     versionId: getCardVersionId(card),
   }));
+  const articleBasis = referenceChunks.flatMap((chunk) => {
+    const reference = articleBasisReference(chunk);
+    return reference ? [reference] : [];
+  });
 
   return NextResponse.json({
     noData: false,
     noDataMessage: null,
     query,
-    article: { ...articlePayload, query, sourceVersions },
+    article: { ...articlePayload, query, sourceVersions, articleBasis },
     sources,
     usedArticles: usedArticles.map((item) => ({
       id: item.id,
       title: item.title,
+      blocks: articleBasis.filter((block) => block.articleId === item.id),
     })),
     providerMeta: {
       provider: actualProvider,
@@ -282,5 +318,5 @@ export async function POST(request: NextRequest) {
       anonymized152FZ: execution.anonymized152FZ,
       fallbackReason,
     },
-  });
+  }, { headers: privateHeaders });
 }

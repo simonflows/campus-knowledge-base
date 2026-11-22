@@ -557,6 +557,14 @@ export function buildArticleMarkdown(article: ReadyArticle): string {
     ""
   );
 
+  if (article.articleBasis?.length) {
+    lines.push("## Опорные блоки из библиотеки", "");
+    for (const reference of article.articleBasis) {
+      const { articleTitle, sectionHeading, articleId, revisionId, sectionId, chunkId } = reference;
+      lines.push(`- ${articleTitle}${sectionHeading ? ` · ${sectionHeading}` : ""} · Статья ${articleId} · редакция ${revisionId} · раздел ${sectionId} · блок ${chunkId}`);
+    }
+  }
+
   return `${lines.join("\n").trim()}\n`;
 }
 
