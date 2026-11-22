@@ -99,7 +99,7 @@ function SourceLink({
   );
 }
 
-function FilterChips({ report }: { report: AnalyticsReport }) {
+function FilterChips({ report, centered = false }: { report: AnalyticsReport; centered?: boolean }) {
   if (report.filters.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -109,15 +109,15 @@ function FilterChips({ report }: { report: AnalyticsReport }) {
   }
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className={cn("flex flex-wrap gap-2", centered && "justify-center")}>
       {report.filters.map((filter, index) => (
         <Badge
           key={`${filter.key}-${filter.value}-${index}`}
           variant="secondary"
           className="h-auto max-w-full gap-1 whitespace-normal py-1 text-left text-[11px] leading-snug"
         >
-          <span className="font-semibold">{filter.label}:</span>
-          <span>{filter.value}</span>
+          <span className={cn("font-semibold", centered && "shrink-0 whitespace-nowrap")}>{filter.label}:</span>
+          <span className={centered ? "min-w-0 break-words" : undefined}>{filter.value}</span>
         </Badge>
       ))}
     </div>
@@ -736,7 +736,7 @@ export function AnalyticsWorkspace({
                   <EmptyDescription>{report.notice}</EmptyDescription>
                 </EmptyHeader>
                 <div className="w-full max-w-2xl">
-                  <FilterChips report={report} />
+                  <FilterChips report={report} centered />
                 </div>
               </Empty>
             </CardContent>

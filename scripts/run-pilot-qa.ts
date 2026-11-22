@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
@@ -66,8 +67,38 @@ async function main() {
         return value.height > track.height && value.bottom <= track.top;
       }));
       assert.deepEqual(visibleMetrics, [true, true, true, true], "Analytics figures must stand above their tracks");
+      await analyticsPage.getByLabel("Запрос к базе", { exact: true }).fill(
+        "Собери все проекты взаимодействия вузов с индустриальными партнёрами в сфере медицины с партнёром «QA " + randomUUID() + "»"
+      );
+      await analyticsPage.getByRole("button", { name: "Собрать аналитику", exact: true }).click();
+      const empty = analyticsPage.locator("[data-slot=empty]");
+      await empty.locator("[data-slot=empty-title]").waitFor();
+      for (const width of [1440, 390]) {
+        await analyticsPage.setViewportSize({ width, height: 900 });
+        const alignment = await empty.evaluate(element => {
+          const header = element.querySelector("[data-slot=empty-header]")!.getBoundingClientRect();
+          const center = (header.left + header.right) / 2;
+          const rows: { top: number; left: number; right: number }[] = [];
+          for (const badge of element.querySelectorAll("[data-slot=badge]")) {
+            const rect = badge.getBoundingClientRect();
+            const row = rows.find(row => Math.abs(row.top - rect.top) < 2);
+            if (row) { row.left = Math.min(row.left, rect.left); row.right = Math.max(row.right, rect.right); }
+            else rows.push({ top: rect.top, left: rect.left, right: rect.right });
+          }
+          const labelsOnOneLine = Array.from(element.querySelectorAll("[data-slot=badge]")).every(badge => {
+            const label = badge.firstElementChild!;
+            return label.getBoundingClientRect().height <= Number.parseFloat(getComputedStyle(label).lineHeight) + 1;
+          });
+          return { offsets: rows.map(row => (row.left + row.right) / 2 - center), labelsOnOneLine, pageWidth: document.documentElement.scrollWidth };
+        });
+        assert.ok(alignment.offsets.length > 0);
+        assert.ok(alignment.offsets.every(offset => Math.abs(offset) <= 1), "Each filter row must align with the empty result's center at " + width);
+        assert.equal(alignment.labelsOnOneLine, true, "A filter label and colon stay together at " + width);
+        assert.equal(alignment.pageWidth, width);
+      }
       await analyticsPage.close();
       console.log("PASS analytics numbers are separate from progress tracks");
+      console.log("PASS empty analytics filters stay centered at 1440/390");
 
       const ownerFormPage = await browser.newPage();
       await ownerFormPage.goto(base + "/login");

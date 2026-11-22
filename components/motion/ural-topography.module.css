@@ -7,10 +7,24 @@
   pointer-events: none;
 }
 
-.layer {
+.canvas {
   position: absolute;
   inset: -18px;
+}
+
+.layer {
+  position: absolute;
+  inset-block: 0;
+  width: calc(100% / 3);
   color: #86afc3;
+}
+
+.layer:first-child {
+  inset-inline-start: 0;
+}
+
+.layer:last-child {
+  inset-inline-end: 0;
 }
 
 .layer svg {
@@ -28,14 +42,53 @@
   stroke-opacity: 0.36;
 }
 
+.playback {
+  position: absolute;
+  z-index: 1;
+  inset-inline-end: clamp(0.75rem, 2vw, 1.75rem);
+  inset-block-start: 0.5rem;
+  display: grid;
+  width: 1.5rem;
+  height: 1.5rem;
+  place-items: center;
+  border: 1px solid #455d6d;
+  border-radius: 50%;
+  background: #172532;
+  color: #b2ccd9;
+  cursor: pointer;
+}
+
+.playback svg {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.playback:focus-visible {
+  outline: 2px solid #a1d1ec;
+  outline-offset: 1px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .playback:hover {
+    background: #293c4b;
+  }
+}
+
 @media (max-width: 640px) {
-  .layer {
+  .canvas {
     opacity: 0.66;
   }
 }
 
-@media (forced-colors: active) {
-  .field {
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .playback {
     display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .layer {
+    color: CanvasText;
+    forced-color-adjust: none;
   }
 }
