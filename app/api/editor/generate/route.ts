@@ -21,6 +21,7 @@ import {
   selectUniversityMetricCards,
 } from "@/lib/editor";
 import type { KnowledgeCard } from "@/lib/knowledge";
+import { getCardVersionId } from "@/lib/knowledge-versions";
 import {
   getAllArticles,
   getCanonicalKnowledgeCards,
@@ -231,16 +232,26 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const sources = articlePayload.sourceCardIds
+  const sourceCardIds = [...new Set(articlePayload.sourceCardIds)];
+  const canonicalSources = sourceCardIds
     .map((cardId) => cards.find((card) => card.id === cardId))
-    .filter((card): card is KnowledgeCard => Boolean(card))
-    .map(sourceSummary);
+    .filter((card): card is KnowledgeCard => Boolean(card));
+  if (canonicalSources.length !== sourceCardIds.length) {
+    return unavailableStorageResponse();
+  }
+  // Metric selection projects a passport to the requested years and measures.
+  // Its version still identifies the complete approved passport.
+  const sources = canonicalSources.map(sourceSummary);
+  const sourceVersions = canonicalSources.map((card) => ({
+    cardId: card.id,
+    versionId: getCardVersionId(card),
+  }));
 
   return NextResponse.json({
     noData: false,
     noDataMessage: null,
     query,
-    article: { ...articlePayload, query },
+    article: { ...articlePayload, query, sourceVersions },
     sources,
     usedArticles: usedArticles.map((item) => ({
       id: item.id,

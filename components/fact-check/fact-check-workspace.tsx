@@ -28,7 +28,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { FlashAssistHint } from "@/components/flash-assist-hint";
+import { FlashAssistOption, FlashAssistResult, isCurrentFlashRequest } from "@/components/flash-assist-hint";
+import type { FlashFactAssist } from "@/lib/flash-assist";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -73,6 +74,7 @@ type RewriteCheck = {
 };
 
 type FactCheckResponse = FactCheckResult & {
+  flashAssist?: FlashFactAssist;
   rewrite?: CanonicalRewrite | null;
   rewriteCheck?: RewriteCheck | null;
   rewriteError?: string;
@@ -353,6 +355,7 @@ export function FactCheckWorkspace({
   const [isChecking, setIsChecking] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
   const [filter, setFilter] = useState<LevelFilter>("all");
+  const [flashEnabled, setFlashEnabled] = useState(false);
   const requestRevision = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -371,6 +374,7 @@ export function FactCheckWorkspace({
   const resetOutput = () => {
     requestRevision.current += 1;
     abortRef.current?.abort();
+    abortRef.current = null;
     setIsChecking(false);
     setIsRewriting(false);
     setResult(null);
@@ -429,8 +433,12 @@ export function FactCheckWorkspace({
   };
 
   const requestFactCheck = async (mode: "check" | "rewrite", draft = text) => {
-    if (isChecking || isRewriting) return;
-    const parsed = factCheckInputSchema.safeParse({ text: draft, mode });
+    if (abortRef.current) return;
+    const parsed = factCheckInputSchema.safeParse({
+      text: draft,
+      mode,
+      ...(mode === "check" && flashAssistAvailable && flashEnabled && { flashAssist: true }),
+    });
     if (!parsed.success) {
       toast.error(
         parsed.error.issues[0]?.message ?? "Проверьте длину черновика"
@@ -439,7 +447,6 @@ export function FactCheckWorkspace({
     }
 
     const revision = ++requestRevision.current;
-    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     if (mode === "check") {
@@ -457,14 +464,14 @@ export function FactCheckWorkspace({
       const response = await fetch("/api/fact-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: draft, mode }),
+        body: JSON.stringify(parsed.data),
         signal: controller.signal,
       });
       const data = (await response
         .json()
         .catch(() => null)) as FactCheckResponse | null;
 
-      if (revision !== requestRevision.current) return;
+      if (revision !== requestRevision.current || !isCurrentFlashRequest(controller, abortRef.current)) return;
       if (!response.ok || !data) {
         const message =
           data?.error ??
@@ -517,14 +524,15 @@ export function FactCheckWorkspace({
         });
       }
     } catch {
-      if (controller.signal.aborted || revision !== requestRevision.current)
+      if (!isCurrentFlashRequest(controller, abortRef.current) || revision !== requestRevision.current)
         return;
       const message =
         "Сервис проверки недоступен. Проверьте соединение и попробуйте ещё раз.";
       setError(message);
       toast.error(message);
     } finally {
-      if (revision === requestRevision.current) {
+      if (revision === requestRevision.current && isCurrentFlashRequest(controller, abortRef.current)) {
+        abortRef.current = null;
         setIsChecking(false);
         setIsRewriting(false);
       }
@@ -632,6 +640,11 @@ export function FactCheckWorkspace({
                 event.target.value = "";
               }}
             />
+
+            {flashAssistAvailable && (
+              <FlashAssistOption kind="fact" checked={flashEnabled} disabled={isChecking || isRewriting}
+                onChange={setFlashEnabled} />
+            )}
 
             <div className="data-action-row">
               <Button
@@ -817,8 +830,10 @@ export function FactCheckWorkspace({
               )}
             </CardContent>
           </Card>
-          {flashAssistAvailable && result ? (
-            <FlashAssistHint kind="fact" text={text} />
+          {flashEnabled && !isChecking && !isRewriting && result?.flashAssist ? (
+            <div className="rounded-xl border bg-card p-3">
+              <FlashAssistResult state={result.flashAssist} />
+            </div>
           ) : null}
           <details className="data-fact-checkpoints">
             <summary>

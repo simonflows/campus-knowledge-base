@@ -7,9 +7,11 @@ import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
 import {
   isJointFullyApproved,
+  isCardReadyForPublication,
   getRequiredUniversityApprovals,
 } from "@/lib/knowledge";
 import { moderationActionSchema } from "@/lib/validation/access";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -112,6 +114,13 @@ async function handlePost(request: NextRequest, context: RouteContext) {
     return updated ? NextResponse.json(visibleKnowledgeCard(user, updated)) : NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
+  if (action === "approve" && !isCardReadyForPublication(card)) {
+    return NextResponse.json(
+      { error: card.type === "project" && card.externalParticipantNames?.length ? "Согласование внешнего участника не представлено в реестре. Оставьте карточку черновиком до отдельного подтверждения координатором и участниками." : "Перед согласованием уточните стадию и контур проекта по источникам" },
+      { status: 409 }
+    );
+  }
+
   if (
     action === "approve" &&
     getRequiredUniversityApprovals(card).length > 0 &&
@@ -138,7 +147,8 @@ async function handlePost(request: NextRequest, context: RouteContext) {
       reviewedAt: new Date().toISOString(),
       reviewComment: comment ?? "",
     },
-    card.updatedAt
+    card.updatedAt,
+    { id: user.id, name: user.name }
   );
 
   if (!updated) {
@@ -171,10 +181,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
         },
         { status: 409 }
       );
-    console.error("Ошибка подтверждения карточки:", error);
-    return NextResponse.json(
-      { error: "Не удалось сохранить подтверждение" },
-      { status: 500 }
-    );
+    return unavailableStorageResponse();
   }
 }

@@ -13,7 +13,7 @@ import {
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
-import { folderIds } from "@/lib/knowledge";
+import { folderIds, isCardReadyForPublication } from "@/lib/knowledge";
 import { sessionDirectory } from "@/lib/pilot-auth";
 import {
   createKnowledgeCard,
@@ -222,8 +222,8 @@ export async function POST(request: NextRequest) {
     cardInput.participantUniversityIds.includes(user.universityId)
       ? [user.universityId]
       : [];
-  const status =
-    user.role === "admin" && !needsJointConfirmation ? "approved" : "pending";
+  const status = user.role === "admin" && !needsJointConfirmation &&
+    isCardReadyForPublication(cardInput) ? "approved" : "pending";
 
   try {
     const created = await createKnowledgeCard(cardInput, {
@@ -244,7 +244,9 @@ export async function POST(request: NextRequest) {
         : created;
 
     return NextResponse.json(visibleKnowledgeCard(user, card), { status: 201 });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException")
+      return NextResponse.json({ error: "Тип карточки изменился. Обновите страницу и повторите действие." }, { status: 409 });
     return unavailableStorageResponse();
   }
 }
@@ -295,7 +297,9 @@ export async function DELETE(request: NextRequest) {
   try {
     await deleteKnowledgeCard(id);
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException")
+      return NextResponse.json({ error: "Карточка изменилась. Обновите страницу и повторите действие." }, { status: 409 });
     return unavailableStorageResponse();
   }
 }

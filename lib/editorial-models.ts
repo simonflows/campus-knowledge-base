@@ -12,11 +12,12 @@ import { docClient, isDatabaseAvailable } from "./db";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
 import { checkFactText } from "./fact-check";
-import { getArticleById, getCanonicalKnowledgeCards } from "./models";
+import { getArticleById, getCanonicalKnowledgeCards, getKnowledgeCardById } from "./models";
 import { isApprovedArticle, articleSeed, type ReadyArticle } from "./articles";
 import { createPendingDiskSync, observedExportCondition } from "./disk-sync";
 import { readLocalStore } from "./local-store";
-import { getUniversityById } from "./knowledge";
+import { getPublicApprovedCard, getUniversityById, type KnowledgeCard } from "./knowledge";
+import { ensureApprovedCardVersion, getApprovedCardVersion, getCardVersionId } from "./knowledge-versions";
 import {
   EditorialError,
   canReadEditorial,
@@ -232,6 +233,31 @@ async function getEditorialRevision(
     throw new EditorialError("Редакция не найдена", 404);
   return item;
 }
+
+export async function getCurrentEditorialSnapshot(id: string, user: SessionUser) {
+  await available();
+  const document = await getReadableEditorialHead(id, user);
+  const revision = await getEditorialRevision(document, user, document.revisionId);
+  return { document, revision };
+}
+
+export async function getEditorialSourceVersions(content: EditorialContent) {
+  const pinned = new Map(content.sourceVersions?.map((source) => [source.cardId, source.versionId]));
+  return Promise.all([...new Set(content.sourceCardIds)].map(async (id) => {
+    const versionId = pinned.get(id);
+    const [card, version] = await Promise.all([
+      getKnowledgeCardById(id),
+      versionId ? getApprovedCardVersion(versionId) : null,
+    ]);
+    const available = card && getPublicApprovedCard(card);
+    return {
+      id,
+      available: Boolean(available),
+      version: available && version?.cardId === id && getCardVersionId(version.snapshot) === versionId
+        ? version : null,
+    };
+  }));
+}
 export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArticle) {
   return !isApprovedArticle(article) && Boolean(user && (user.role === "admin" ||
     (["university_owner", "university_pr"].includes(user.role) && user.universityId === article.universityId)));
@@ -275,17 +301,37 @@ function validateUniversity(user: SessionUser, content: EditorialContent) {
     );
 }
 async function normalizeSources(
-  content: EditorialContent
+  content: EditorialContent,
+  previous?: EditorialContent,
 ): Promise<EditorialContent> {
-  if (!content.sourceCardIds.length)
-    return { ...content, sourceCardTitles: [] };
-  const cards = await getCanonicalKnowledgeCards();
+  const { sourceVersions: supplied, ...fields } = content;
+  const requested = supplied ?? previous?.sourceVersions?.filter((source) =>
+    content.sourceCardIds.includes(source.cardId),
+  );
+  const ids = [...new Set(content.sourceCardIds)];
+  const pinned = new Map(requested?.map((source) => [source.cardId, source.versionId]));
+  const sourceCardTitles = await Promise.all(ids.map(async (id) => {
+    const raw = await getKnowledgeCardById(id);
+    const card = raw && getPublicApprovedCard(raw);
+    const versionId = pinned.get(id);
+    if (!card) {
+      const previousIndex = previous?.sourceCardIds.indexOf(id) ?? -1;
+      if (versionId || previousIndex < 0) throw new EditorialError("Источник недоступен в утверждённой базе", 422);
+      return previous?.sourceCardTitles[previousIndex] ?? "Источник недоступен";
+    }
+    if (!versionId) return card.title;
+    const stored = await getApprovedCardVersion(versionId) ??
+      (getCardVersionId(card) === versionId ? await ensureApprovedCardVersion(card) : null);
+    if (!stored || stored.cardId !== id || getCardVersionId(stored.snapshot) !== versionId) {
+      throw new EditorialError("Версия источника недоступна или относится к другой карточке", 422);
+    }
+    return stored.snapshot.title;
+  }));
   return {
-    ...content,
-    sourceCardTitles: content.sourceCardIds.map(
-      (id) =>
-        cards.find((c) => c.id === id)?.title || `Источник недоступен (${id})`
-    ),
+    ...fields,
+    sourceCardIds: ids,
+    sourceCardTitles,
+    ...(requested !== undefined ? { sourceVersions: requested } : {}),
   };
 }
 export async function getEditorialReviewers(doc: EditorialDocument) {
@@ -370,6 +416,7 @@ export async function createEditorial(
         : legacy.sections,
       sourceCardIds: legacy.sourceCardIds,
       sourceCardTitles: legacy.sourceCardTitles,
+      sourceVersions: legacy.sourceVersions,
     });
   }
   content = await normalizeSources(content);
@@ -455,12 +502,11 @@ export async function mutateEditorial(
   let action: EditorialEvent["action"] = "saved";
   if (mutation.action === "save" || mutation.action === "restore") {
     let content: EditorialContent;
-    if (mutation.action === "save") content = mutation.content;
+    if (mutation.action === "save") content = await normalizeSources(mutation.content, current.content);
     else {
       const old = await getEditorialRevision(current, user, mutation.revisionId);
       content = old.content;
     }
-    content = await normalizeSources(content);
     const revisionId = crypto.randomUUID();
     revision = {
       id: revisionId,
@@ -527,17 +573,25 @@ export async function mutateEditorial(
       const cards = await getCanonicalKnowledgeCards();
       if (!cards.length)
         throw new EditorialError("Нет официальных данных для проверки", 409);
-      const check = checkFactText(editorialText(target.content), cards);
-      if (check.summary.red > 0)
-        throw new EditorialError(
-          "Согласование заблокировано: исправьте красные замечания фактчека",
-          422
-        );
       const ids = target.content.sourceCardIds;
-      const sources = cards.filter((c) => ids.includes(c.id));
+      const currentSources = cards.filter((c) => ids.includes(c.id));
+      const references = target.content.sourceVersions ?? [];
+      const pinned = references.length ? new Map((await getEditorialSourceVersions(target.content))
+        .flatMap(({ id, version }): [string, KnowledgeCard][] => version ? [[id, version.snapshot]] : []))
+        : new Map<string, KnowledgeCard>();
+      if (references.some(({ cardId }) => !pinned.has(cardId))) {
+        throw new EditorialError("Закреплённая версия источника недоступна", 422);
+      }
+      const sources = currentSources.map((card) => pinned.get(card.id) ?? card);
       if (!sources.length || sources.length !== new Set(ids).size)
         throw new EditorialError(
           "Укажите доступные источники официальных данных",
+          422
+        );
+      const check = checkFactText(editorialText(target.content), references.length ? sources : cards);
+      if (check.summary.red > 0)
+        throw new EditorialError(
+          "Согласование заблокировано: исправьте красные замечания фактчека",
           422
         );
       next.status = "approved";
@@ -552,6 +606,7 @@ export async function mutateEditorial(
         sourceCardTitles: ids.map(
           (id) => sources.find((c) => c.id === id)!.title
         ),
+        ...(target.content.sourceVersions ? { sourceVersions: target.content.sourceVersions } : {}),
         universityId: target.content.universityId,
         projectTitle: target.content.projectTitle,
         topic: target.content.topic,

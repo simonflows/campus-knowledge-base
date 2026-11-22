@@ -155,6 +155,10 @@ function fixture(
         assert.equal(command.input.Key?.id, head.id);
         return { Item: heads[Math.min(headIndex++, heads.length - 1)] };
       }
+      if (command.input.TableName === TableName.KNOWLEDGE_CARDS && publication) {
+        assert.equal(command.input.Key?.id, publication.source.id);
+        return { Item: publication.source };
+      }
       assert.equal(command.input.TableName, TableName.EDITORIAL_REVISIONS);
       return {
         Item: pages.flat().find(({ id }) => id === command.input.Key?.id),

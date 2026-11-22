@@ -1,6 +1,7 @@
 import {
   getApprovedVersion,
   getRequiredUniversityApprovals,
+  isCardReadyForPublication,
   universityPassportSeeds,
   type KnowledgeCard,
 } from "./knowledge";
@@ -38,15 +39,17 @@ export function knowledgeUpdateModeration(
   >
 > {
   const changed = Object.keys(input).some(
-    (key) => key !== "ownerIds" &&
+    (key) => key !== "ownerIds" && key !== "changeReason" &&
       JSON.stringify(current[key as keyof KnowledgeCard]) !==
       JSON.stringify(input[key as keyof KnowledgeCardInput])
   );
   if (!changed) return {};
   const joint =
+    getRequiredUniversityApprovals(current).length > 0 ||
     (current.type === "project" && current.isJoint) ||
     (input.type === "project" && input.isJoint);
-  if (!joint && (!editor || editor.isAdmin)) return {};
+  const readyForPublication = isCardReadyForPublication(input);
+  if (!joint && (!editor || editor.isAdmin) && readyForPublication) return {};
   const published = getApprovedVersion(current);
   const snapshot = published
     ? (Object.fromEntries(
@@ -69,7 +72,9 @@ export function knowledgeUpdateModeration(
     submittedByName: editor?.name ?? current.submittedByName,
     reviewedBy: "",
     reviewedAt: "",
-    reviewComment: joint
+    reviewComment: !readyForPublication
+      ? "Перед согласованием уточните стадию и контур проекта по источникам."
+      : joint
       ? "Содержание изменено: требуется новое подтверждение вузов-участников и координатора."
       : "Содержание изменено: требуется проверка координатора.",
   };

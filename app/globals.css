@@ -212,3 +212,84 @@ html {
     scroll-behavior: auto !important;
   }
 }
+
+/* The homepage keeps the map behind the hero and its controls. */
+.atlas-ambient-bg {
+  background: var(--background);
+}
+
+.atlas-hero.atlas-hero--topography {
+  isolation: isolate;
+  padding-block: clamp(3.2rem, 5.7vw, 5.55rem) clamp(1.9rem, 3.7vw, 3.2rem);
+}
+
+.atlas-hero--topography h1 {
+  --title-size: clamp(1.8rem, 4.4vw, 3.7rem);
+  margin: 0 0 clamp(1rem, 2vw, 1.55rem);
+  letter-spacing: -0.04em;
+}
+
+.atlas-hero--topography h1 em {
+  margin-top: 0.14em;
+  font-size: 1.29em;
+  letter-spacing: -0.035em;
+}
+
+.atlas-hero--topography .atlas-lead {
+  width: min(100%, 58ch);
+  color: #d1dce5;
+  text-wrap: balance;
+}
+
+.atlas-hero--topography .campus-home-search {
+  width: min(100%, 42rem);
+  margin-top: clamp(1.15rem, 2.4vw, 1.75rem);
+}
+
+.atlas-hero--topography .atlas-scene {
+  margin-top: clamp(1.5rem, 3.8vw, 2.75rem);
+  background: #1a2a36;
+}
+
+html:not([data-motion="off"]) .atlas-hero.atlas-hero--topography
+  :is(h1, .atlas-lead, .campus-home-search, .atlas-scene) {
+  animation: none;
+}
+
+.atlas-hero--topography .atlas-search button:focus-visible {
+  outline: 2px solid #a1d1ec;
+  outline-offset: -4px;
+}
+
+.atlas-hero--topography .atlas-search button:active,
+.atlas-hero--topography .atlas-scene-card:active {
+  background: #3e5364;
+}
+
+.campus-search-positioner .campus-search-panel {
+  max-height: min(20rem, var(--available-height, 20rem));
+}
+
+@media (max-width: 480px) {
+  .atlas-hero.atlas-hero--topography {
+    padding-block: 2.7rem 1.5rem;
+  }
+
+  .atlas-hero--topography .atlas-scene-card {
+    padding-inline: 0.65rem;
+  }
+
+  .atlas-hero--topography .atlas-scene-card small {
+    font-size: 0.75rem;
+  }
+
+  .atlas-hero--topography .atlas-search button {
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 374px) {
+  .atlas-hero--topography .atlas-search button svg {
+    display: none;
+  }
+}

@@ -9,6 +9,7 @@ import { requireFixtureDatabase } from "./qa-fixture";
 import { installPilotFixture } from "./pilot-fixture";
 import { knowledgeSeedCards } from "../lib/knowledge";
 import { runEditorialRoutes } from "./test-editorial-routes";
+import { runCanonRoutes } from "./test-canon-routes";
 import { measurePilotLoad } from "./measure-pilot-load";
 import runRequestBrowserChecks from "./requests-browser-check";
 
@@ -50,6 +51,7 @@ async function main() {
       await measurePilotLoad(credentials("demo-pr-midis"), loadProfile);
     }
     await runEditorialRoutes(credentials);
+    await runCanonRoutes(credentials);
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
       const analyticsPage = await browser.newPage({ reducedMotion: "reduce" });

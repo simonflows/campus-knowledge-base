@@ -6,6 +6,7 @@ import { useLayoutEffect, useRef } from "react";
 import {
   BarChart3,
   BookOpen,
+  ClipboardList,
   Cpu,
   Home,
   Inbox,
@@ -15,10 +16,12 @@ import {
 } from "lucide-react";
 import { campusServices } from "@/lib/campus-services";
 
-const sections = [
-  { href: "/", title: "Главная", navTitle: "Главная" },
-  ...campusServices(),
-];
+function navSections(staff: boolean) {
+  return [
+    { href: "/", title: "Главная", navTitle: "Главная" },
+    ...campusServices(undefined, staff).filter(({ href }) => !staff || href !== "/requests"),
+  ];
+}
 
 const sectionIcons = {
   "/": Home,
@@ -26,6 +29,7 @@ const sectionIcons = {
   "/editor": PenLine,
   "/check": ScanText,
   "/requests": Inbox,
+  "/work": ClipboardList,
   "/analytics": BarChart3,
   "/comparison": Cpu,
   "/login": ShieldCheck,
@@ -65,13 +69,13 @@ function RequestCount({ count }: { count: number }) {
   );
 }
 
-export function HeaderNav({ incomingCount = 0 }: { incomingCount?: number }) {
+export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?: number; staff?: boolean }) {
   const pathname = usePathname();
   const navRef = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
     positionIndicator(navRef.current, true);
-  }, [pathname]);
+  }, [pathname, staff]);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -86,12 +90,12 @@ export function HeaderNav({ incomingCount = 0 }: { incomingCount?: number }) {
       observer.disconnect();
       document.fonts.removeEventListener("loadingdone", realign);
     };
-  }, []);
+  }, [staff]);
 
   return (
     <nav ref={navRef} aria-label="Основная навигация" className="atlas-nav">
       <span aria-hidden="true" className="atlas-nav-indicator" />
-      {sections.map(({ href, navTitle }) =>
+      {navSections(staff).map(({ href, navTitle }) =>
         href === "/login" ? null : (
           <Link
             key={href}
@@ -99,7 +103,7 @@ export function HeaderNav({ incomingCount = 0 }: { incomingCount?: number }) {
             aria-current={pathname === href ? "page" : undefined}
           >
             {navTitle}
-            {href === "/requests" && incomingCount > 0 && (
+            {(href === "/requests" || href === "/work") && incomingCount > 0 && (
               <RequestCount count={incomingCount} />
             )}
           </Link>
@@ -111,16 +115,18 @@ export function HeaderNav({ incomingCount = 0 }: { incomingCount?: number }) {
 
 export function MobileNav({
   incomingCount = 0,
+  staff = false,
   onNavigate,
 }: {
   incomingCount?: number;
+  staff?: boolean;
   onNavigate: () => void;
 }) {
   const pathname = usePathname();
 
   return (
     <nav aria-label="Основная навигация" className="atlas-mobile-nav">
-      {sections.map(({ href, title }) => {
+      {navSections(staff).map(({ href, title }) => {
         const Icon = sectionIcons[href];
         return (
           <Link
@@ -131,7 +137,7 @@ export function MobileNav({
           >
             {Icon && <Icon size={17} aria-hidden="true" />}
             {title}
-            {href === "/requests" && incomingCount > 0 && (
+            {(href === "/requests" || href === "/work") && incomingCount > 0 && (
               <RequestCount count={incomingCount} />
             )}
           </Link>

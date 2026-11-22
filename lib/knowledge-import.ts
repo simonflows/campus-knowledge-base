@@ -1,14 +1,13 @@
-import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { z } from "zod";
 import { areCardOwnerIdsAssignable, resolveLegacyCardOwnerIds } from "./auth";
-import { folderIds } from "./knowledge";
+import { folderIds, isCardReadyForPublication, type KnowledgeCard } from "./knowledge";
 import { sessionDirectory } from "./pilot-auth";
-import { docClient, getStorageMode } from "./db";
+import { getStorageMode } from "./db";
 import { createPendingDiskSync } from "./disk-sync";
-import { getCardTypeById } from "./models";
-import { TableName } from "./schema";
+import { getCardTypeById, getKnowledgeCardById, insertApprovedKnowledgeCard } from "./models";
 import {
   buildCustomFieldValuesSchema,
+  canonicalCustomFieldValues,
   knowledgeCardInputSchema,
 } from "./validation/knowledge";
 
@@ -53,6 +52,11 @@ function parseManifest(value: unknown) {
       );
     ids.add(id);
     const card = input.data;
+    if (!isCardReadyForPublication(card)) {
+      throw new ImportValidationError(
+        `Карточка №${index + 1}: для утверждённого проекта укажите стадию и контур по источникам.`
+      );
+    }
     if (card.type === "custom")
       card.folderId = folderIds.customType(card.customTypeId);
     const ownerIds =
@@ -100,8 +104,12 @@ export async function importApprovedKnowledge(value: unknown, apply = false) {
       "Для этой операции нужна подключённая база DynamoDB."
     );
   }
+  const validated: KnowledgeCard[] = [];
   for (const card of cards) {
-    if (card.type !== "custom") continue;
+    if (card.type !== "custom") {
+      validated.push(card);
+      continue;
+    }
     const definition = await getCardTypeById(card.customTypeId);
     if (!definition)
       throw new ImportValidationError(
@@ -114,24 +122,23 @@ export async function importApprovedKnowledge(value: unknown, apply = false) {
       throw new ImportValidationError(
         "Проверьте поля пользовательской карточки."
       );
-    card.customFields = fields.data;
+    validated.push({ ...card, customFields: canonicalCustomFieldValues(fields.data) });
   }
   if (!apply) return result;
-  for (const card of cards) {
+  for (const card of validated) {
+    if (await getKnowledgeCardById(card.id)) {
+      result.preserved++;
+      continue;
+    }
     try {
-      await docClient.send(
-        new PutCommand({
-          TableName: TableName.KNOWLEDGE_CARDS,
-          Item: card,
-          ConditionExpression: "attribute_not_exists(id)",
-        })
-      );
+      await insertApprovedKnowledgeCard(card);
       result.inserted++;
     } catch (error) {
       if (
         !(
           error instanceof Error &&
-          error.name === "ConditionalCheckFailedException"
+          error.name === "ConditionalCheckFailedException" &&
+          await getKnowledgeCardById(card.id)
         )
       )
         throw error;

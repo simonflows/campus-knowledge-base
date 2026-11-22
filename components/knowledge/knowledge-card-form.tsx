@@ -42,6 +42,7 @@ import {
 } from "@/lib/validation/knowledge";
 import { cn } from "@/lib/utils";
 import { UniversityMetricsEditor } from "./university-metrics-editor";
+import { KnowledgeEvidenceFields } from "./knowledge-evidence-fields";
 import type { StructuredMetric } from "@/lib/knowledge";
 
 const selectClassName =
@@ -183,15 +184,16 @@ export function KnowledgeCardForm({
     projectCard?.industrialPartner ?? ""
   );
   const [readinessStage, setReadinessStage] = useState<string>(
-    projectCard?.readinessStage ?? "Идея"
+    projectCard?.readinessStage ?? "Не уточнено"
   );
   const [contour, setContour] = useState<string>(
-    projectCard?.contour ?? "кампус"
+    projectCard?.contour ?? "не уточнён"
   );
   const [confirmedFigures, setConfirmedFigures] = useState(
     projectCard?.confirmedFigures.join("\n") ?? ""
   );
   const [isJoint, setIsJoint] = useState(projectCard?.isJoint ?? false);
+  const [externalParticipants, setExternalParticipants] = useState(projectCard?.externalParticipantNames?.join("\n") ?? "");
   const [participantUniversityIds, setParticipantUniversityIds] = useState<
     string[]
   >(projectCard?.participantUniversityIds ?? []);
@@ -245,6 +247,9 @@ export function KnowledgeCardForm({
   const [stopFormula, setStopFormula] = useState(
     initialCard?.stopFormula ?? ""
   );
+  const [sources, setSources] = useState(initialCard?.sources ?? []);
+  const [verifiedFacts, setVerifiedFacts] = useState(initialCard?.verifiedFacts ?? []);
+  const [changeReason, setChangeReason] = useState("");
   // This version goes with the fields captured when the form opened.
   const [editingVersion] = useState(initialCard?.updatedAt);
   const [formError, setFormError] = useState<string | null>(null);
@@ -470,8 +475,8 @@ export function KnowledgeCardForm({
     if (isSaving) return;
     setFormError(null);
 
-    if (type === "project" && isJoint && participantUniversityIds.length < 2) {
-      const message = "Выберите минимум два вуза-участника совместного проекта";
+    if (type === "project" && isJoint && participantUniversityIds.length + splitLines(externalParticipants).length < 2) {
+      const message = "Укажите минимум двух участников совместного проекта";
       setFormError(message);
       toast.error(message);
       return;
@@ -500,6 +505,9 @@ export function KnowledgeCardForm({
       ...(currentUser?.role === "admin" && ownerAssignmentEdited ? { ownerIds } : {}),
       referenceDescription,
       stopFormula,
+      ...(changeReason.trim() && { changeReason }),
+      ...((sources.length || initialCard?.sources) && { sources }),
+      ...((verifiedFacts.length || initialCard?.verifiedFacts) && { verifiedFacts }),
     };
 
     const payload =
@@ -529,6 +537,7 @@ export function KnowledgeCardForm({
                 contour,
                 confirmedFigures: splitList(confirmedFigures),
                 isJoint,
+                ...(externalParticipants.trim() || projectCard?.externalParticipantNames ? { externalParticipantNames: splitLines(externalParticipants) } : {}),
                 participantUniversityIds: isJoint
                   ? participantUniversityIds
                   : [],
@@ -970,8 +979,11 @@ export function KnowledgeCardForm({
                     checked={isJoint}
                     onChange={(event) => {
                       setIsJoint(event.target.checked);
-                      if (!event.target.checked) {
+                      if (event.target.checked && !isEdit) {
+                        setInitiatorUniversityId("");
+                      } else if (!event.target.checked) {
                         setParticipantUniversityIds([]);
+                        if (!initiatorUniversityId) setInitiatorUniversityId(defaultUniversityId);
                       }
                     }}
                     className="h-4 w-4 accent-primary"
@@ -1027,6 +1039,11 @@ export function KnowledgeCardForm({
                         : "не выбраны"}
                     </Badge>
                   ) : null}
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="card-external-participants" className="text-sm font-medium">Внешние участники</label>
+                    <Textarea id="card-external-participants" value={externalParticipants} onChange={event => setExternalParticipants(event.target.value)} placeholder="Одна организация в строке" maxLength={6000} />
+                    <p className="text-xs text-muted-foreground">Не подставляйте вуз-резидент вместо внешнего соавтора. До отдельного подтверждения внешних участников запись остаётся черновиком.</p>
+                  </div>
                 </div>
               ) : null}
 
@@ -1058,6 +1075,7 @@ export function KnowledgeCardForm({
                       setInitiatorUniversityId(event.target.value)
                     }
                   >
+                    {isJoint ? <option value="">Совместная инициатива, отдельный инициатор не установлен</option> : null}
                     {universities.map((university) => (
                       <option key={university.id} value={university.id}>
                         {university.shortName}
@@ -1423,6 +1441,15 @@ export function KnowledgeCardForm({
               />
             </div>
           </div>
+
+          <KnowledgeEvidenceFields
+            sources={sources}
+            facts={verifiedFacts}
+            reason={changeReason}
+            onSourcesChange={setSources}
+            onFactsChange={setVerifiedFacts}
+            onReasonChange={setChangeReason}
+          />
 
           {formError ? (
             <p

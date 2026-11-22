@@ -2,6 +2,8 @@
 
 Инструкция описывает развёртывание боевого контура системы «Канон кампуса „Южный Урал“» на выделенном Linux-сервере (ВМ в Yandex Cloud или сервер вузовского ЦОД) с настройкой межсетевого экрана, обратного прокси Nginx, базовых механизмов защиты ОС и TLS-сертификатов.
 
+**Обновление действующего 0.9.0 до 0.9.5 выполняется по [отдельному порядку выпуска](docs/release-0.9.5-deploy.md).** Общая инструкция ниже описывает также первое развёртывание. При добавлении таблиц не запускайте новый web-контейнер раньше миграции: используйте maintenance-контейнер и `docker exec`, как в порядке 0.9.5. Состояние фактического выпуска — в [progress.md](progress.md).
+
 ---
 
 ## Содержание
@@ -227,7 +229,7 @@ export CAMPUS_RELEASE_TAG="$(git rev-parse HEAD)"
 CAMPUS_RUNTIME_ENV_FILE=/dev/null docker compose --env-file /dev/null -f deploy/compose.prod.yml config --quiet
 git archive "$CAMPUS_RELEASE_TAG" -- . \
   ':(exclude,glob)**/.env*' ':(exclude,glob)**/.data/**' ':(exclude,glob)**/*.pem' |
-  docker build -f Dockerfile -t "campus-kb:$CAMPUS_RELEASE_TAG" -
+  docker build --build-arg "VCS_REF=$CAMPUS_RELEASE_TAG" -f Dockerfile -t "campus-kb:$CAMPUS_RELEASE_TAG" -t campus-kb:0.9.5 -
 docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps app node --import tsx deploy/preflight.ts
 ```
 
@@ -245,7 +247,7 @@ curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/api/ready
 
 Переходите к Nginx после успешных проверок. При ошибке старта посмотрите состояние контейнера командой `docker compose --env-file /dev/null -f deploy/compose.prod.yml ps`. Ошибки проверки настроек видны в выводе команды из первого шага.
 
-`/api/health` проверяет процесс, а `/api/ready` проверяет доступность всех шести таблиц. Сбой готовности даёт `503`. Сначала создайте таблицы, затем дождитесь готовности. Подключите алерт по `/api/ready` и проверьте рабочую запись с правами приложения на тестовой YDB.
+`/api/health` проверяет процесс, а `/api/ready` проверяет доступность всех таблиц выпуска (в 0.9.5 — восьми). Сбой готовности даёт `503`. Сначала создайте таблицы, затем дождитесь готовности. Подключите алерт по `/api/ready` и проверьте рабочую запись с правами приложения на тестовой YDB.
 
 **3. Загрузите утверждённые записи и сверьте владельцев.** Обращение к сайту не наполняет базу. Координатор готовит JSON с полями `approvedBy`, `approvedAt` в ISO UTC и `cards`. Каждая запись содержит `id`, `status: "approved"` и поля своего типа карточки. Для совместного проекта включите `participantApprovals` всех участвующих вузов. Для персонального назначения добавьте `ownerIds` из реестра. Пользовательские типы должны существовать в выбранной БД. Сверьте даты, источники и содержание вне приложения до загрузки.
 

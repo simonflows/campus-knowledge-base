@@ -46,6 +46,7 @@ import { KnowledgeCardForm } from "@/components/knowledge/knowledge-card-form";
 import { KnowledgeModerationPanel } from "@/components/knowledge/knowledge-moderation-panel";
 import { KnowledgeTree } from "@/components/knowledge/knowledge-tree";
 import { KnowledgeTypeConstructor } from "@/components/knowledge/knowledge-type-constructor";
+import { HistoricalKnowledgeVersion, KnowledgeVersionPanel } from "@/components/knowledge/knowledge-version-panel";
 import {
   canCreateCard,
   canManageTypes,
@@ -107,6 +108,9 @@ export function KnowledgeBase({
 }: KnowledgeBaseProps) {
   const router = useRouter();
   const params = useSearchParams();
+  const requestedVersion = params.get("version");
+  const historicalVersion = requestedVersion === "approved" ? null : requestedVersion;
+  const requestedVersionCard = params.get("card");
   const [cards, setCards] = useState<KnowledgeCard[]>(initialCards);
   const [customTypes, setCustomTypes] =
     useState<CardTypeWithStats[]>(initialCustomTypes);
@@ -180,6 +184,7 @@ export function KnowledgeBase({
   const canModerateCards = canModerate(currentUser) && dbAvailable;
 
   const handleSelectFolder = (folderId: string) => {
+    if (requestedVersion) router.push("/knowledge", { scroll: false });
     setSelectedFolderId(folderId);
     setSelectedCardId(null);
     setEditingCardId(null);
@@ -210,6 +215,7 @@ export function KnowledgeBase({
   const handleOpenCard = (cardId: string) => {
     const previous = new URLSearchParams(params.toString());
     previous.delete("card");
+    previous.delete("version");
     if (searchQuery) previous.set("q", searchQuery);
     window.history.replaceState(null, "", `/knowledge?${previous.toString()}`);
     const next = new URLSearchParams(previous.toString());
@@ -385,6 +391,30 @@ export function KnowledgeBase({
               onUpdated={handleCardSaved}
               onCancel={() => setEditingCardId(null)}
             />
+          ) : historicalVersion && requestedVersionCard ? (
+            <HistoricalKnowledgeVersion
+              key={`${requestedVersionCard}:${historicalVersion}`}
+              cardId={requestedVersionCard}
+              versionId={historicalVersion}
+              onOpenCurrent={() => setSelectedCardId(requestedVersionCard)}
+            >
+              {(snapshot) => <KnowledgeCardDetail
+                card={snapshot}
+                cards={[]}
+                customTypes={customTypes}
+                tree={tree}
+                dbAvailable={false}
+                currentUser={null}
+                readOnlyVersion
+                onBack={() => {
+                  setSelectedCardId(snapshot.id);
+                  router.push("/knowledge?" + new URLSearchParams({ card: snapshot.id }), { scroll: false });
+                }}
+                onOpenFolder={handleSelectFolder}
+                onEdit={() => {}}
+                onCardUpdated={() => {}}
+              />}
+            </HistoricalKnowledgeVersion>
           ) : selectedCard ? (
             <KnowledgeCardDetail
               card={selectedCard}
@@ -393,9 +423,18 @@ export function KnowledgeBase({
               tree={tree}
               dbAvailable={dbAvailable}
               currentUser={currentUser}
+              additionalSections={<KnowledgeVersionPanel
+                key={`${selectedCard.id}:${selectedCard.updatedAt}`}
+                card={selectedCard}
+                currentUser={currentUser}
+                ownerCandidates={ownerCandidates ?? []}
+                dbAvailable={dbAvailable}
+                onUpdated={handleCardUpdated}
+              />}
               onBack={() => {
                 const next = new URLSearchParams(params.toString());
                 next.delete("card");
+                next.delete("version");
                 next.delete("action");
                 next.delete("quote");
                 next.delete("finding");

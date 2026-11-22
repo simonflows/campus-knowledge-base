@@ -1,6 +1,6 @@
 {
   "name": "vibecraft-template",
-  "version": "0.1.0",
+  "version": "0.9.5",
   "private": true,
   "scripts": {
     "dev": "next dev -p 8080",
@@ -26,15 +26,19 @@
     "test:review-regressions": "tsx scripts/test-review-analysis.ts && tsx scripts/test-review-auth.ts && tsx scripts/test-review-knowledge.ts && tsx scripts/test-review-editorial.ts && tsx scripts/test-review-disk.ts && tsx scripts/test-review-ui.ts",
     "test:interface": "tsx scripts/test-interface.ts",
     "qa:init-fixture": "tsx scripts/init-qa-fixture.ts",
-    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions",
+    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions && npm run test:canon-offline",
     "test:flash-assist": "node --import tsx --test scripts/test-flash-assist.ts",
     "qa:mark-fixture": "tsx scripts/mark-qa-fixture.ts",
     "test:editorial": "tsx scripts/test-editorial.ts",
     "test:requests": "tsx scripts/test-requests.ts",
     "test:pilot-browser": "tsx scripts/run-pilot-qa.ts",
     "test:public-source-cycle": "tsx scripts/test-public-source-cycle.ts",
-    "test:fixture": "npm run test:editorial && npm run test:requests && npm run test:pilot-browser && npm run test:public-source-cycle",
-    "test:benchmark": "tsx scripts/test-benchmark-pilot.ts"
+    "test:fixture": "npm run test:editorial && npm run test:requests && npm run test:pilot-browser && npm run test:public-source-cycle && npm run test:canon-fixture",
+    "test:benchmark": "tsx scripts/test-benchmark-pilot.ts",
+    "test:canon-offline": "tsx scripts/test-workflow.ts && tsx scripts/test-work-queue.ts && tsx scripts/test-external-project.ts && tsx scripts/test-database-backup.ts && tsx scripts/test-integrated-flash.ts && tsx scripts/test-editor-assist.ts && tsx scripts/test-editorial-readiness.ts && tsx scripts/test-editor-source-versions.ts && tsx scripts/test-editor-deep-links.ts && tsx scripts/test-knowledge-deep-links.ts && tsx scripts/test-readiness-panel.ts && tsx components/work/work-state.test.ts && tsx scripts/test-reviewed-package-import.ts && node --import tsx --test scripts/test-qa-ydb-relay.mjs",
+    "test:canon-fixture": "tsx scripts/test-canon-versions.ts && tsx scripts/test-canon-type-race.ts && cross-env CANON_EDITORIAL_DB_TEST=yes tsx scripts/test-editorial-readiness.ts && tsx scripts/test-canon-disk-race.ts && tsx scripts/test-workflow-db.ts && tsx scripts/test-shared-requests.ts && tsx scripts/test-card-usage.ts && tsx scripts/test-reviewed-package-import.ts",
+    "db:import-reviewed-package": "tsx scripts/import-reviewed-package.ts",
+    "db:backup": "tsx scripts/database-backup.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.758.0",

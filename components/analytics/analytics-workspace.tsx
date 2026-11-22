@@ -27,7 +27,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { FlashAssistHint } from "@/components/flash-assist-hint";
+import { FlashAssistOption, FlashAssistResult, isCurrentFlashRequest } from "@/components/flash-assist-hint";
+import type { FlashAnalyticsAssist } from "@/lib/flash-assist";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -515,10 +516,11 @@ export function AnalyticsWorkspace({
   flashAssistAvailable = false,
 }: AnalyticsWorkspaceProps) {
   const [query, setQuery] = useState("");
-  const [report, setReport] = useState<AnalyticsReport | null>(null);
+  const [report, setReport] = useState<(AnalyticsReport & { flashAssist?: FlashAnalyticsAssist }) | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [flashEnabled, setFlashEnabled] = useState(false);
   const queryInput = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -532,9 +534,12 @@ export function AnalyticsWorkspace({
     setError(null);
   };
 
-  const requestAnalytics = async (nextQuery = query) => {
+  const requestAnalytics = async (nextQuery = query, useFlash = flashEnabled) => {
     if (abortRef.current) return;
-    const parsed = analyticsQuerySchema.safeParse({ query: nextQuery });
+    const parsed = analyticsQuerySchema.safeParse({
+      query: nextQuery,
+      ...(flashAssistAvailable && useFlash && { flashAssist: true }),
+    });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0]?.message ?? "Проверьте текст запроса");
       return;
@@ -553,10 +558,10 @@ export function AnalyticsWorkspace({
         signal: controller.signal,
       });
       const data = (await response.json().catch(() => null)) as
-        | (AnalyticsReport & { error?: string })
+        | (AnalyticsReport & { error?: string; flashAssist?: FlashAnalyticsAssist })
         | null;
 
-      if (controller.signal.aborted) return;
+      if (!isCurrentFlashRequest(controller, abortRef.current)) return;
       if (!response.ok || !data) {
         const message =
           data?.error ??
@@ -585,13 +590,13 @@ export function AnalyticsWorkspace({
         });
       }
     } catch {
-      if (controller.signal.aborted) return;
+      if (!isCurrentFlashRequest(controller, abortRef.current)) return;
       const message =
         "Сервис аналитики недоступен. Проверьте соединение и попробуйте ещё раз.";
       setError(message);
       toast.error(message);
     } finally {
-      if (!controller.signal.aborted) {
+      if (isCurrentFlashRequest(controller, abortRef.current)) {
         abortRef.current = null;
         setIsLoading(false);
       }
@@ -655,6 +660,10 @@ export function AnalyticsWorkspace({
               className="data-editor-field data-query-field"
             />
 
+            {flashAssistAvailable && (
+              <FlashAssistOption kind="analytics" checked={flashEnabled} disabled={isLoading} onChange={setFlashEnabled} />
+            )}
+
             <div className="data-action-row">
               <Button
                 type="button"
@@ -669,10 +678,17 @@ export function AnalyticsWorkspace({
                 {isLoading ? "Собираем..." : "Собрать аналитику"}
               </Button>
               <span className="text-xs text-muted-foreground">
-                Выборка детерминированная: система не придумывает карточки и
-                цифры, которых нет в базе.
+                Карточки и числа в отчёте берутся из утверждённых данных.
               </span>
             </div>
+
+            {!isLoading && flashEnabled && report?.flashAssist && (
+              <FlashAssistResult state={report.flashAssist} onApply={(proposed) => {
+                handleQueryChange(proposed);
+                queryInput.current?.focus();
+                void requestAnalytics(proposed, false);
+              }} />
+            )}
 
             {error ? (
               <Alert variant="destructive">
@@ -812,17 +828,6 @@ export function AnalyticsWorkspace({
             </Card>
           </div>
         )
-      ) : null}
-      {flashAssistAvailable && report ? (
-        <FlashAssistHint
-          kind="analytics"
-          query={report.query}
-          onApply={(proposed) => {
-            queryInput.current?.focus();
-            handleQueryChange(proposed);
-            void requestAnalytics(proposed);
-          }}
-        />
       ) : null}
     </div>
   );

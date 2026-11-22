@@ -42,7 +42,10 @@ export async function POST(request: NextRequest) {
   const report = buildAnalyticsReport(query, cards, types);
   return NextResponse.json(
     account
-      ? { ...report, flashAssist: await assistAnalytics(request, account, query, types) }
+      ? {
+          ...report,
+          flashAssist: await assistAnalytics(request, account, query, types).catch(() => ({ status: "failed" })),
+        }
       : report,
     account ? { headers: { "Cache-Control": "no-store" } } : undefined,
   );

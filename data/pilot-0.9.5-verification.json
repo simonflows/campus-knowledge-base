@@ -1,0 +1,37 @@
+{
+  "packageSha256": "e3008af41c1050cdd3ace235357dcf693f02cdd588b38eda7e7f8e4ad9a4cc42",
+  "reviewedAt": "2026-11-22T12:44:01Z",
+  "reviewer": "independent-source-review",
+  "approvedIds": [
+    "campus-passport",
+    "university-susu",
+    "university-csu",
+    "university-midis",
+    "university-susmu",
+    "university-sursau",
+    "university-mgtu",
+    "university-suspgu",
+    "lab-csu-microelectronics-insmart",
+    "lab-midis-kuka",
+    "lab-susmu-ritm",
+    "lab-mgtu-wire-products",
+    "lab-csu-insmart-iot-collective-centre",
+    "lab-csu-oil-gas-industry",
+    "lab-susu-electromechanical-systems",
+    "lab-mgtu-aedrives"
+  ],
+  "pendingIds": [
+    "project-csu-cnc-software",
+    "project-susu-arctic-bus",
+    "project-susu-ecomonitor",
+    "project-susu-arctic-platform",
+    "joint-midis-susmu-trauma",
+    "lab-suspgu-susmu-berezhnaya-tsifra",
+    "lab-sursau-agrotechnological-ecology",
+    "lab-csu-csz-physical-chemical-materials",
+    "lab-susu-uralaz-campus-machinery",
+    "lab-susu-chkpz-campus-robotics",
+    "lab-midis-golos-campus-design"
+  ],
+  "reviewDocument": "docs/release-0.9.5-data-review.md"
+}

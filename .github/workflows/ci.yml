@@ -78,7 +78,7 @@ jobs:
         run: |
           set -euo pipefail
           export CAMPUS_RELEASE_TAG=ci
-          docker build --tag "campus-kb:$CAMPUS_RELEASE_TAG" .
+          docker build --build-arg "VCS_REF=$GITHUB_SHA" --tag "campus-kb:$CAMPUS_RELEASE_TAG" .
           umask 077
           CAMPUS_QA_IMAGE_DIR="$(mktemp -d "$RUNNER_TEMP/canon-image.XXXXXX")"
           CAMPUS_QA_RUNNER_USER="$(id -u):$(id -g)"
@@ -117,4 +117,4 @@ jobs:
           done
           CAMPUS_QA_MARKER="$(npm run --silent qa:init-fixture)"
           export CAMPUS_QA_MARKER
-          node scripts/qa-image-smoke.mjs verify
+          CAMPUS_QA_EXPECT_REVISION="$GITHUB_SHA" node scripts/qa-image-smoke.mjs verify

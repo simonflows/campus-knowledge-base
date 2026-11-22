@@ -23,6 +23,24 @@ const factOutput = z.strictObject({
 const analyticsOutput = z.strictObject({
   query: z.string().trim().max(240).regex(/^Покажи [\p{L} «»"'(),./—-]+$/iu).nullable(),
 });
+const analyticsConnectives = new Set(
+  "покажи только все проекты продукты лаборатории паспорт паспорта показатели тип типа карточки вуза вузов университетов кампуса в сфере области отрасли тематике теме по с со для среди из у на стадии этапе статусе контуре участием совместные межвузовские между и".split(" "),
+);
+
+function queryWords(text: string) {
+  return text.toLocaleLowerCase("ru").replaceAll("ё", "е").match(/\p{L}+/gu) ?? [];
+}
+
+function hasUnrecognizedWords(query: string, proposed: string, filters: AnalyticsFilter[]) {
+  const original = new Set(queryWords(query));
+  const fields = filters.flatMap((filter) => queryWords(filter.value));
+  return queryWords(proposed).some((word) =>
+    !original.has(word) && !analyticsConnectives.has(word) &&
+    !fields.some((field) => field === word || (
+      word.length >= 5 && field.length >= 5 && word.slice(0, 5) === field.slice(0, 5)
+    )),
+  );
+}
 
 const runtime = globalThis as typeof globalThis & {
   campusFlashAssist?: { active: number; cooldowns: Map<string, number> };
@@ -55,12 +73,14 @@ export async function authorizeFlashAssist(request: Request): Promise<string | N
   return user.id;
 }
 
-async function askFlash(
+export async function askFlash(
   request: Request,
   accountId: string,
   instruction: string,
   input: string,
+  maxTokens = 256,
 ): Promise<Unavailable | { status: "ready"; output: unknown }> {
+  if (request.signal.aborted) return { status: "failed" };
   if (!configured()) return { status: "unavailable" };
   const now = Date.now();
   if (usage.active >= 2 || (usage.cooldowns.get(accountId) ?? 0) > now) {
@@ -75,7 +95,7 @@ async function askFlash(
     const answer = await callYandexAiWithUsage(
       [{ role: "system", text: instruction }, { role: "user", text: input }],
       {
-        maxTokens: 256,
+        maxTokens: Math.min(maxTokens, 1_000),
         temperature: 0,
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
       },
@@ -150,9 +170,14 @@ export async function assistAnalytics(
   const changesFixedCriteria = newFilters.some((filter) =>
     fixedFilters.some((current) => current.key === filter.key),
   );
+  const addsNamedEntity = newFilters.some((filter) =>
+    filter.key === "university" ||
+    (filter.key === "partner" && filter.value.startsWith("Партнёр «")),
+  );
   return {
     status: "ready",
-    suggestion: newFilters.length > 0 && !dropsCriteria && !changesFixedCriteria && !filters.some(isUnknownIndustry)
+    suggestion: newFilters.length > 0 && !dropsCriteria && !changesFixedCriteria && !addsNamedEntity &&
+      !filters.some(isUnknownIndustry) && !hasUnrecognizedWords(query, proposed, filters)
       ? { query: proposed, filters }
       : null,
   };

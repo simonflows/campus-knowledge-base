@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Archive,
@@ -13,7 +13,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { ReadyArticle } from "@/lib/articles";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { isApprovedArticle, type ReadyArticle } from "@/lib/articles";
 
 const articleDate = new Intl.DateTimeFormat("ru-RU", {
   day: "numeric",
@@ -27,18 +28,25 @@ type Props = {
   legacy: ReadyArticle[];
   busy: boolean;
   onImport?: (article: ReadyArticle) => Promise<void>;
+  focusedArticleId?: string;
 };
 
 function Publication({
   article,
   action,
+  focused = false,
 }: {
   article: ReadyArticle;
   action?: React.ReactNode;
+  focused?: boolean;
 }) {
+  const heading = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (focused) heading.current?.focus({ preventScroll: true });
+  }, [focused]);
   return (
-    <details className="desk-disclosure desk-publication">
-      <summary>
+    <details className="desk-disclosure desk-publication" open={focused}>
+      <summary ref={heading}>
         <span className="desk-icon" aria-hidden="true">
           <FileText />
         </span>
@@ -68,14 +76,15 @@ function Publication({
             <ul>
               {article.sourceCardTitles.map((title, index) => {
                 const cardId = article.sourceCardIds[index];
+                const pinned = article.sourceVersions?.find((source) => source.cardId === cardId);
                 return (
                   <li key={`${index}-${title}`}>
                     {article.approval && cardId ? (
                       <Link
-                        href={`/knowledge?card=${encodeURIComponent(cardId)}&version=approved`}
+                        href={`/knowledge?card=${encodeURIComponent(cardId)}${pinned ? `&version=${encodeURIComponent(pinned.versionId)}` : ""}`}
                         className="desk-text-link"
                       >
-                        {title}
+                        {title}{!pinned && " · версия не зафиксирована"}
                         <ArrowUpRight size={15} className="shrink-0" />
                       </Link>
                     ) : (
@@ -98,7 +107,7 @@ function Publication({
   );
 }
 
-export function EditorialLibrary({ articles, legacy, busy, onImport }: Props) {
+export function EditorialLibrary({ articles, legacy, busy, onImport, focusedArticleId }: Props) {
   const [query, setQuery] = useState("");
   const keyword = query.trim().toLocaleLowerCase("ru");
   const matches = (article: ReadyArticle) =>
@@ -108,7 +117,11 @@ export function EditorialLibrary({ articles, legacy, busy, onImport }: Props) {
       article.topic,
       ...article.sourceCardTitles,
     ].some((value) => value.toLocaleLowerCase("ru").includes(keyword));
-  const published = articles.filter(matches);
+  const focusedArticle = focusedArticleId
+    ? articles.find((article) => article.id === focusedArticleId && isApprovedArticle(article))
+    : undefined;
+  const matchesSearch = articles.filter((article) => article.id !== focusedArticle?.id && matches(article));
+  const published = focusedArticle ? [focusedArticle, ...matchesSearch] : matchesSearch;
   const archive = legacy.filter(matches);
 
   return (
@@ -137,9 +150,15 @@ export function EditorialLibrary({ articles, legacy, busy, onImport }: Props) {
             </label>
           ) : null}
         </div>
+        {focusedArticleId && !focusedArticle && (
+          <Alert className="m-3">
+            <AlertTitle>Публикация недоступна</AlertTitle>
+            <AlertDescription>Проверьте ссылку или выберите другую статью в списке.</AlertDescription>
+          </Alert>
+        )}
         {published.length ? (
           published.map((article) => (
-            <Publication article={article} key={article.id} />
+            <Publication article={article} key={article.id} focused={article.id === focusedArticle?.id} />
           ))
         ) : (
           <div className="desk-workspace-empty">

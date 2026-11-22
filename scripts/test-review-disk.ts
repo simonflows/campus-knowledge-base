@@ -9,7 +9,7 @@ import { createPendingDiskSync, type DiskSyncInfo } from "../lib/disk-sync";
 import { syncArticleRecord, syncKnowledgeCardRecord } from "../lib/disk-sync-service";
 import { knowledgeSeedCards, type KnowledgeCard } from "../lib/knowledge";
 import { TableName } from "../lib/schema";
-import { buildArticlesSummaryCsv, buildKnowledgeCardsSummaryCsv } from "../lib/yandex-disk";
+import { buildArticlesSummaryCsv, buildKnowledgeCardMarkdown, buildKnowledgeCardsSummaryCsv } from "../lib/yandex-disk";
 
 const initialVersion = "2026-11-20T00:00:00.000Z";
 const newerVersion = "2026-11-21T00:00:00.000Z";
@@ -31,6 +31,23 @@ const article: ReadyArticle = {
     approvedBy: "fixture-reviewer",
   },
 };
+
+test("Markdown preserves public source and fact evidence, omitting private import and assignment metadata", () => {
+  const privateFields = { ownerIds: ["PRIVATE-OWNER-ID"], importProvenance: { note: "PRIVATE-PROVENANCE" } };
+  assert.equal(buildKnowledgeCardMarkdown({ ...card, ...privateFields, sources: [], verifiedFacts: [] }), buildKnowledgeCardMarkdown(card));
+  const document = buildKnowledgeCardMarkdown({
+    ...card, ...privateFields,
+    sources: [{ title: "Отчёт об испытаниях", url: "https://example.org/report", publishedAt: "2026-11-20", scope: "Пилотная линия" }],
+    verifiedFacts: [
+      { id: "volume", label: "Объём", value: "125", unit: "ед.", year: 2026, kind: "actual", scope: "Партия А", evidenceUrl: "https://example.org/actual" },
+      { id: "goal", label: "План выпуска", value: "200", unit: "ед.", year: 2027, kind: "plan", scope: "Партия Б", evidenceUrl: "https://example.org/plan" },
+    ],
+  });
+  assert.match(document, /Отчёт об испытаниях.*https:\/\/example\.org\/report.*2026-11-20.*Пилотная линия/);
+  assert.match(document, /Объём: 125 ед\..*2026.*факт.*Партия А.*https:\/\/example\.org\/actual/);
+  assert.match(document, /План выпуска: 200 ед\..*2027.*план.*Партия Б.*https:\/\/example\.org\/plan/);
+  assert.doesNotMatch(document, /PRIVATE-/);
+});
 
 function uploadedThenFailed(filePath: string, revisionId?: string): DiskSyncInfo {
   const prior: DiskSyncInfo = {
@@ -105,7 +122,9 @@ test("an attempt cannot export when its scan sees a different approved version",
   });
   docClient.send = (async (command: unknown) => {
     if (command instanceof ListTablesCommand) return { TableNames: [] };
-    if (command instanceof GetCommand) return { Item: { updatedAt: newerVersion } };
+    if (command instanceof GetCommand) return {
+      Item: command.input.TableName === TableName.WORKFLOW_RECORDS ? undefined : { updatedAt: newerVersion },
+    };
     if (command instanceof ScanCommand) {
       if (command.input.TableName === TableName.KNOWLEDGE_CARDS)
         return { Items: [{ ...card, updatedAt: newerVersion }] };

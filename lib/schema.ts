@@ -5,6 +5,8 @@ import {
 } from "@aws-sdk/client-dynamodb";
 
 export const TableName = {
+  KNOWLEDGE_CARD_VERSIONS: "knowledge-card-versions",
+  WORKFLOW_RECORDS: "workflow-records",
   INFORMATION_REQUESTS: "information-requests",
   KNOWLEDGE_CARDS: "knowledge-cards",
   KNOWLEDGE_CARD_TYPES: "knowledge-card-types",
@@ -23,6 +25,16 @@ export interface TableSchema {
 }
 
 export const TABLE_SCHEMAS: Record<TableName, TableSchema> = {
+  [TableName.KNOWLEDGE_CARD_VERSIONS]: {
+    name: TableName.KNOWLEDGE_CARD_VERSIONS,
+    keySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    attributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+  },
+  [TableName.WORKFLOW_RECORDS]: {
+    name: TableName.WORKFLOW_RECORDS,
+    keySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    attributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+  },
   [TableName.INFORMATION_REQUESTS]: {
     name: TableName.INFORMATION_REQUESTS,
     keySchema: [{ AttributeName: "id", KeyType: "HASH" }],

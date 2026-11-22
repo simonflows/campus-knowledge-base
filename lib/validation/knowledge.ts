@@ -36,6 +36,53 @@ export const evidenceUrlSchema = z
     }
   }, "Документ должен иметь безопасную HTTPS-ссылку без логина и пароля");
 
+export const cardVersionIdSchema = z.string().regex(/^cv-[0-9a-f]{64}$/);
+
+export const knowledgeSourceSchema = z.object({
+  url: evidenceUrlSchema,
+  title: text.max(300),
+  publishedAt: z.iso.date().optional(),
+  scope: text.max(400).optional(),
+});
+
+export const verifiedCardFactSchema = z.object({
+  id: text.max(80),
+  label: text.max(200),
+  value: text.max(120),
+  unit: text.max(80),
+  year: z.number().int().min(1900).max(2200),
+  scope: text.max(400),
+  kind: z.enum(["actual", "plan"]),
+  evidenceUrl: evidenceUrlSchema,
+});
+
+const evidenceFields = {
+  // Empty explicitly clears the previous public reason. Omitted fields preserve older clients.
+  changeReason: z.string().trim().max(500).optional(),
+  sources: z.array(knowledgeSourceSchema).max(24).optional(),
+  verifiedFacts: z.array(verifiedCardFactSchema).max(32)
+    .refine(facts => new Set(facts.map(fact => fact.id)).size === facts.length, "Факты не должны повторяться")
+    .optional(),
+};
+
+export const updateCardFreshnessSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("schedule"),
+    nextReviewAt: z.iso.date().nullable(),
+    responsibleId: text.max(80).nullable().optional(),
+  }),
+  z.strictObject({
+    action: z.literal("verify"),
+    versionId: cardVersionIdSchema,
+  }),
+]);
+
+export function canonicalCustomFieldValues(fields: Record<string, CustomFieldValue | undefined>): Record<string, CustomFieldValue> {
+  return Object.fromEntries(
+    Object.entries(fields).filter((entry): entry is [string, CustomFieldValue] => entry[1] !== undefined)
+  );
+}
+
 export const structuredMetricSchema = z.object({
   id: text.max(80),
   label: text.max(200),
@@ -49,6 +96,7 @@ export const structuredMetricSchema = z.object({
 });
 
 const baseCardSchema = z.object({
+  ...evidenceFields,
   ownerIds,
   title: text.max(200),
   folderId: text,
@@ -60,7 +108,7 @@ const baseCardSchema = z.object({
 const projectCardSchema = baseCardSchema.extend({
   type: z.literal("project"),
   sphere: text,
-  initiatorUniversityId: universityIdSchema,
+  initiatorUniversityId: universityIdSchema.or(z.literal("")),
   coExecutors: textList,
   industrialPartner: text,
   readinessStage: z.enum(READINESS_STAGES),
@@ -68,6 +116,7 @@ const projectCardSchema = baseCardSchema.extend({
   confirmedFigures: textList,
   isJoint: z.boolean().default(false),
   participantUniversityIds: z.array(universityIdSchema).default([]),
+  externalParticipantNames: z.array(text.max(300)).max(20).optional(),
 });
 
 const laboratoryCardSchema = baseCardSchema.extend({
@@ -176,6 +225,7 @@ export const cardTypeUpdateSchema = z
 export type CardTypeInput = z.infer<typeof cardTypeInputSchema>;
 
 const customCardSchema = z.object({
+  ...evidenceFields,
   ownerIds,
   type: z.literal("custom"),
   customTypeId: text,
@@ -220,17 +270,27 @@ export const knowledgeCardInputSchema = z
         });
       }
     }
+    if (card.type === "project" && !card.isJoint && !card.initiatorUniversityId) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["initiatorUniversityId"],
+        message: "Для проекта одного вуза укажите вуз-инициатор",
+      });
+    }
     if (
       card.type === "project" &&
       card.isJoint &&
-      (new Set(card.participantUniversityIds).size < 2 ||
-        !card.participantUniversityIds.includes(card.initiatorUniversityId))
+      ((new Set(card.participantUniversityIds).size < 2 && !(card.participantUniversityIds.length >= 1 && card.externalParticipantNames?.length)) ||
+        (card.initiatorUniversityId && !card.participantUniversityIds.includes(card.initiatorUniversityId)))
     ) {
       ctx.addIssue({
         code: "custom",
         path: ["participantUniversityIds"],
-        message: "Укажите минимум два разных вуза и включите инициатора",
+        message: "Укажите двух участников: вузы-резиденты либо вуз-резидент и внешняя организация. Если инициатор известен, включите его в список.",
       });
+    }
+    if (card.type === "project" && card.externalParticipantNames?.length && !card.isJoint) {
+      ctx.addIssue({ code: "custom", path: ["isJoint"], message: "Проект с внешним соавтором отмечается как совместный" });
     }
   });
 

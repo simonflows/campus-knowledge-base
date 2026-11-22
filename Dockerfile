@@ -20,6 +20,10 @@ RUN npm run build && mkdir -p .next/cache
 # Production stage
 FROM node:24-alpine AS runner
 
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
+LABEL org.opencontainers.image.version=0.9.5
+
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -27,6 +31,7 @@ ENV PORT=8080
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_PUBLIC_DEMO_MODE=false
 ENV NPM_CONFIG_CACHE=/tmp/npm
+ENV CAMPUS_SOURCE_REVISION=$VCS_REF
 
 RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
 

@@ -32,6 +32,12 @@ export class RequestError extends Error {
 }
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function requestAssignee(recipientUniversityId: string, id: string | null | undefined) {
+  if (!id) return { responsibleId: null, responsibleName: "" };
+  const person = sessionDirectory().find(person => person.id === id && person.universityId === recipientUniversityId && ["university_owner", "university_pr"].includes(person.role));
+  if (!person) throw new RequestError("Выберите ответственного из вуза-получателя", 400);
+  return { responsibleId: person.id, responsibleName: person.name };
+}
 export async function getInformationRequest(id: string) {
   const result = await docClient.send(
     new GetCommand({
@@ -138,6 +144,9 @@ export async function createInformationRequest(
     creationDigest,
     lastOperationId: null,
     lastOperationDigest: null,
+    participantIds: [user.id],
+    ...requestAssignee(input.recipientUniversityId, input.responsibleId),
+    dueDate: input.dueDate ?? null,
   };
   try {
     await docClient.send(
@@ -179,7 +188,16 @@ export async function mutateInformationRequest(
     lastOperationId: input.operationId,
     lastOperationDigest: operationDigest,
   };
-  if (input.action === "answer") {
+  if (input.action === "join" || input.action === "leave") {
+    if (input.action === "leave" && item.authorId === user.id)
+      throw new RequestError("Автор продолжает получать результат своего запроса", 400);
+    const participants = new Set(item.participantIds ?? [item.authorId]);
+    if (input.action === "join") participants.add(user.id);
+    else participants.delete(user.id);
+    next.participantIds = [...participants];
+  } else if (input.action === "assign") {
+    Object.assign(next, requestAssignee(item.recipientUniversityId, input.responsibleId), { dueDate: input.dueDate });
+  } else if (input.action === "answer") {
     if (!canAnswerInformationRequest(user, item))
       throw new RequestError("Отвечать может только вуз-получатель", 403);
     if (item.status !== "open")
@@ -190,7 +208,7 @@ export async function mutateInformationRequest(
       answeredBy: user.id,
       status: "answered",
     });
-  } else {
+  } else if (input.action === "submit") {
     if (item.status !== "answered" || !item.answer || !item.evidenceUrl)
       throw new RequestError("Сначала нужен ответ с источником", 409);
     const cardId = `request-${id}`;
@@ -222,8 +240,8 @@ export async function mutateInformationRequest(
       initiatorUniversityId: item.recipientUniversityId,
       coExecutors: [],
       industrialPartner: "Не указан",
-      readinessStage: "Идея",
-      contour: "собственный проект вуза",
+      readinessStage: "Не уточнено",
+      contour: "не уточнён",
       confirmedFigures: [],
       isJoint: false,
       participantUniversityIds: [item.recipientUniversityId],

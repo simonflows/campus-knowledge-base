@@ -1,5 +1,6 @@
 import type { DiskSyncInfo } from "./disk-sync";
 import type { KnowledgeCard } from "./knowledge";
+import type { SourceVersionReference } from "./source-references";
 
 export type ArticleChunk = {
   id: string;
@@ -23,6 +24,7 @@ export type ReadyArticle = {
   sections: ArticleSection[];
   sourceCardIds: string[];
   sourceCardTitles: string[];
+  sourceVersions?: SourceVersionReference[];
   universityId: string;
   projectTitle: string;
   topic: string;

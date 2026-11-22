@@ -86,10 +86,19 @@ const comparison: CampusService = {
   aliases: ["сравнение моделей", "ИИ-модели", "бенчмарк", "qwen", "yandex"],
 };
 
+const work: CampusService = {
+  href: "/work",
+  title: "Моя работа",
+  navTitle: "Моя работа",
+  aliases: ["рабочие задачи", "очередь задач", "инфоповоды", "согласование"],
+};
+
 export function campusServices(
-  demo = process.env.NEXT_PUBLIC_DEMO_MODE === "true"
+  demo = process.env.NEXT_PUBLIC_DEMO_MODE === "true",
+  staff = false,
 ) {
-  return demo ? [...services, comparison] : services;
+  const visible = staff ? services.flatMap((service) => service.href === "/requests" ? [work, service] : [service]) : services;
+  return demo ? [...visible, comparison] : visible;
 }
 
 function normalize(value: string) {

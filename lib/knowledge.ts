@@ -2,6 +2,7 @@ import { universities } from "./data";
 import type { DiskSyncInfo } from "./disk-sync";
 
 export const READINESS_STAGES = [
+  "Не уточнено",
   "Идея",
   "НИОКР",
   "Прототип",
@@ -12,6 +13,7 @@ export const READINESS_STAGES = [
 export type ReadinessStage = (typeof READINESS_STAGES)[number];
 
 export const CONTOURS = [
+  "не уточнён",
   "кампус",
   "ПИШ",
   "УМНОЦ",
@@ -225,12 +227,42 @@ export type CardEditRequest = {
   resolution?: string;
 };
 
+export type CardFreshness = {
+  responsibleId?: string;
+  responsibleName?: string;
+  lastVerifiedAt?: string;
+  nextReviewAt?: string;
+  verifiedVersionId?: string;
+};
+
+export type KnowledgeSource = {
+  url: string;
+  title: string;
+  publishedAt?: string;
+  scope?: string;
+};
+
+export type VerifiedCardFact = {
+  id: string;
+  label: string;
+  value: string;
+  unit: string;
+  year: number;
+  scope: string;
+  kind: "actual" | "plan";
+  evidenceUrl: string;
+};
+
 type KnowledgeCardBase = {
   id: string;
   type: KnowledgeCardType;
   title: string;
   folderId: string;
   owners: string[];
+  freshness?: CardFreshness;
+  changeReason?: string;
+  sources?: KnowledgeSource[];
+  verifiedFacts?: VerifiedCardFact[];
   /** Missing on legacy records. When present, this is the authoritative personal assignment. */
   ownerIds?: string[];
   referenceDescription: string;
@@ -261,6 +293,8 @@ export type ProjectCard = KnowledgeCardBase & {
   confirmedFigures: string[];
   isJoint: boolean;
   participantUniversityIds: string[];
+  /** External organisations are named explicitly; they have no resident account or fabricated approval. */
+  externalParticipantNames?: string[];
 };
 
 export type LaboratoryCard = KnowledgeCardBase & {
@@ -373,9 +407,18 @@ export function isCardApproved(card: KnowledgeCard): boolean {
   return getCardStatus(card) === "approved";
 }
 
+export function isCardReadyForPublication(card: {
+  type: KnowledgeCardType; readinessStage?: ReadinessStage; contour?: Contour; externalParticipantNames?: string[];
+}): boolean {
+  return card.type !== "project" || Boolean(
+    card.readinessStage && card.contour && card.readinessStage !== "Не уточнено" && card.contour !== "не уточнён" && !card.externalParticipantNames?.length
+  );
+}
+
 export function getApprovedVersion(card: KnowledgeCard): KnowledgeCard | null {
-  if (isCardApproved(card)) return card;
-  return card.approvedSnapshot && isCardApproved(card.approvedSnapshot)
+  if (isCardApproved(card) && isCardReadyForPublication(card)) return card;
+  return card.approvedSnapshot && isCardApproved(card.approvedSnapshot) &&
+    isCardReadyForPublication(card.approvedSnapshot)
     ? card.approvedSnapshot
     : null;
 }
@@ -390,9 +433,21 @@ export function cardContent(card: KnowledgeCard): KnowledgeCard {
     "id", "title", "folderId", "owners", "referenceDescription", "stopFormula",
     "createdAt", "updatedAt", "status",
   ]);
+  if (card.changeReason !== undefined) Object.assign(base, { changeReason: card.changeReason });
+  if (card.sources !== undefined) Object.assign(base, { sources: card.sources });
+  if (card.verifiedFacts !== undefined) Object.assign(base, { verifiedFacts: card.verifiedFacts });
+  if (card.freshness) {
+    const { responsibleName, lastVerifiedAt, nextReviewAt, verifiedVersionId } = card.freshness;
+    Object.assign(base, { freshness: {
+      ...(responsibleName && { responsibleName }),
+      ...(lastVerifiedAt && { lastVerifiedAt }),
+      ...(nextReviewAt && { nextReviewAt }),
+      ...(verifiedVersionId && { verifiedVersionId }),
+    } });
+  }
   switch (card.type) {
     case "project":
-      return { ...base, ...pickFields(card, ["type", "sphere", "initiatorUniversityId", "coExecutors", "industrialPartner", "readinessStage", "contour", "confirmedFigures", "isJoint", "participantUniversityIds"]) };
+      return { ...base, ...pickFields(card, ["type", "sphere", "initiatorUniversityId", "coExecutors", "industrialPartner", "readinessStage", "contour", "confirmedFigures", "isJoint", "participantUniversityIds"]), ...(card.externalParticipantNames?.length ? { externalParticipantNames: card.externalParticipantNames } : {}) };
     case "laboratory":
       return { ...base, ...pickFields(card, ["type", "affiliation", "partner", "head", "placementStatus", "placementDetails", "workDirections", "equipment", "confirmedIndicators"]) };
     case "campus":
@@ -406,7 +461,7 @@ export function cardContent(card: KnowledgeCard): KnowledgeCard {
 
 export function getPublicApprovedCard(card: KnowledgeCard): KnowledgeCard | null {
   const approved = getApprovedVersion(card);
-  return approved && cardContent(approved);
+  return approved && cardContent({ ...approved, freshness: card.freshness ?? approved.freshness });
 }
 
 export function getRequiredUniversityApprovals(card: KnowledgeCard): string[] {

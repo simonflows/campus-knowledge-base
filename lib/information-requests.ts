@@ -30,6 +30,10 @@ export type InformationRequest = {
   creationDigest: string;
   lastOperationId: string | null;
   lastOperationDigest: string | null;
+  participantIds?: string[];
+  responsibleId?: string | null;
+  responsibleName?: string;
+  dueDate?: string | null;
 };
 /** Render the decision from the same card that moderation updates. Never persist this view. */
 export function presentInformationRequest(
@@ -58,8 +62,12 @@ export const createInformationRequestSchema = z.object({
   subject: z.string().trim().min(3).max(180),
   question: z.string().trim().min(10).max(4000),
   linkedCardId: z.string().max(200).nullable().default(null),
+  responsibleId: z.string().min(1).max(100).nullable().optional(),
+  dueDate: z.iso.date().nullable().optional(),
 });
 export const updateInformationRequestSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.enum(["join", "leave"]), operationId: z.uuid(), revision: z.number().int().min(0) }),
+  z.object({ action: z.literal("assign"), operationId: z.uuid(), revision: z.number().int().min(0), responsibleId: z.string().min(1).max(100).nullable(), dueDate: z.iso.date().nullable() }),
   z.object({
     action: z.literal("answer"),
     operationId: z.uuid(),

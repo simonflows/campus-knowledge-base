@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { version as appVersion } from "@/package.json";
 import Link from "next/link";
 import { ArrowUpRight, Database } from "lucide-react";
 import "./globals.css";
@@ -61,7 +62,8 @@ export default async function RootLayout({
     storageMode,
     ...getIntegrationStatus(),
   };
-  const sections = campusServices();
+  const staff = Boolean(user && user.role !== "guest");
+  const sections = campusServices(undefined, staff);
   return (
     <html
       suppressHydrationWarning
@@ -89,13 +91,14 @@ export default async function RootLayout({
             <Link className="brand" href="/" aria-label={`${appName}, главная`}>
               <CampusBrand />
             </Link>
-            <HeaderNav incomingCount={incomingCount} />
+            <HeaderNav incomingCount={incomingCount} staff={staff} />
             <div className="atlas-controls">
               <SystemStatusBar
                 showIntegrationStatus={
                   process.env.NODE_ENV !== "production" && demoLoginEnabled()
                 }
                 initialStatus={initialStatus}
+                staff={staff}
               />
               <UserMenu initialUser={user} />
             </div>
@@ -162,7 +165,7 @@ export default async function RootLayout({
               <span>
                 © {new Date().getFullYear()} {appName}
               </span>
-              <span>г. Челябинск</span>
+              <span>Версия {appVersion} · г. Челябинск</span>
             </div>
           </div>
         </footer>

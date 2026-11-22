@@ -1,0 +1,481 @@
+.workspace {
+  padding-bottom: 2.5rem;
+}
+
+.sectionNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem .4rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.sectionNav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: .45rem .8rem;
+  border-radius: .5rem .5rem 0 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted-foreground);
+  font-size: .9rem;
+  font-weight: 600;
+}
+
+.sectionNav a:hover,
+.sectionNav a[aria-current="page"] {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.sectionNav a[aria-current="page"] {
+  border-bottom-color: var(--primary);
+}
+
+.panelHeading,
+.detailHeading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: .65rem 1rem;
+}
+
+.panelHeading {
+  align-items: center;
+  padding: 1.1rem clamp(1rem, 2.5vw, 1.5rem);
+  border-bottom: 1px solid var(--border);
+}
+
+.panelHeading h2,
+.detailHeading h2,
+.formPanel > h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.detailHeading h2 {
+  margin-top: .2rem;
+}
+
+.muted {
+  color: var(--muted-foreground);
+  font-size: .875rem;
+  line-height: 1.55;
+}
+
+.filters,
+.coverageFilters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .75rem;
+  padding: 1rem clamp(1rem, 2.5vw, 1.5rem);
+  background: color-mix(in srgb, var(--muted) 45%, var(--card));
+}
+
+.coverageFilters {
+  grid-template-columns: repeat(2, minmax(0, 18rem));
+}
+
+.selectField,
+.filters > *,
+.coverageFilters > *,
+.detailHeading > *,
+.evidenceGrid > * {
+  min-width: 0;
+}
+
+.filterCount {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: .35rem clamp(1rem, 2.5vw, 1.5rem);
+  color: var(--muted-foreground);
+  font-size: .82rem;
+}
+
+.queueList,
+.recordList,
+.lineList {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.queueRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(8rem, 12rem);
+  align-items: center;
+  gap: .5rem 1.25rem;
+  padding: .85rem clamp(1rem, 2.5vw, 1.5rem);
+  border-top: 1px solid var(--border);
+}
+
+.queueRow h3 {
+  margin-block: .15rem .25rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.queueRow h3 svg {
+  display: inline-block;
+  margin-inline-start: .2rem;
+  color: var(--primary);
+  vertical-align: -.14em;
+}
+
+.queueRow h3 a:hover,
+.textLink:hover {
+  text-decoration-thickness: 2px;
+  text-decoration-line: underline;
+}
+
+.queueRow p,
+.queueMeta,
+.listEnd,
+.lineList p,
+.recordList a span {
+  color: var(--muted-foreground);
+  font-size: .86rem;
+}
+
+.rowTags,
+.queueMeta,
+.listEnd {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .3rem .5rem;
+}
+
+.rowTags {
+  color: var(--muted-foreground);
+  font-size: .78rem;
+}
+
+.queueMeta {
+  align-items: flex-start;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.due {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+}
+
+.due[data-overdue] {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.recordsLayout {
+  display: grid;
+  grid-template-columns: minmax(15.5rem, .8fr) minmax(0, 2fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.recordsAside {
+  min-width: 0;
+}
+
+.recordsLayout[data-empty] {
+  grid-template-columns: 1fr;
+}
+
+.recordList a {
+  display: flex;
+  min-height: 3.75rem;
+  justify-content: space-between;
+  align-items: center;
+  gap: .55rem;
+  padding: .75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.recordList li:last-child a {
+  border-bottom: 0;
+}
+
+.recordList a:hover,
+.recordList a[aria-current="page"] {
+  background: var(--muted);
+}
+
+.recordList a > div:first-child,
+.listEnd {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .2rem;
+  min-width: 0;
+}
+
+.listEnd {
+  align-items: flex-end;
+  text-align: right;
+  min-width: 3rem;
+}
+
+.formPanel {
+  display: grid;
+  gap: 1rem;
+  padding: 1.2rem clamp(1rem, 2.5vw, 1.5rem);
+}
+
+.form,
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  align-items: stretch;
+  gap: .9rem;
+}
+
+.form > button {
+  align-self: flex-start;
+}
+
+.evidenceGrid,
+.pairedFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: .85rem;
+}
+
+.evidence,
+.evidenceFields,
+.checklist {
+  padding: .8rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: .6rem;
+}
+
+.evidence {
+  background: color-mix(in srgb, var(--muted) 55%, var(--card));
+}
+
+.evidence h4 {
+  font-size: .9rem;
+  font-weight: 700;
+}
+
+.evidenceMeta {
+  display: grid;
+  grid-template-columns: minmax(5rem, auto) 1fr;
+  gap: .25rem .6rem;
+  margin-block: .5rem;
+  font-size: .86rem;
+}
+
+.recordMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem 1.2rem;
+  margin: 0;
+  font-size: .88rem;
+}
+
+.recordMeta div {
+  display: grid;
+  gap: .2rem;
+}
+
+.evidenceMeta dt,
+.recordMeta dt {
+  color: var(--muted-foreground);
+}
+
+.prewrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.checklist summary,
+.history summary {
+  cursor: pointer;
+  min-height: 2.3rem;
+  padding-block: .45rem;
+  font-size: .92rem;
+  font-weight: 600;
+}
+
+.checklistBody {
+  gap: .55rem;
+}
+
+.choices {
+  max-height: 14rem;
+  overflow-y: auto;
+  gap: 0;
+  padding: .2rem;
+}
+
+.choice {
+  display: flex;
+  gap: .55rem;
+  align-items: center;
+  min-height: 2.65rem;
+  padding: .2rem .3rem;
+  border-bottom: 1px solid var(--border);
+  font-size: .9rem;
+  cursor: pointer;
+}
+
+.workspace .choice input {
+  min-height: 0;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  accent-color: var(--primary);
+}
+
+.choice small {
+  display: block;
+  color: var(--muted-foreground);
+}
+
+.actions,
+.addRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: .45rem .75rem;
+}
+
+.addRow .selectField {
+  flex: 1 1 12rem;
+}
+
+.history,
+.recordSection {
+  display: grid;
+  gap: .5rem;
+  padding-top: .65rem;
+  border-top: 1px solid var(--border);
+}
+
+.recordSection h3,
+.coverageRow h3 {
+  margin: 0;
+  font-size: .98rem;
+  font-weight: 700;
+}
+
+.lineList li {
+  min-width: 0;
+  padding-block: .45rem;
+}
+
+.lineList li + li {
+  border-top: 1px solid var(--border);
+}
+
+.lineAction {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: .35rem .65rem;
+}
+
+.textLink {
+  display: inline-flex;
+  gap: .3rem;
+  align-items: center;
+  width: fit-content;
+  min-height: 2.4rem;
+  color: var(--primary);
+  font-weight: 600;
+  font-size: .9rem;
+  text-decoration: underline;
+  text-underline-offset: .2em;
+}
+
+.textLink svg {
+  flex: none;
+}
+
+.coverageRow {
+  display: grid;
+  grid-template-columns: minmax(6rem, .35fr) minmax(0, 1fr);
+  align-items: start;
+  gap: .65rem 1.2rem;
+  padding: clamp(.8rem, 2vw, 1.2rem) clamp(1rem, 2.5vw, 1.5rem);
+  border-top: 1px solid var(--border);
+}
+
+.coverageRow header {
+  padding-block: .45rem;
+}
+
+.error {
+  margin-block: .3rem .7rem;
+}
+
+.error .actions {
+  margin-top: .5rem;
+}
+
+.empty {
+  min-height: 10rem;
+}
+
+.loading {
+  display: grid;
+  gap: .65rem;
+  padding: 1.1rem;
+}
+
+@media (max-width: 62rem) {
+  .recordsLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .recordsLayout[data-detail] .recordsAside {
+    display: none;
+  }
+}
+
+@media (max-width: 38rem) {
+  .sectionNav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sectionNav a {
+    padding-inline: .5rem;
+    font-size: .83rem;
+  }
+
+  .filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .queueRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .queueMeta {
+    grid-column: 1;
+    flex-direction: row;
+    gap: .2rem .55rem;
+  }
+
+  .coverageRow,
+  .evidenceGrid,
+  .coverageFilters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .evidenceMeta {
+    grid-template-columns: minmax(4.8rem, auto) 1fr;
+  }
+}

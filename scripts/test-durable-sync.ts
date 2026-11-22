@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, ScanCommand, TransactWriteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { docClient, resetDbAvailableCache } from "../lib/db";
 import { knowledgeSeedCards, type KnowledgeCard } from "../lib/knowledge";
 import { articleSeed, type ReadyArticle } from "../lib/articles";
 import { TableName } from "../lib/schema";
 import { knowledgeCardInputSchema } from "../lib/validation/knowledge";
-import { createPendingDiskSync } from "../lib/disk-sync";
+import { createPendingDiskSync, type DiskRegistry } from "../lib/disk-sync";
 import { getAllKnowledgeCards, setArticleDiskSync, updateKnowledgeCard, setKnowledgeCardModeration } from "../lib/models";
 import {
   retryKnowledgeCardSync,
@@ -46,6 +46,7 @@ async function main() {
   let failScan = false;
   let finishConcurrentExport = false;
   let expectBoundedDatabaseWork = false;
+  const registries = new Map<string, DiskRegistry>();
   const originalSend = docClient.send;
   const originalFetch = globalThis.fetch;
   const rejectStale = () => {
@@ -56,6 +57,11 @@ async function main() {
   docClient.send = (async (command: unknown, options?: { abortSignal?: AbortSignal }) => {
     if (command instanceof ListTablesCommand) return { TableNames: [] };
     if (command instanceof GetCommand) {
+      if (command.input.TableName === TableName.WORKFLOW_RECORDS) {
+        assert.equal(command.input.ConsistentRead, true);
+        assert.ok(options?.abortSignal);
+        return { Item: registries.get(command.input.Key?.id) };
+      }
       if (command.input.ProjectionExpression?.includes("diskSync.sourceUpdatedAt")) {
         assert.equal(command.input.ConsistentRead, true);
         assert.ok(options?.abortSignal);
@@ -92,6 +98,17 @@ async function main() {
       const values = command.input.ExpressionAttributeValues!;
       if (command.input.ConditionExpression?.includes("diskSync.#syncStatus") && values[":syncStatus"] !== currentCard.diskSync?.status) rejectStale();
       currentCard = command.input.Item as KnowledgeCard;
+      return {};
+    }
+    if (command instanceof TransactWriteCommand) {
+      const [source, registry] = command.input.TransactItems ?? [];
+      assert.ok(source?.Update && registry?.Put);
+      assert.equal(registry.Put.TableName, TableName.WORKFLOW_RECORDS);
+      const record = registry.Put.Item as DiskRegistry;
+      const prior = registries.get(record.id);
+      if (prior?.versionId !== registry.Put.ExpressionAttributeValues?.[":expected"]) rejectStale();
+      await docClient.send(new UpdateCommand(source.Update), options);
+      registries.set(record.id, record);
       return {};
     }
     assert.ok(command instanceof UpdateCommand);

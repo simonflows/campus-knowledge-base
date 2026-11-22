@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { SessionUser } from "./auth";
+import { sourceVersionsSchema } from "./source-references";
 
 export const editorialContentSchema = z
   .object({
@@ -14,6 +15,7 @@ export const editorialContentSchema = z
     projectTitle: z.string().max(240).default(""),
     sourceCardIds: z.array(z.string().min(1).max(200)).max(100).default([]),
     sourceCardTitles: z.array(z.string().max(500)).max(100).default([]),
+    sourceVersions: sourceVersionsSchema.optional(),
     sections: z
       .array(
         z.object({
@@ -34,6 +36,12 @@ export const editorialContentSchema = z
       .default([]),
   })
   .superRefine((value, ctx) => {
+    const pinned = value.sourceVersions ?? [];
+    const listed = new Set(value.sourceCardIds);
+    if (new Set(pinned.map((source) => source.cardId)).size !== pinned.length ||
+        pinned.some((source) => !listed.has(source.cardId))) {
+      ctx.addIssue({ code: "custom", path: ["sourceVersions"], message: "Укажите одну версию для каждого выбранного источника" });
+    }
     if (new TextEncoder().encode(JSON.stringify(value)).length > 240_000)
       ctx.addIssue({
         code: "custom",

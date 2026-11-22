@@ -33,6 +33,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { DiskSyncPanel } from "@/components/disk-sync/disk-sync-panel";
 import { KnowledgeCardAccessPanel } from "@/components/knowledge/knowledge-card-access-panel";
+import { KnowledgeUsagePanel } from "./knowledge-usage-panel";
 import type { SessionUser } from "@/lib/auth";
 import {
   cardStatusLabels,
@@ -63,6 +64,8 @@ type KnowledgeCardDetailProps = {
   onEdit: () => void;
   onCardUpdated: (card: KnowledgeCard) => void;
   onCardDeleted?: (cardId: string) => void;
+  readOnlyVersion?: boolean;
+  additionalSections?: React.ReactNode;
 };
 
 function buildClientCardMarkdown(
@@ -94,8 +97,9 @@ function buildClientCardMarkdown(
       "## Параметры проекта",
       "",
       `- Сфера: ${card.sphere}`,
-      `- Инициатор: ${getUniversityName(card.initiatorUniversityId)}`,
+      `- Инициатор: ${card.isJoint && !card.initiatorUniversityId ? "Совместная инициатива, отдельный инициатор не установлен" : getUniversityName(card.initiatorUniversityId)}`,
       `- Соисполнители: ${card.coExecutors.join(", ") || "нет"}`,
+      ...(card.externalParticipantNames?.length ? [`- Внешние участники: ${card.externalParticipantNames.join(", ")}. Подтверждение участников требует отдельной сверки.`] : []),
       `- Партнёр: ${card.industrialPartner}`,
       `- Стадия: ${card.readinessStage}`,
       `- Контур: ${card.contour}`,
@@ -154,16 +158,19 @@ function CustomFieldValueView({
   field,
   value,
   cards,
+  readOnlyVersion,
 }: {
   field: CustomCardField;
   value: CustomFieldValue | undefined;
   cards: KnowledgeCard[];
+  readOnlyVersion?: boolean;
 }) {
   if (isEmptyFieldValue(value)) {
     return <span className="text-sm text-muted-foreground">Не заполнено</span>;
   }
 
   if (field.type === "cardReference") {
+    if (readOnlyVersion) return <span className="break-words">{String(value)}</span>;
     const referenced = cards.find((card) => card.id === value);
 
     return referenced ? (
@@ -239,13 +246,15 @@ export function KnowledgeCardDetail({
   onEdit,
   onCardUpdated,
   onCardDeleted,
+  readOnlyVersion = false,
+  additionalSections,
 }: KnowledgeCardDetailProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const joint = isJointProject(card);
   const status = getCardStatus(card);
   const canDelete =
-    currentUser?.role === "admin" &&
+    !readOnlyVersion && currentUser?.role === "admin" &&
     dbAvailable &&
     card.id !== "campus-passport";
   const customType =
@@ -316,7 +325,7 @@ export function KnowledgeCardDetail({
           onClick={onBack}
           className="-ml-2 h-10 sm:h-8"
         >
-          <ArrowLeft className="h-4 w-4" />К списку папки
+          <ArrowLeft className="h-4 w-4" />{readOnlyVersion ? "К текущей карточке" : "К списку папки"}
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -467,21 +476,23 @@ export function KnowledgeCardDetail({
             ) : null}
           </div>
 
-          <KnowledgeCardAccessPanel
+          {readOnlyVersion ? null : <KnowledgeCardAccessPanel
             card={card}
             currentUser={currentUser}
             dbAvailable={dbAvailable}
             onCardUpdated={onCardUpdated}
             onEdit={onEdit}
-          />
+          />}
 
-          <DiskSyncPanel<KnowledgeCard>
+          {readOnlyVersion ? null : <DiskSyncPanel<KnowledgeCard>
             diskSync={card.diskSync}
             retryEndpoint={`/api/knowledge/cards/${card.id}/sync`}
             canRetry={dbAvailable && status === "approved"}
             entityLabel="карточка"
             onSynced={onCardUpdated}
-          />
+          />}
+          {additionalSections}
+          {currentUser && currentUser.role !== "guest" ? <KnowledgeUsagePanel key={card.id} cardId={card.id} /> : null}
 
           {joint ? (
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground">
@@ -561,13 +572,16 @@ export function KnowledgeCardDetail({
               <dl className="data-index-detail-fields grid gap-5 sm:grid-cols-2">
                 <Field label="Сфера / отрасль">{card.sphere}</Field>
                 <Field label="Вуз-инициатор">
-                  {getUniversityName(card.initiatorUniversityId)}
+                  {card.isJoint && !card.initiatorUniversityId
+                    ? "Совместная инициатива, отдельный инициатор не установлен"
+                    : getUniversityName(card.initiatorUniversityId)}
                 </Field>
                 <Field label="Соисполнители">
                   {card.coExecutors.length > 0
                     ? card.coExecutors.join(", ")
                     : "Нет"}
                 </Field>
+                {card.externalParticipantNames?.length ? <Field label="Внешние участники">{card.externalParticipantNames.join(", ")}. До отдельного подтверждения участников карточка остаётся черновиком.</Field> : null}
                 <Field label="Индустриальный партнёр">
                   {card.industrialPartner}
                 </Field>
@@ -665,6 +679,7 @@ export function KnowledgeCardDetail({
                           field={field}
                           value={card.customFields[field.id]}
                           cards={cards}
+                          readOnlyVersion={readOnlyVersion}
                         />
                         <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                           {customFieldTypeLabels[field.type]}

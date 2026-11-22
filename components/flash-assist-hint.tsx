@@ -14,6 +14,39 @@ type State =
   | FlashFactAssist
   | FlashAnalyticsAssist;
 
+export function isCurrentFlashRequest(request: AbortController, current: AbortController | null) {
+  return current === request && !request.signal.aborted;
+}
+
+export function FlashAssistOption({ kind, checked, disabled, onChange }: {
+  kind: "analytics" | "fact";
+  checked: boolean;
+  disabled: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const id = useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="flex min-h-10 items-center gap-2 text-sm font-medium">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          aria-describedby={id}
+          onChange={(event) => onChange(event.target.checked)}
+          className="size-4 shrink-0 accent-[var(--primary)]"
+        />
+        {kind === "analytics" ? "Помочь уточнить запрос с Flash" : "Найти фрагменты для сверки с Flash"}
+      </label>
+      <p id={id} className="text-xs leading-relaxed text-muted-foreground">
+        {kind === "analytics"
+          ? "При сборе аналитики текст запроса отправится в Yandex AI Studio. Используйте публичные сведения."
+          : "При проверке в Yandex AI Studio отправятся предложения из текста до 6 000 знаков. Используйте публичный текст."}
+      </p>
+    </div>
+  );
+}
+
 function statusMessage(state: State) {
   switch (state.status) {
     case "idle":
@@ -23,13 +56,13 @@ function statusMessage(state: State) {
     case "access":
       return "Для подсказок Flash нужен доступ сотрудника.";
     case "busy":
-      return "Flash занят. Повторите запрос через несколько секунд.";
+      return "Flash занят. Основной результат готов, подсказку можно запросить чуть позже.";
     case "too-long":
       return "Текст слишком длинный для Flash. Для подсказок используйте более короткий публичный фрагмент.";
     case "unavailable":
-      return "Подсказки Flash сейчас недоступны.";
+      return "Основной результат готов. Flash сейчас недоступен.";
     case "failed":
-      return "Не удалось получить подсказки Flash. Попробуйте ещё раз.";
+      return "Основной результат готов. Подсказка Flash недоступна.";
     case "ready":
       if ("fragments" in state) {
         return state.fragments.length > 0
@@ -40,6 +73,39 @@ function statusMessage(state: State) {
         ? "Flash предложил уточнение запроса."
         : "Flash не предложил уточнение запроса.";
   }
+}
+
+export function FlashAssistResult({ state, onApply }: { state: State; onApply?: (query: string) => void }) {
+  const fragments = state.status === "ready" && "fragments" in state ? state.fragments : [];
+  const suggestion = state.status === "ready" && "suggestion" in state ? state.suggestion : null;
+  return (
+    <div className="flex w-full min-w-0 flex-col items-start gap-2">
+      <p role="status" className="text-xs leading-relaxed text-muted-foreground">{statusMessage(state)}</p>
+      {fragments.length > 0 && (
+        <ul className="flex w-full list-disc flex-col gap-1 pl-5 text-sm [overflow-wrap:anywhere]">
+          {fragments.map((fragment) => <li key={fragment}>«{fragment}»</li>)}
+        </ul>
+      )}
+      {suggestion && onApply && (
+        <>
+          <p className="text-sm [overflow-wrap:anywhere]">«{suggestion.query}»</p>
+          <ul className="flex max-w-full flex-wrap gap-2" aria-label="Предложенные критерии">
+            {suggestion.filters.map((filter) => (
+              <li key={`${filter.key}-${filter.value}`} className="min-w-0 max-w-full">
+                <Badge variant="secondary" className="h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]">
+                  {filter.label}: {filter.value}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+          <Button type="button" size="sm" variant="secondary" className="min-h-11 sm:min-h-9"
+            onClick={() => onApply(suggestion.query)}>
+            Применить уточнение
+          </Button>
+        </>
+      )}
+    </div>
+  );
 }
 
 export function FlashAssistHint(props: Props) {
@@ -74,7 +140,7 @@ export function FlashAssistHint(props: Props) {
             flashAssist?: FlashFactAssist | FlashAnalyticsAssist;
           })
         : null;
-      if (controller.signal.aborted) return;
+      if (!isCurrentFlashRequest(controller, pending.current)) return;
       if (response.status === 401 || response.status === 403) {
         setState({ status: "access" });
       } else if (!response.ok) {
@@ -83,16 +149,11 @@ export function FlashAssistHint(props: Props) {
         setState(data?.flashAssist ?? { status: "unavailable" });
       }
     } catch {
-      if (!controller.signal.aborted) setState({ status: "failed" });
+      if (isCurrentFlashRequest(controller, pending.current)) setState({ status: "failed" });
     } finally {
-      pending.current = null;
+      if (pending.current === controller) pending.current = null;
     }
   }
-
-  const fragments =
-    state.status === "ready" && "fragments" in state ? state.fragments : [];
-  const suggestion =
-    state.status === "ready" && "suggestion" in state ? state.suggestion : null;
 
   return (
     <section
@@ -121,51 +182,9 @@ export function FlashAssistHint(props: Props) {
       >
         Получить подсказки Flash
       </Button>
-      <div
-        role="status"
-        className="text-xs text-muted-foreground empty:sr-only"
-      >
-        {statusMessage(state)}
-      </div>
-      {fragments.length > 0 ? (
-        <ul className="flex w-full list-disc flex-col gap-1 pl-5 text-sm [overflow-wrap:anywhere]">
-          {fragments.map((fragment) => (
-            <li key={fragment}>«{fragment}»</li>
-          ))}
-        </ul>
-      ) : null}
-      {props.kind === "analytics" && suggestion ? (
-        <div className="flex w-full min-w-0 flex-col items-start gap-2.5 text-sm">
-          <p className="[overflow-wrap:anywhere]">«{suggestion.query}»</p>
-          <ul
-            className="flex max-w-full flex-wrap gap-2"
-            aria-label="Предложенные критерии"
-          >
-            {suggestion.filters.map((filter) => (
-              <li
-                key={`${filter.key}-${filter.value}`}
-                className="min-w-0 max-w-full"
-              >
-                <Badge
-                  variant="secondary"
-                  className="h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]"
-                >
-                  {filter.label}: {filter.value}
-                </Badge>
-              </li>
-            ))}
-          </ul>
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            className="min-h-11 sm:min-h-9"
-            onClick={() => props.onApply(suggestion.query)}
-          >
-            Применить
-          </Button>
-        </div>
-      ) : null}
+      {state.status !== "idle" && (
+        <FlashAssistResult state={state} onApply={props.kind === "analytics" ? props.onApply : undefined} />
+      )}
     </section>
   );
 }

@@ -28,6 +28,28 @@ export type DiskSyncInfo = {
   lastSuccessfulExport?: SuccessfulDiskExport;
 };
 
+export type DiskRegistry = {
+  id: string;
+  kind: "disk-registry";
+  versionId: string;
+  entityId: string;
+  summaryPath: string;
+  confirmedAt: string;
+  fingerprint: string;
+};
+
+export type DiskRegistryCommit = {
+  next: DiskRegistry;
+  expectedVersionId?: string;
+};
+
+export type DiskRegistryView = {
+  summaryPath: string;
+  confirmedAt: string;
+  checkedAt: string;
+  current: boolean;
+};
+
 export const diskSyncStatusLabels: Record<DiskSyncStatus, string> = {
   pending: "Не выгружено",
   synced: "Синхронизировано с Яндекс Диском",

@@ -4,7 +4,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-const base = "http://127.0.0.1:8080";
+const base = process.env.CAMPUS_QA_IMAGE_ORIGIN ?? "http://127.0.0.1:8080";
+assert.ok(["http://127.0.0.1:8080", "http://127.0.0.2:8080"].includes(base), "Image acceptance must use an isolated loopback origin");
 const origin = "https://canon.invalid";
 const login = "ci-coordinator";
 
@@ -56,6 +57,12 @@ async function verify(directory) {
   const marker = process.env.CAMPUS_QA_MARKER;
   assert.match(marker ?? "", /^qa-marker-[0-9a-f-]{36}$/);
   await waitFor("/api/ready", 200);
+  if (process.env.CAMPUS_QA_EXPECT_REVISION) {
+    assert.match(process.env.CAMPUS_QA_EXPECT_REVISION, /^[0-9a-f]{40}$/);
+    const release = await call("/api/version");
+    assert.equal(release.status, 200);
+    assert.deepEqual(await release.json(), { version: "0.9.5", revision: process.env.CAMPUS_QA_EXPECT_REVISION });
+  }
   const published = await call("/api/articles/" + marker);
   assert.equal(published.status, 200);
   assert.equal((await published.json()).title, "Disposable QA " + marker);

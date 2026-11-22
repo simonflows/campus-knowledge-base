@@ -153,13 +153,18 @@ async function main() {
 
   const { importApprovedKnowledge } = await import("../lib/knowledge-import");
   const stored = new Map<string, typeof card & { ownerIds?: string[] }>();
+  const snapshots = new Map<string, { id: string; cardId: string; snapshot: typeof card }>();
+  type FixtureWrite = { TableName: string; ConditionExpression: string };
   transport.mock.mockImplementation(
     async (command: {
       constructor: { name: string };
       input: {
-        Item: typeof card;
-        TableName: string;
-        ConditionExpression: string;
+        TableName?: string;
+        Key?: { id: string };
+        TransactItems?: {
+          Put?: FixtureWrite & { Item: Record<string, unknown> };
+          Update?: FixtureWrite & { Key: { id: string }; ExpressionAttributeValues: Record<string, unknown> };
+        }[];
       };
     }) => {
       if (
@@ -169,25 +174,45 @@ async function main() {
         return {
           Item: {
             id: "fixture-type",
+            updatedAt: "2026-11-20T00:00:00.000Z",
             fields: [
               { id: "label", name: "Поле", type: "text", required: true },
             ],
           },
         };
       }
-      assert.equal(command.constructor.name, "PutCommand");
-      const {
-        Item,
-        TableName: destination,
-        ConditionExpression,
-      } = command.input;
-      assert.equal(destination, TableName.KNOWLEDGE_CARDS);
-      assert.equal(ConditionExpression, "attribute_not_exists(id)");
-      if (stored.has(Item.id))
-        throw Object.assign(new Error(), {
-          name: "ConditionalCheckFailedException",
-        });
+      if (command.constructor.name === "GetCommand") {
+        assert.ok(command.input.Key);
+        if (command.input.TableName === TableName.KNOWLEDGE_CARDS) {
+          return { Item: stored.get(command.input.Key.id) };
+        }
+        assert.equal(command.input.TableName, TableName.KNOWLEDGE_CARD_VERSIONS);
+        return { Item: snapshots.get(command.input.Key.id) };
+      }
+      assert.equal(command.constructor.name, "TransactWriteCommand");
+      const actions = command.input.TransactItems ?? [];
+      const writes = actions.flatMap(action => action.Put ? [action.Put] : []);
+      assert.equal(writes.length, 2);
+      const cardWrite = writes.find(write => write.TableName === TableName.KNOWLEDGE_CARDS);
+      const versionWrite = writes.find(write => write.TableName === TableName.KNOWLEDGE_CARD_VERSIONS);
+      assert.ok(cardWrite && versionWrite);
+      for (const write of writes) assert.equal(write.ConditionExpression, "attribute_not_exists(id)");
+      const Item = cardWrite.Item as typeof card & { ownerIds?: string[] };
+      const snapshot = versionWrite.Item as { id: string; cardId: string; snapshot: typeof card };
+      const typeGuard = actions.find(action => action.Update)?.Update;
+      if (Item.type === ("custom" as string)) {
+        assert.equal(typeGuard?.TableName, TableName.KNOWLEDGE_CARD_TYPES);
+        assert.equal(typeGuard?.Key.id, "fixture-type");
+        assert.equal(typeGuard?.ExpressionAttributeValues[":version"], "2026-11-20T00:00:00.000Z");
+      } else {
+        assert.equal(typeGuard, undefined);
+      }
+      assert.equal(snapshot.cardId, Item.id);
+      assert.equal(snapshot.snapshot.title, Item.title);
+      assert.equal(stored.has(Item.id), false);
+      assert.equal(snapshots.has(snapshot.id), false);
       stored.set(Item.id, Item);
+      snapshots.set(snapshot.id, snapshot);
       return {};
     }
   );
@@ -226,6 +251,7 @@ async function main() {
     1
   );
   assert.equal(stored.get(card.id)?.title, card.title);
+  assert.equal(snapshots.size, 1);
   const custom = {
     ...card,
     type: "custom",

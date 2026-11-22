@@ -55,7 +55,9 @@ export async function POST(request: NextRequest) {
 
   if (mode === "check") {
     return NextResponse.json(
-      account ? { ...result, flashAssist: await assistFactCheck(request, account, text) } : result,
+      account
+        ? { ...result, flashAssist: await assistFactCheck(request, account, text).catch(() => ({ status: "failed" })) }
+        : result,
       account ? { headers: { "Cache-Control": "no-store" } } : undefined,
     );
   }

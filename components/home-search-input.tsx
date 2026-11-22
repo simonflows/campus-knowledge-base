@@ -29,7 +29,13 @@ const quickServices = campusServices().filter(({ href }) =>
   ["/editor", "/check", "/analytics"].includes(href)
 );
 
-export function HomeSearchInput({ basePath }: { basePath: string }) {
+export function HomeSearchInput({
+  basePath,
+  examples,
+}: {
+  basePath: string;
+  examples: string[];
+}) {
   const router = useRouter();
   const form = useRef<HTMLFormElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -144,7 +150,6 @@ export function HomeSearchInput({ basePath }: { basePath: string }) {
             side="bottom"
             sideOffset={6}
             align="start"
-            collisionAvoidance={{ side: "none" }}
             className="campus-search-positioner"
           >
             <Autocomplete.Popup className="campus-search-panel">
@@ -197,7 +202,7 @@ export function HomeSearchInput({ basePath }: { basePath: string }) {
       </Autocomplete.Root>
       <div className="atlas-topics campus-search-examples">
         <span>Например</span>
-        {["Редактор", "Площадь кампуса", "МИДиС"].map((topic) => (
+        {examples.map((topic) => (
           <button
             type="button"
             key={topic}

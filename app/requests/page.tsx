@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function RequestsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; card?: string }>;
+  searchParams: Promise<{ q?: string; card?: string; request?: string }>;
 }) {
   const [user, params] = await Promise.all([getSessionUser(), searchParams]);
   let items = mockInformationRequests;
@@ -33,6 +33,7 @@ export default async function RequestsPage({
       available={available}
       initialQuestion={params.q ?? ""}
       initialCardId={params.card ?? null}
+      initialRequestId={params.request?.slice(0, 200)}
     />
   );
 }

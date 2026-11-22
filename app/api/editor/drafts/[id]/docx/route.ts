@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Document, Packer, Paragraph, HeadingLevel, TextRun, ExternalHyperlink } from "docx";
 import { getSessionUser } from "@/lib/auth-server";
-import { getEditorialWithRevisions } from "@/lib/editorial-models";
+import { getEditorialSourceVersions, getEditorialWithRevisions } from "@/lib/editorial-models";
 import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
-import { getApprovedVersion } from "@/lib/knowledge";
-import { getKnowledgeCardById } from "@/lib/models";
 type Context = { params: Promise<{ id: string }> };
 export async function GET(request: NextRequest, context: Context) {
   const user = await getSessionUser();
@@ -27,10 +25,7 @@ export async function GET(request: NextRequest, context: Context) {
       (event) => event.action === "approved" && event.revisionId === revision.id
     );
     const publicOrigin = new URL(process.env.CAMPUS_PUBLIC_ORIGIN || request.nextUrl.origin).origin;
-    const sources = await Promise.all([...new Set(content.sourceCardIds)].map(async id => {
-      const card = await getKnowledgeCardById(id);
-      return { id, approved: card && getApprovedVersion(card) };
-    }));
+    const sources = await getEditorialSourceVersions(content);
     const children = [
       new Paragraph({
         text: content.title || "Без заголовка",
@@ -57,17 +52,27 @@ export async function GET(request: NextRequest, context: Context) {
         text: "Источники редакции",
         heading: HeadingLevel.HEADING_2,
       }),
-      ...sources.map(({ id, approved }, i) =>
-        approved
+      ...sources.map(({ id, version, available }, i) =>
+        version
           ? new Paragraph({
             children: [
               new ExternalHyperlink({
-                link: new URL("/knowledge?card=" + encodeURIComponent(id) + "&version=approved", publicOrigin).href,
-                children: [new TextRun({ text: `${i + 1}. ${content.sourceCardTitles[content.sourceCardIds.indexOf(id)] || approved.title} — ID: ${id}`, style: "Hyperlink" })],
+                link: new URL(`/knowledge?card=${encodeURIComponent(id)}&version=${encodeURIComponent(version.id)}`, publicOrigin).href,
+                children: [new TextRun({ text: `${i + 1}. ${version.snapshot.title} — ID: ${id}`, style: "Hyperlink" })],
               }),
             ],
           })
-          : new Paragraph(`${i + 1}. Источник недоступен в утверждённой базе (ID: ${id})`)
+          : new Paragraph({
+            children: [
+              new TextRun(`${i + 1}. ${content.sourceCardTitles[content.sourceCardIds.indexOf(id)] || id}. ${available
+                ? "Точная версия источника не зафиксирована. "
+                : "Источник недоступен в утверждённой базе."}`),
+              ...(available ? [new ExternalHyperlink({
+                link: new URL(`/knowledge?card=${encodeURIComponent(id)}`, publicOrigin).href,
+                children: [new TextRun({ text: "Открыть актуальную карточку", style: "Hyperlink" })],
+              })] : []),
+            ],
+          })
       ),
       new Paragraph(`ID материала: ${doc.id}. ID редакции: ${revision.id}.`),
       new Paragraph(

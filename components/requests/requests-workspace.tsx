@@ -1,7 +1,9 @@
 "use client";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
+import { RequestFollowup } from "./request-followup";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -52,6 +54,7 @@ type Props = {
   available: boolean;
   initialQuestion: string;
   initialCardId: string | null;
+  initialRequestId?: string;
 };
 function RequestItem({
   item,
@@ -134,6 +137,7 @@ function RequestItem({
         </p>
       </div>
       <div className="desk-message-body">
+        <RequestFollowup item={item} user={user} available={available} onUpdated={onUpdated} />
         <p className="whitespace-pre-wrap break-words">{item.question}</p>
         {item.linkedCardId && (
           <Link
@@ -231,20 +235,41 @@ export function RequestsWorkspace({
   available,
   initialQuestion,
   initialCardId,
+  initialRequestId,
 }: Props) {
+  const router = useRouter();
   const [items, setItems] = useState(initialItems);
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState(initialQuestion);
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<MailFilter>("all");
-  const [selectedId, setSelectedId] = useState(() => initialItems[0]?.id ?? "");
+  const incomingLink = initialRequestId || null;
+  const [selection, setSelection] = useState<{
+    sourceId: string | null;
+    id: string | null;
+    exact: boolean;
+  }>(() => ({
+    sourceId: incomingLink,
+    id: incomingLink ?? initialItems[0]?.id ?? null,
+    exact: Boolean(incomingLink),
+  }));
   const [composing, setComposing] = useState(
-    Boolean(initialQuestion || initialCardId || !initialItems.length)
+    !incomingLink && Boolean(initialQuestion || initialCardId || !initialItems.length)
   );
   const [mobileOpen, setMobileOpen] = useState(
-    Boolean(initialQuestion || initialCardId)
+    Boolean(initialQuestion || initialCardId || initialRequestId)
   );
+  if (selection.sourceId !== incomingLink) {
+    setSelection({ sourceId: incomingLink, id: incomingLink, exact: Boolean(incomingLink) });
+    if (incomingLink) {
+      setItems(initialItems);
+      setFilter("all");
+      setComposing(false);
+      setMobileOpen(true);
+    }
+  }
+
   const [refreshing, setRefreshing] = useState(false);
   const detailPane = useRef<HTMLElement>(null);
   const listPane = useRef<HTMLElement>(null);
@@ -258,10 +283,11 @@ export function RequestsWorkspace({
       refreshRequest.current = null;
       setRefreshing(false);
     }
-    setItems((current) => [
-      item,
-      ...current.filter((row) => row.id !== item.id),
-    ]);
+    setItems((current) => {
+      const previous = current.find(row => row.id === item.id);
+      if (previous && previous.revision > item.revision) return current;
+      return [item, ...current.filter((row) => row.id !== item.id)];
+    });
   };
   const refresh = async () => {
     if (refreshRequest.current) return;
@@ -314,7 +340,7 @@ export function RequestsWorkspace({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       upsert(data);
-      setSelectedId(data.id);
+      selectRequest(data.id);
       setComposing(false);
       setFilter("sent");
       operation.current = null;
@@ -342,8 +368,23 @@ export function RequestsWorkspace({
       );
     return true;
   });
-  const selected =
-    visibleItems.find((item) => item.id === selectedId) ?? visibleItems[0];
+  const selectRequest = (id: string | null) =>
+    setSelection({ sourceId: incomingLink, id, exact: false });
+  const selected = selection.exact
+    ? items.find((item) => item.id === selection.id)
+    : selection.id
+      ? visibleItems.find((item) => item.id === selection.id) ?? visibleItems[0]
+      : undefined;
+  const unavailable = selection.exact && !selected;
+
+  const returnToList = () => {
+    setMobileOpen(false);
+    if (unavailable) {
+      selectRequest(null);
+      router.replace("/requests", { scroll: false });
+    }
+    requestAnimationFrame(() => listPane.current?.focus());
+  };
   const focusDetails = () =>
     requestAnimationFrame(() => detailPane.current?.focus());
 
@@ -377,11 +418,12 @@ export function RequestsWorkspace({
             <LockKeyhole />
           </span>
           <div>
-            <h2>Переписка вузов</h2>
+            <h2>{incomingLink ? "Запрос недоступен" : "Переписка вузов"}</h2>
             <p className="desk-footnote">
               Войдите под рабочим аккаунтом, чтобы отправлять запросы и читать
               ответы.
             </p>
+            {incomingLink && <Link href="/requests" className="desk-text-link">К списку запросов</Link>}
           </div>
         </section>
       ) : (
@@ -439,7 +481,7 @@ export function RequestsWorkspace({
                         className="desk-thread"
                         aria-pressed={!composing && item.id === selected?.id}
                         onClick={() => {
-                          setSelectedId(item.id);
+                          selectRequest(item.id);
                           setComposing(false);
                           setMobileOpen(true);
                           focusDetails();
@@ -482,10 +524,7 @@ export function RequestsWorkspace({
             <div className="desk-mail-back">
               <Button
                 variant="ghost"
-                onClick={() => {
-                  setMobileOpen(false);
-                  requestAnimationFrame(() => listPane.current?.focus());
-                }}
+                onClick={returnToList}
               >
                 <ArrowLeft data-icon="inline-start" /> К переписке
               </Button>
@@ -587,6 +626,11 @@ export function RequestsWorkspace({
                   ) : null}
                 </form>
               </div>
+            ) : unavailable ? (
+              <div className="desk-workspace-empty desk-mail-placeholder">
+                <p role="status">Запрос недоступен</p>
+                <Button variant="outline" onClick={returnToList}>К списку запросов</Button>
+              </div>
             ) : selected ? (
               <div key={selected.id} className="desk-panel-in">
                 <RequestItem
@@ -603,7 +647,7 @@ export function RequestsWorkspace({
                 </span>
                 <p>
                   {filter === "all"
-                    ? "Здесь появятся ответы вузов"
+                    ? items.length ? "Выберите запрос из списка" : "Здесь появятся ответы вузов"
                     : "В этой папке пока нет переписки"}
                 </p>
                 {filter === "all" ? (

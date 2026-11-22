@@ -7,6 +7,7 @@ import Link from "next/link";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useRef,
   useState,
   useSyncExternalStore,
@@ -53,12 +54,13 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { EditorialLibrary } from "./editorial-library";
+import { EditorialReadinessPanel } from "./editorial-readiness-panel";
 import "@/app/campus-workspaces.css";
 import { universities } from "@/lib/data";
 import type { SessionUser } from "@/lib/auth";
 import type { ReadyArticle } from "@/lib/articles";
 import type { FactCheckResult } from "@/lib/fact-check";
-import { getCardStatus, type KnowledgeCard } from "@/lib/knowledge";
+import type { EditorAssistSuggestion } from "@/lib/editor-assist";
 import {
   editorialContentSchema,
   editorialMutationSchema,
@@ -88,6 +90,17 @@ type Props = {
   dbAvailable: boolean;
   currentUser?: SessionUser | null;
   flashAssistAvailable: boolean;
+  initialDocumentId?: string;
+  initialArticleId?: string;
+};
+type SelectedFragment = { chunkId?: string; start: number; end: number };
+type EditorAssistPreview = {
+  documentId: string;
+  revisionId: string;
+  fingerprint: string;
+  channel: string;
+  selection: SelectedFragment | null;
+  suggestion: EditorAssistSuggestion;
 };
 async function jsonRequest(url: string, init?: RequestInit) {
   const response = await fetch(url, {
@@ -105,6 +118,62 @@ async function jsonRequest(url: string, init?: RequestInit) {
   }
   return data;
 }
+
+export async function loadEditorDeepLink<T extends { document: { id: string } }>({
+  id, signal, read, flush,
+}: {
+  id: string; signal: AbortSignal; read: (id: string, signal: AbortSignal) => Promise<T>;
+  flush: () => Promise<boolean>;
+}): Promise<{ status: "ready"; details: T } | { status: "cancelled" | "blocked" | "unavailable" }> {
+  if (signal.aborted) return { status: "cancelled" };
+  let details: T;
+  try {
+    details = await read(id, signal);
+  } catch (error) {
+    if (signal.aborted) return { status: "cancelled" };
+    if (error instanceof Error && "status" in error && [401, 403, 404].includes(Number(error.status))) {
+      return { status: "unavailable" };
+    }
+    throw error;
+  }
+  if (signal.aborted) return { status: "cancelled" };
+  if (details?.document?.id !== id) return { status: "unavailable" };
+  const saved = await flush();
+  if (signal.aborted) return { status: "cancelled" };
+  return saved ? { status: "ready", details } : { status: "blocked" };
+}
+
+export async function refreshOpenEditorDraft<T extends { document: Pick<EditorialDocument, "id" | "version"> }>({
+  current,
+  signal,
+  read,
+  waitForSave,
+  isStillOpen,
+  hasLocalChanges,
+  accept,
+}: {
+  current: T["document"];
+  signal: AbortSignal;
+  read: (id: string, signal: AbortSignal) => Promise<T>;
+  waitForSave: () => Promise<unknown> | null;
+  isStillOpen: () => boolean;
+  hasLocalChanges: () => boolean;
+  accept: (details: T, preserveLocalText: boolean) => void;
+}): Promise<void> {
+  if (signal.aborted || !isStillOpen()) return;
+  await waitForSave();
+  if (signal.aborted || !isStillOpen()) return;
+
+  const details = await read(current.id, signal);
+  // A save may start while the GET is in flight. Its newer baseline wins.
+  await waitForSave();
+  if (signal.aborted || !isStillOpen()) return;
+  if (details?.document?.id !== current.id || details.document.version < current.version) {
+    throw new Error("Не удалось загрузить актуальный черновик");
+  }
+  accept(details, hasLocalChanges());
+}
+
 const blank = (user?: SessionUser | null) =>
   editorialContentSchema.parse({ universityId: user?.universityId || "" });
 const emptyRecoveries: EditorialRecovery[] = [];
@@ -147,12 +216,14 @@ function EditorSession({
   dbAvailable,
   currentUser = null,
   flashAssistAvailable,
+  initialDocumentId,
+  initialArticleId,
 }: Props) {
   const [documents, setDocuments] = useState<EditorialDocument[]>([]),
     [articles, setArticles] = useState(initialArticles),
     [legacy, setLegacy] = useState<ReadyArticle[]>([]);
   const [surface, setSurface] = useState<"write" | "history" | "library">(
-    currentUser && currentUser.role !== "guest" ? "write" : "library"
+    initialArticleId || !currentUser || currentUser.role === "guest" ? "library" : "write"
   );
   const [mobileDrafts, setMobileDrafts] = useState(false);
   const draftHeading = useRef<HTMLHeadingElement>(null);
@@ -162,7 +233,7 @@ function EditorSession({
     requestAnimationFrame(() => draftHeading.current?.focus());
   };
   const [sourceCards, setSourceCards] = useState<
-    Array<{ id: string; title: string }>
+    Array<{ id: string; title: string; versionId: string }>
   >([]);
   const [reviewers, setReviewers] = useState<
     Array<{ id: string; name: string; organization: string }>
@@ -178,12 +249,18 @@ function EditorSession({
   const [revisions, setRevisions] = useState<EditorialRevision[]>([]),
     [reviewRevision, setReviewRevision] = useState<string | null>(null),
     [comment, setComment] = useState("");
-  const [busy, setBusy] = useState(false),
+  const [operationBusy, setBusy] = useState(false),
     [saveStatus, setSaveStatus] = useState("Изменения ещё не сохранены"),
     [conflict, setConflict] = useState(false),
     [serverDocument, setServerDocument] = useState<EditorialDocument | null>(
       null
     );
+  const linkRequest = useRef<AbortController | null>(null);
+  const [linkOpening, setLinkOpening] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkRetry, setLinkRetry] = useState(0);
+  const [focusedArticleId, setFocusedArticleId] = useState(initialArticleId);
+  const busy = operationBusy || linkOpening;
   const [recoveryStore] = useState(() =>
     recoveryList(currentUser?.role === "guest" ? undefined : currentUser?.id)
   );
@@ -196,6 +273,10 @@ function EditorSession({
     [channel, setChannel] = useState("Telegram"),
     [provider, setProvider] = useState("canonical");
   const checkRequest = useRef<AbortController | null>(null);
+  const editorAssistRequest = useRef<AbortController | null>(null);
+  const [editorAssistBusy, setEditorAssistBusy] = useState(false);
+  const [editorAssistPreview, setEditorAssistPreview] = useState<EditorAssistPreview | null>(null);
+  const [selectedFragment, setSelectedFragment] = useState<SelectedFragment | null>(null);
   const pendingSave = useRef<Promise<EditorialDocument | null> | null>(null);
   const active = useRef(true);
   const [ended, setEnded] = useState(false);
@@ -236,20 +317,19 @@ function EditorSession({
     void refresh(requests.signal).catch((e) => {
       if (!requests.signal.aborted) toast.error(e.message);
     });
-    void jsonRequest("/api/knowledge/cards", { signal: requests.signal })
-      .then((cards: KnowledgeCard[]) => {
-        if (!requests.signal.aborted)
-          setSourceCards(
-            cards
-              .filter((c) => getCardStatus(c) === "approved")
-              .map((c) => ({ id: c.id, title: c.title }))
-          );
-      })
-      .catch(() => {});
+    if (userId && currentUser?.role !== "guest") {
+      void jsonRequest("/api/editor/sources", { signal: requests.signal })
+        .then((cards: typeof sourceCards) => {
+          if (!requests.signal.aborted) setSourceCards(cards);
+        })
+        .catch(() => {});
+    }
     const endSession = () => {
       active.current = false;
       requests.abort();
       checkRequest.current?.abort();
+      editorAssistRequest.current?.abort();
+      linkRequest.current?.abort();
       recoveryStore.end();
       setEnded(true);
       setSurface("library");
@@ -258,6 +338,9 @@ function EditorSession({
       contentRef.current = blank();
       setContent(contentRef.current);
       setRevisions([]);
+      setLinkError(null);
+      setLinkOpening(false);
+      setFocusedArticleId(undefined);
       setServerDocument(null);
       setLegacy([]);
       setDocuments([]);
@@ -275,10 +358,12 @@ function EditorSession({
       active.current = false;
       requests.abort();
       checkRequest.current?.abort();
+      editorAssistRequest.current?.abort();
+      linkRequest.current?.abort();
       window.removeEventListener(EDITORIAL_SESSION_ENDED, endSession);
       window.removeEventListener("storage", syncSession);
     };
-  }, [recoveryStore, refresh]);
+  }, [currentUser?.role, recoveryStore, refresh, userId]);
 
   const acceptVersion = (next: EditorialDocument | null) => {
     docRef.current = next;
@@ -289,6 +374,9 @@ function EditorSession({
   };
   const replaceText = (next: EditorialContent) => {
     checkRequest.current?.abort();
+    editorAssistRequest.current?.abort();
+    setEditorAssistPreview(null);
+    setSelectedFragment(null);
     contentRef.current = next;
     setContent(next);
     setCheck(null);
@@ -342,10 +430,39 @@ function EditorSession({
           : "Новый личный черновик"
     );
   };
+  const readDraft = (id: string, signal?: AbortSignal): Promise<Details> =>
+    jsonRequest(`/api/editor/drafts/${encodeURIComponent(id)}`, { signal });
   const load = async (id: string) => {
-    const data = await jsonRequest(`/api/editor/drafts/${id}`);
+    const data = await readDraft(id);
     if (active.current) openDocument(data);
   };
+  const refreshDraft = async (current: EditorialDocument, signal: AbortSignal) => {
+    if (busy) throw new Error("Дождитесь завершения текущего действия.");
+    setBusy(true);
+    try {
+      await refreshOpenEditorDraft<Details>({
+        current,
+        signal,
+        read: readDraft,
+        waitForSave: () => pendingSave.current,
+        isStillOpen: () => active.current && docRef.current === current,
+        hasLocalChanges: () => JSON.stringify(contentRef.current) !== baselineRef.current,
+        accept: (data, preserveLocalText) => {
+          if (preserveLocalText) {
+            setConflict(true);
+            setServerDocument(data.document);
+            setSaveStatus("Сравните редакции перед сохранением");
+            return;
+          }
+          openDocument(data);
+          upsert(data.document);
+        },
+      });
+    } finally {
+      if (active.current) setBusy(false);
+    }
+  };
+
   const handleConflict = useCallback(async (current: EditorialDocument) => {
     setConflict(true);
     setServerDocument(null);
@@ -469,8 +586,71 @@ function EditorSession({
 
   const flush = async () => {
     if (pendingSave.current) return Boolean(await pendingSave.current);
-    return !dirty || Boolean(await save());
+    return JSON.stringify(contentRef.current) === baselineRef.current || Boolean(await save());
   };
+  const followLink = useEffectEvent(async (controller: AbortController) => {
+    const { signal } = controller;
+    if (!active.current || signal.aborted || ended) return;
+    setLinkError(null);
+    if (!initialDocumentId && !initialArticleId) {
+      setFocusedArticleId(undefined);
+      setLinkOpening(false);
+      return;
+    }
+    if (operationBusy) {
+      setLinkOpening(false);
+      setLinkError("Дождитесь завершения текущего действия и откройте ссылку повторно.");
+      return;
+    }
+    if (initialDocumentId && (!currentUser || currentUser.role === "guest")) {
+      setLinkOpening(false);
+      setLinkError("Черновик недоступен. Войдите под рабочим аккаунтом с доступом к этому материалу.");
+      return;
+    }
+    setLinkOpening(true);
+    try {
+      if (initialDocumentId) {
+        if (docRef.current?.id !== initialDocumentId) {
+          const result = await loadEditorDeepLink({ id: initialDocumentId, signal, read: readDraft, flush });
+          if (!active.current || signal.aborted || result.status === "cancelled") return;
+          if (result.status !== "ready") {
+            setLinkError(result.status === "blocked"
+              ? "Сохраните правки в открытом черновике, затем повторите переход."
+              : "Черновик недоступен. Проверьте ссылку и права на материал.");
+            return;
+          }
+          const copy = currentUser && result.details.document.ownerId === currentUser.id
+            ? readEditorialRecovery(currentUser.id).find((entry) => entry.documentId === initialDocumentId)
+            : undefined;
+          openDocument(result.details, copy);
+        }
+        setFocusedArticleId(undefined);
+        showDraft();
+      } else {
+        const saved = await flush();
+        if (!active.current || signal.aborted) return;
+        if (!saved) {
+          setLinkError("Сохраните правки в открытом черновике, затем повторите переход.");
+          return;
+        }
+        checkRequest.current?.abort();
+        editorAssistRequest.current?.abort();
+        setFocusedArticleId(initialArticleId);
+        setSurface("library");
+      }
+    } catch {
+      if (active.current && !signal.aborted)
+        setLinkError("Не удалось открыть запись. Проверьте соединение и повторите переход.");
+    } finally {
+      if (active.current && linkRequest.current === controller) setLinkOpening(false);
+    }
+  });
+  useEffect(() => {
+    const controller = new AbortController();
+    linkRequest.current = controller;
+    queueMicrotask(() => { if (!controller.signal.aborted) void followLink(controller); });
+    return () => controller.abort();
+  }, [initialArticleId, initialDocumentId, linkRetry]);
   const switchDocument = async (id?: string) => {
     setBusy(true);
     try {
@@ -596,7 +776,7 @@ function EditorSession({
       setBusy(false);
     }
   };
-  const createVariant = async () => {
+  const createVariant = async (suggestedContent?: EditorialContent) => {
     setBusy(true);
     try {
       if (!(await flush()) || !active.current) return;
@@ -607,7 +787,7 @@ function EditorSession({
         body: JSON.stringify({
           originalId: current.originalId,
           channel,
-          content: { ...content, outlet: channel },
+          content: { ...(suggestedContent ?? contentRef.current), outlet: channel },
         }),
       });
       if (!active.current) return;
@@ -618,6 +798,93 @@ function EditorSession({
     } finally {
       setBusy(false);
     }
+  };
+  const rememberFragment = (field: HTMLTextAreaElement, chunkId?: string) => {
+    const { selectionStart: start, selectionEnd: end } = field;
+    if (selectedFragment?.chunkId === chunkId && selectedFragment?.start === start && selectedFragment?.end === end) return;
+    editorAssistRequest.current?.abort();
+    setEditorAssistPreview(null);
+    setSelectedFragment(start < end ? { chunkId, start, end } : null);
+  };
+  const requestEditorialAssist = async (action: "rewrite" | "variant") => {
+    if (editorAssistRequest.current || !editable || conflict) return;
+    const selection = selectedFragment;
+    if (action === "rewrite" && !selection) return;
+    const fingerprint = JSON.stringify(contentRef.current);
+    const controller = new AbortController();
+    editorAssistRequest.current = controller;
+    setEditorAssistBusy(true);
+    setEditorAssistPreview(null);
+    try {
+      if (!(await flush()) || controller.signal.aborted || !active.current ||
+          fingerprint !== JSON.stringify(contentRef.current)) return;
+      const current = docRef.current;
+      if (!current) return;
+      const payload = await jsonRequest("/api/editor/assist", {
+        method: "POST",
+        signal: controller.signal,
+        body: JSON.stringify({
+          action, documentId: current.id, revisionId: current.revisionId, version: current.version,
+          ...(action === "rewrite" ? selection : { channel }),
+        }),
+      });
+      if (!active.current || controller.signal.aborted || docRef.current !== current ||
+          fingerprint !== JSON.stringify(contentRef.current)) return;
+      if (payload.status !== "ready") {
+        const messages: Record<string, string> = {
+          busy: "Flash занят. Повторите чуть позже.",
+          unavailable: "Flash сейчас недоступен.",
+          "too-long": "Выделите более короткий фрагмент или уменьшите объём материала.",
+          "sources-required": "Прикрепите утверждённые версии всех источников.",
+        };
+        toast.error(messages[payload.status] || "Flash не предложил правку, которую удалось сверить с источниками.");
+        return;
+      }
+      setEditorAssistPreview({ documentId: current.id, revisionId: current.revisionId, fingerprint, channel, selection,
+        suggestion: payload.suggestion });
+    } catch (error) {
+      if (!controller.signal.aborted && active.current) toast.error((error as Error).message);
+    } finally {
+      if (editorAssistRequest.current === controller) {
+        editorAssistRequest.current = null;
+        if (active.current) setEditorAssistBusy(false);
+      }
+    }
+  };
+  const acceptEditorialAssist = () => {
+    const preview = editorAssistPreview;
+    const current = docRef.current;
+    const text = contentRef.current;
+    if (!preview || !editable || current?.id !== preview.documentId || current.revisionId !== preview.revisionId ||
+        JSON.stringify(text) !== preview.fingerprint || channel !== preview.channel) return;
+    const suggestion = preview.suggestion;
+    if (suggestion.action === "variant") {
+      const section = { id: crypto.randomUUID(), heading: "Основной текст", level: 2 as const,
+        chunks: [{ id: crypto.randomUUID(), content: suggestion.body }] };
+      setEditorAssistPreview(null);
+      void createVariant({ ...text, title: suggestion.title, lead: suggestion.lead, sections: [section] });
+      return;
+    }
+    const fragment = preview.selection;
+    if (!fragment) return;
+    const replace = (value: string) => value.slice(0, fragment.start) + suggestion.text + value.slice(fragment.end);
+    const selectedText = fragment.chunkId
+      ? text.sections.flatMap((section) => section.chunks).find((chunk) => chunk.id === fragment.chunkId)?.content
+      : text.lead;
+    if (selectedText === undefined || replace(selectedText).length > 4_000) {
+      toast.error("После замены поле превысит 4 000 знаков. Выберите более короткую правку.");
+      return;
+    }
+    if (!fragment.chunkId) {
+      change("lead", replace(text.lead));
+      return;
+    }
+    change("sections", text.sections.map((section) => ({
+      ...section,
+      chunks: section.chunks.map((chunk) =>
+        chunk.id === fragment.chunkId ? { ...chunk, content: replace(chunk.content) } : chunk,
+      ),
+    })));
   };
   const recover = async (selected: EditorialRecovery) => {
     if (!currentUser || !active.current) return;
@@ -698,6 +965,17 @@ function EditorSession({
           </Link>
         </MastheadCount>
       </WorkspaceMasthead>
+      {linkOpening && <p role="status" className="desk-footnote mb-3">Открываем запись…</p>}
+      {linkError && (
+        <Alert className="mb-4">
+          <AlertTitle>Ссылка не открыта</AlertTitle>
+          <AlertDescription>
+            <p>{linkError}</p>
+            {canWork && <Button type="button" size="sm" variant="outline" disabled={busy}
+              onClick={() => setLinkRetry((value) => value + 1)}>Повторить переход</Button>}
+          </AlertDescription>
+        </Alert>
+      )}
       {canWork ? (
         <div className="desk-nav" role="group" aria-label="Разделы редактора">
           {nav.map(({ id, label, icon: Icon }) => (
@@ -1116,6 +1394,7 @@ function EditorSession({
                         disabled={!editable || busy}
                         value={content.lead}
                         onChange={(e) => change("lead", e.target.value)}
+                        onSelect={(event) => rememberFragment(event.currentTarget)}
                       />
                     </Field>
                   </FieldGroup>
@@ -1153,6 +1432,7 @@ function EditorSession({
                               id={`paragraph-${chunk.id}`}
                               disabled={!editable || busy}
                               value={chunk.content}
+                              onSelect={(event) => rememberFragment(event.currentTarget, chunk.id)}
                               onChange={(e) =>
                                 change(
                                   "sections",
@@ -1257,6 +1537,10 @@ function EditorSession({
                                 ...content.sourceCardTitles,
                                 source.title,
                               ],
+                              sourceVersions: [
+                                ...(content.sourceVersions ?? []),
+                                { cardId: source.id, versionId: source.versionId },
+                              ],
                             });
                           }
                         }}
@@ -1278,13 +1562,15 @@ function EditorSession({
                           </SelectGroup>
                         </SelectContent>
                       </Select>
-                      {content.sourceCardIds.map((id, i) => (
+                      {content.sourceCardIds.map((id, i) => {
+                        const pinned = content.sourceVersions?.find((source) => source.cardId === id);
+                        return (
                         <div className="desk-source-item" key={id}>
                           <a
-                            href={`/knowledge?card=${encodeURIComponent(id)}&version=approved`}
+                            href={`/knowledge?card=${encodeURIComponent(id)}${pinned ? `&version=${encodeURIComponent(pinned.versionId)}` : ""}`}
                             className="text-sm text-primary underline underline-offset-2"
                           >
-                            {content.sourceCardTitles[i] || id}
+                            {content.sourceCardTitles[i] || id}{!pinned && " · версия не зафиксирована"}
                           </a>
                           <Button
                             size="sm"
@@ -1300,13 +1586,15 @@ function EditorSession({
                                   content.sourceCardTitles.filter(
                                     (_, j) => j !== i
                                   ),
+                                ...(content.sourceVersions && { sourceVersions: content.sourceVersions.filter((source) => source.cardId !== id) }),
                               })
                             }
                           >
                             Убрать
                           </Button>
                         </div>
-                      ))}
+                        );
+                      })}
                     </Field>
 
                     {content.sourceCardIds.length === 0 ? (
@@ -1382,6 +1670,14 @@ function EditorSession({
                       </Button>
                     ) : null}
                   </div>
+                  {doc && (
+                    <EditorialReadinessPanel
+                      key={doc.id}
+                      document={doc}
+                      dirty={dirty}
+                      onRefreshDraft={(signal) => refreshDraft(doc, signal)}
+                    />
+                  )}
                   {doc && editable ? (
                     <div className="desk-inspector-section">
                       {" "}
@@ -1393,7 +1689,11 @@ function EditorSession({
                           <Input
                             id="editor-channel"
                             value={channel}
-                            onChange={(e) => setChannel(e.target.value)}
+                            onChange={(e) => {
+                              editorAssistRequest.current?.abort();
+                              setEditorAssistPreview(null);
+                              setChannel(e.target.value);
+                            }}
                           />
                         </Field>
                         <Button
@@ -1404,6 +1704,36 @@ function EditorSession({
                           <GitBranch data-icon="inline-start" />
                           Создать вариант
                         </Button>
+                        {flashAssistAvailable && (
+                          <>
+                            <p className="desk-footnote">
+                              Flash отправит текст и закреплённые версии источников в AI Studio. Предложение можно проверить перед применением.
+                            </p>
+                            <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !selectedFragment}
+                              onClick={() => void requestEditorialAssist("rewrite")}>
+                              <Sparkles data-icon="inline-start" /> Переписать выделенное с Flash
+                            </Button>
+                            <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !channel.trim()}
+                              onClick={() => void requestEditorialAssist("variant")}>
+                              <Sparkles data-icon="inline-start" /> Подготовить вариант с Flash
+                            </Button>
+                            {editorAssistBusy && <p role="status" className="text-sm">Flash готовит предложение…</p>}
+                            {editorAssistPreview && (
+                              <Alert>
+                                <AlertTitle>Предложение Flash</AlertTitle>
+                                <AlertDescription>
+                                  <p className="whitespace-pre-wrap">{editorAssistPreview.suggestion.action === "rewrite"
+                                    ? editorAssistPreview.suggestion.text
+                                    : [editorAssistPreview.suggestion.title, editorAssistPreview.suggestion.lead, editorAssistPreview.suggestion.body].join("\n\n")}</p>
+                                  <Button size="sm" variant="outline" onClick={acceptEditorialAssist}>
+                                    {editorAssistPreview.suggestion.action === "rewrite" ? "Применить к выделенному" : "Создать черновик варианта"}
+                                  </Button>
+                                  <Button size="sm" variant="ghost" onClick={() => setEditorAssistPreview(null)}>Отменить</Button>
+                                </AlertDescription>
+                              </Alert>
+                            )}
+                          </>
+                        )}
                       </div>
                     </div>
                   ) : null}
@@ -1586,7 +1916,8 @@ function EditorSession({
       ) : null}
       <div hidden={surface !== "library"}>
         <EditorialLibrary
-          articles={articles}
+          articles={focusedArticleId ? initialArticles : articles}
+          focusedArticleId={focusedArticleId}
           legacy={legacy}
           busy={busy}
           onImport={canWork ? importArchive : undefined}

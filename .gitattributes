@@ -1,0 +1,3 @@
+# Reviewed import authorization is bound to the exact package bytes on every host.
+data/pilot-0.9.5-candidates.json -text
+data/pilot-0.9.5-verification.json -text

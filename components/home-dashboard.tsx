@@ -9,17 +9,15 @@ import {
   Files,
   GraduationCap,
   Landmark,
-  MapPin,
   Maximize2,
   ScanText,
   Users,
 } from "lucide-react";
 import { AtlasCover } from "@/components/atlas-cover";
 import { HomeSearch } from "@/components/home-search";
-import { AnimatedNumber } from "@/components/motion/animated-number";
 import { MotionReveal } from "@/components/motion/motion-reveal";
 import masthead from "@/components/workspace-masthead.module.css";
-import type { CampusCard } from "@/lib/knowledge";
+import { folderIds, type CampusCard } from "@/lib/knowledge";
 import type { University } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
@@ -27,7 +25,8 @@ type Props = {
   passport: CampusCard | null;
   universities: University[];
   cardsCount: number;
-  live: boolean;
+  showExampleData: boolean;
+  hasMidisPassport: boolean;
 };
 
 function plural(count: number, one: string, few: string, many: string) {
@@ -57,7 +56,8 @@ export function HomeDashboard({
   passport,
   universities,
   cardsCount,
-  live,
+  showExampleData,
+  hasMidisPassport,
 }: Props) {
   const source =
     passport &&
@@ -67,29 +67,21 @@ export function HomeDashboard({
       href: "#university-heading",
       title: "Вузы-резиденты",
       icon: GraduationCap,
-      description: (
-        <>
-          <AnimatedNumber value={universities.length} />{" "}
-          {plural(universities.length, "вуз", "вуза", "вузов")} в кампусе
-        </>
-      ),
+      description: `${universities.length} ${plural(universities.length, "вуз", "вуза", "вузов")} в кампусе`,
     },
     {
       href: "/knowledge",
       title: "Карточки справочника",
       icon: Files,
-      description: (
-        <>
-          <AnimatedNumber value={cardsCount} />{" "}
-          {plural(cardsCount, "карточка", "карточки", "карточек")}
-        </>
-      ),
+      description: cardsCount
+        ? `${cardsCount.toLocaleString("ru-RU")} ${plural(cardsCount, "карточка", "карточки", "карточек")}${showExampleData ? " для примера" : ""}`
+        : "Пока нет публикаций",
     },
     {
-      href: source || "/knowledge",
-      title: source ? "Паспорт кампуса" : "Официальные данные",
+      href: source ?? `/knowledge?folder=${folderIds.campus}`,
+      title: "Паспорт кампуса",
       icon: BookOpenText,
-      description: "Показатели и источники",
+      description: source ? "Показатели и источники" : "Пока не опубликован",
     },
     {
       href: "/check",
@@ -100,20 +92,6 @@ export function HomeDashboard({
   ];
   const tools = [
     {
-      href: "/knowledge",
-      title: "Официальные данные",
-      text: "Карточки кампуса и университетов с фактами и источниками.",
-      iconMotion: "book",
-      icon: BookOpenText,
-    },
-    {
-      href: "/check",
-      title: "Проверка текста",
-      text: "Сверьте цифры и утверждения в статье с материалами справочника.",
-      iconMotion: "scan",
-      icon: ScanText,
-    },
-    {
       href: "/editor",
       title: "Редактор публикаций",
       text: "Подготовьте черновик статьи из выбранных источников.",
@@ -123,7 +101,7 @@ export function HomeDashboard({
     {
       href: "/analytics",
       title: "Аналитика кампуса",
-      text: "Сравните показатели университетов и охват источников.",
+      text: "Соберите справку по утверждённым карточкам.",
       iconMotion: "chart",
       icon: ChartNoAxesColumnIncreasing,
     },
@@ -131,9 +109,17 @@ export function HomeDashboard({
 
   const passportMetrics = passport
     ? passport.campusMetrics
-        .filter((m) => /площад|вместим|этап|стоим/i.test(m.label))
+        .filter((m) => /площад|вместим|этап|очеред|стоим|апартамент/i.test(m.label))
         .slice(0, 4)
     : [];
+
+  const searchExamples = [
+    "Редактор",
+    passportMetrics.some((metric) => /площад/i.test(metric.label))
+      ? "Площадь кампуса"
+      : "Проверка текста",
+    hasMidisPassport ? "МИДиС" : "Аналитика",
+  ];
 
   return (
     <>
@@ -154,19 +140,15 @@ export function HomeDashboard({
           ))
         }
       >
-        <p className="atlas-kicker">
-          <MapPin size={16} strokeWidth={1.7} aria-hidden="true" />
-          Челябинская область
-        </p>
         <h1 className={masthead.title} id="campus-title">
           Справочник кампуса{" "}
           <em className="atlas-hero-title-accent">«Южный Урал»</em>
         </h1>
         <p className="atlas-lead">
-          Найдите официальные сведения о вузах, строительстве и лабораториях
-          кампуса и сверьте их с источником.
+          Найдите сведения о вузах, строительстве и лабораториях кампуса.
+          Проверьте факты по источникам.
         </p>
-        <HomeSearch />
+        <HomeSearch examples={searchExamples} />
       </AtlasCover>
 
       <section className="atlas-passport" aria-labelledby="campus-metrics">
@@ -181,13 +163,12 @@ export function HomeDashboard({
               )}
             </div>
           </MotionReveal>
-          {!live && (
+          {showExampleData && (
             <p className="atlas-source-note">
-              Показаны справочные данные. Подключение к актуальной базе
-              недоступно.
+              На этой странице показаны демонстрационные данные.
             </p>
           )}
-          {passport ? (
+          {passportMetrics.length ? (
             <dl className="atlas-metrics atlas-bento-metrics">
               {passportMetrics.map((m, index) => {
                 const MetricIcon = metricIcon(m.label);
@@ -223,8 +204,9 @@ export function HomeDashboard({
             </dl>
           ) : (
             <p className="atlas-source-note">
-              Утверждённый паспорт пока недоступен. Найдите нужные сведения в
-              справочнике.
+              {passport
+                ? "Сводные показатели ещё не опубликованы. Откройте паспорт кампуса, чтобы посмотреть доступные сведения."
+                : "Утверждённый паспорт пока не опубликован."}
             </p>
           )}
         </div>
@@ -338,14 +320,7 @@ export function HomeDashboard({
                 </div>
                 <div className="atlas-uni-name">
                   <strong>Все вузы и лаборатории</strong>
-                  <span>
-                    Карточки 7 резидентов, проекты и партнёры в едином каталоге
-                  </span>
-                </div>
-                <div className="atlas-uni-tags" aria-hidden="true">
-                  <span>7 вузов</span>
-                  <span>Лаборатории</span>
-                  <span>Каталог</span>
+                  <span>Карточки вузов, лабораторий и проектов</span>
                 </div>
               </Link>
             </div>

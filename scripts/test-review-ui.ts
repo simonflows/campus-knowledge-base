@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { SearchParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { toast } from "sonner";
 import { KnowledgeCardAccessPanel } from "../components/knowledge/knowledge-card-access-panel";
@@ -270,6 +271,26 @@ function fillRequest(view: ReactNode) {
   return { recipient, subject, question };
 }
 
+const requestTestRouter: AppRouterInstance = {
+  back() {},
+  forward() {},
+  refresh() {},
+  push() {},
+  replace() {},
+  prefetch() {},
+  bfcacheId: "test",
+};
+
+function renderRequestView(Capture: () => null) {
+  renderToStaticMarkup(
+    createElement(
+      AppRouterContext.Provider,
+      { value: requestTestRouter },
+      createElement(Capture)
+    )
+  );
+}
+
 test("отправка запроса отменяет уже запрошенное обновление списка", async (context) => {
   const { RequestsWorkspace } = await loadView(
     () => import("../components/requests/requests-workspace")
@@ -296,7 +317,7 @@ test("отправка запроса отменяет уже запрошенн
     }
     return null;
   }
-  renderToStaticMarkup(createElement(Capture));
+  renderRequestView(Capture);
   assert.ok(refresh && send);
   void refresh();
   await send({ preventDefault() {} });
@@ -331,7 +352,7 @@ test("поля нового запроса заблокированы, пока 
     }
     return null;
   }
-  renderToStaticMarkup(createElement(Capture));
+  renderRequestView(Capture);
   assert.ok(fields && sending);
   assert.equal(fetchMock.mock.callCount(), 1);
   response.resolve(Response.json({ id: "saved-request" }));

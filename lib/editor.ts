@@ -740,6 +740,12 @@ function numericClaims(text: string): string[] {
   );
 }
 
+export function preservesArticleNumbers(original: string, replacement: string) {
+  const before = new Set(numericClaims(original));
+  const after = new Set(numericClaims(replacement));
+  return before.size === after.size && [...before].every((value) => after.has(value));
+}
+
 export function isGroundedArticleText(
   text: string,
   cards: KnowledgeCard[]

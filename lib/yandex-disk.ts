@@ -15,6 +15,7 @@ import {
   type CardTypeDefinition,
   type KnowledgeCard,
 } from "./knowledge";
+import { getCardVersionId } from "./knowledge-versions";
 
 const DISK_API_BASE = "https://cloud-api.yandex.net/v1/disk";
 export function diskAttemptDeadline(): AbortSignal {
@@ -23,11 +24,11 @@ export function diskAttemptDeadline(): AbortSignal {
 
 export const DISK_CARD_SUMMARY_FILE = "_Сводная_таблица_карточек.csv";
 export const DISK_ARTICLE_SUMMARY_FILE = "_Сводная_таблица_статей.csv";
-export const DISK_RESTORE_GUIDE = `# Как читать резервную копию без приложения
+export const DISK_RESTORE_GUIDE = `# Как читать резервную копию
 
-Имена MD и CSV начинаются с версии данных в ISO UTC (двоеточия заменены дефисами). Сортируйте по имени, а не по дате загрузки: старая попытка может завершиться позже новой.
+В приложении откройте карточку или материал и найдите проверенную сводку папки. Приложение показывает путь к последней подтверждённой полной копии и сверяет её с опубликованными данными.
 
-В нужной папке откройте CSV с наибольшей меткой согласованного снимка. В каждой строке указаны ID, согласованная версия, путь к её неизменяемому MD и состояние выгрузки. Если указано «Ожидает выгрузки», эта редакция ещё не является полной резервной копией. Одинаковые временные метки с разными хешами — отдельные снимки; сравните версии строк, не удаляя файлы.
+Имена MD и CSV содержат метку данных и хеш. На самом Диске найдите файл по пути из приложения. Более поздняя дата загрузки или метка в имени не подтверждает актуальность: старая попытка может завершиться позже новой. Если приложение недоступно, сверяйте строки и ссылки нескольких снимков вручную. Строка «Ожидает выгрузки» ещё не имеет полной копии своей редакции.
 
 Совместные проекты хранятся едиными MD в 02_Совместные_проекты. В папках вузов находятся только .link.md указатели с ID, версией и путём к этой карточке. Новую редакцию можно считать полностью выгруженной после успешной записи MD, указателей и CSV. Повтор после ошибки пишет те же файлы этой версии; предыдущие версии сохраняются.
 
@@ -79,6 +80,11 @@ function toDisplayPath(segments: string[]): string {
 function toResourcePath(segments: string[]): string {
   const root = process.env.YANDEX_DISK_ROOT_MODE === "app" ? "app:" : "disk:";
   return `${root}/${segments.join("/")}`;
+}
+
+export function diskRegistryId(kind: "cards" | "articles", segments: string[]): string {
+  const scope = createHash("sha256").update(toResourcePath(segments)).digest("hex");
+  return `disk-registry:${kind}:${scope}`;
 }
 
 export function getCardDiskFolderSegments(card: KnowledgeCard): string[] {
@@ -292,6 +298,17 @@ export function buildKnowledgeCardMarkdown(
     );
   }
 
+  if (card.sources?.length) {
+    lines.push("## Источники", "", ...card.sources.map(source =>
+      `- ${source.title}: ${source.url}${source.publishedAt ? `; опубликовано: ${source.publishedAt}` : ""}${source.scope ? `; область: ${source.scope}` : ""}`
+    ), "");
+  }
+  if (card.verifiedFacts?.length) {
+    lines.push("## Проверенные факты", "", ...card.verifiedFacts.map(fact =>
+      `- ${fact.label}: ${fact.value} ${fact.unit}; год: ${fact.year}; ${fact.kind === "plan" ? "план" : "факт"}; область: ${fact.scope}; документ: ${fact.evidenceUrl}`
+    ), "");
+  }
+
   return `${lines.join("\n").trim()}\n`;
 }
 
@@ -329,12 +346,50 @@ function matchingDiskBackup(
   return { filePath: undefined, complete: false };
 }
 
+function approvedCardsInFolder(card: KnowledgeCard, allCards: KnowledgeCard[]) {
+  const folder = getCardDiskFolderSegments(card).join("/");
+  return allCards.map(getApprovedVersion)
+    .filter((item): item is KnowledgeCard => item !== null && getCardDiskFolderSegments(item).join("/") === folder)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function approvedArticlesInFolder(article: ReadyArticle, allArticles: ReadyArticle[]) {
+  return allArticles
+    .filter(item => isApprovedArticle(item) && item.universityId === article.universityId)
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+// Track exported substance and row completeness. Comments and freshness-only writes
+// can advance updatedAt without changing the published card.
+export function cardRegistryFingerprint(
+  scope: KnowledgeCard, allCards: KnowledgeCard[], customTypes: CardTypeDefinition[], uploadedId: string
+): string {
+  const rows = approvedCardsInFolder(scope, allCards).map(item => {
+    const definition = item.type === "custom" ? customTypes.find(type => type.id === item.customTypeId) : undefined;
+    return [
+      item.id,
+      getCardVersionId(item),
+      definition?.name,
+      definition?.fields.map(({ id, name, type, required, options }) => [id, name, type, required, options]),
+      item.id === uploadedId || matchingDiskBackup(item).complete,
+    ];
+  });
+  return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+}
+
+export function articleRegistryFingerprint(scope: ReadyArticle, articles: ReadyArticle[], uploadedId: string): string {
+  const rows = approvedArticlesInFolder(scope, articles).map(item => [
+    item.id, item.updatedAt, item.approval!.revisionId, contentHash(buildArticleMarkdown(item)),
+    item.id === uploadedId || matchingDiskBackup(item, item.approval!.revisionId).complete,
+  ]);
+  return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+}
+
 export function buildArticlesSummaryCsv(
   article: ReadyArticle,
   allArticles: ReadyArticle[]
 ): string {
-  const universityId = article.universityId;
-  const approved = allArticles.filter(isApprovedArticle);
+  const approved = approvedArticlesInFolder(article, allArticles);
   const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
     [
@@ -349,11 +404,9 @@ export function buildArticlesSummaryCsv(
       "Путь к неизменяемому MD",
       "Согласованный снимок реестра (UTC)",
       "Состояние MD",
+      "Версии источников",
     ],
-    ...approved
-      .filter((item) => item.universityId === universityId)
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((item) => {
+    ...approved.map((item) => {
         const revisionId = item.approval!.revisionId;
         const isTarget =
           item.id === article.id &&
@@ -376,6 +429,10 @@ export function buildArticlesSummaryCsv(
             ]),
           snapshotAt,
           isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
+          item.sourceCardIds.map((cardId) => {
+            const source = item.sourceVersions?.find((ref) => ref.cardId === cardId);
+            return source ? `${cardId}@${source.versionId}` : `${cardId}: версия не зафиксирована`;
+          }).join(", "),
         ];
       }),
   ];
@@ -388,10 +445,7 @@ export function buildKnowledgeCardsSummaryCsv(
   allCards: KnowledgeCard[],
   customTypes: CardTypeDefinition[] = []
 ): string {
-  const targetFolder = getCardDiskFolderSegments(card).join("/");
-  const approved = allCards
-    .map(getApprovedVersion)
-    .filter((item): item is KnowledgeCard => item !== null);
+  const approved = approvedCardsInFolder(card, allCards);
   const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
     [
@@ -405,12 +459,7 @@ export function buildKnowledgeCardsSummaryCsv(
       "Согласованный снимок реестра (UTC)",
       "Состояние MD",
     ],
-    ...approved
-      .filter(
-        (item) => getCardDiskFolderSegments(item).join("/") === targetFolder
-      )
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((item) => {
+    ...approved.map((item) => {
         const segments = getCardDiskFolderSegments(item);
         const isTarget = item.id === card.id && item.updatedAt === card.updatedAt;
         const backup = matchingDiskBackup(item);
@@ -461,7 +510,14 @@ export function buildArticleMarkdown(article: ReadyArticle): string {
     "## Карточки-источники",
     "",
     article.sourceCardTitles.length > 0
-      ? article.sourceCardTitles.map((title) => `- ${title}`).join("\n")
+      ? article.sourceCardTitles.map((title, index) => {
+        const cardId = article.sourceCardIds[index];
+        const pinned = article.sourceVersions?.find((source) => source.cardId === cardId);
+        if (!pinned) return `- ${title}`;
+        const path = `/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(pinned.versionId)}`;
+        const origin = (process.env.CAMPUS_PUBLIC_ORIGIN ?? "").replace(/\/$/, "");
+        return `- ${title} — [точная версия](${origin}${path})`;
+      }).join("\n")
       : "Источники не указаны.",
     ""
   );
@@ -624,11 +680,7 @@ export async function syncKnowledgeCardToDisk(
   const markdown = buildKnowledgeCardMarkdown(card, customTypes);
   const summary = buildKnowledgeCardsSummaryCsv(card, allCards, customTypes);
   const fileName = getKnowledgeCardBackupFileName(card, customTypes);
-  const snapshotAt = snapshotVersion(
-    allCards
-      .map(getApprovedVersion)
-      .filter((item): item is KnowledgeCard => item !== null)
-  );
+  const snapshotAt = snapshotVersion(approvedCardsInFolder(card, allCards));
   const summaryName = `${versionStamp(snapshotAt)}--${DISK_CARD_SUMMARY_FILE.replace(/\.csv$/, `--${contentHash(summary)}.csv`)}`;
   let fileUploaded = false;
   const pointerPaths: string[] = [];
@@ -661,13 +713,14 @@ export async function syncKnowledgeCardToDisk(
           "Продукты_и_проекты",
         ];
         const target = toDisplayPath([...segments, fileName]);
+        const pointer = `# ${card.title}\n\nУказатель на единую совместную карточку.\n\n- Согласованная версия (UTC): ${card.updatedAt}\n- ID: ${card.id}\n- Вузы: ${card.participantUniversityIds.map(getUniversityName).join(", ")}\n- Файл на Диске: ${target}\n\n[Открыть единую карточку](../../../${target.split("/").map(encodeURIComponent).join("/")})\n`;
         pointerPaths.push(
           await uploadFile(
             signal,
             token,
             pointerSegments,
-            `${versionStamp(card.updatedAt)}--${sanitizeFileName(card.id)}.link.md`,
-            `# ${card.title}\n\nУказатель на единую совместную карточку.\n\n- Согласованная версия (UTC): ${card.updatedAt}\n- ID: ${card.id}\n- Вузы: ${card.participantUniversityIds.map(getUniversityName).join(", ")}\n- Файл на Диске: ${target}\n\n[Открыть единую карточку](../../../${target.split("/").map(encodeURIComponent).join("/")})\n`,
+            `${versionStamp(card.updatedAt)}--${sanitizeFileName(card.id)}--${contentHash(pointer)}.link.md`,
+            pointer,
             "text/markdown; charset=utf-8"
           )
         );
@@ -736,7 +789,7 @@ export async function syncArticleToDisk(
   const markdown = buildArticleMarkdown(article);
   const summary = buildArticlesSummaryCsv(article, allArticles);
   const fileName = getArticleBackupFileName(article);
-  const summaryName = `${versionStamp(snapshotVersion(allArticles.filter(isApprovedArticle)))}--${DISK_ARTICLE_SUMMARY_FILE.replace(/\.csv$/, `--${contentHash(summary)}.csv`)}`;
+  const summaryName = `${versionStamp(snapshotVersion(approvedArticlesInFolder(article, allArticles)))}--${DISK_ARTICLE_SUMMARY_FILE.replace(/\.csv$/, `--${contentHash(summary)}.csv`)}`;
   let fileUploaded = false;
 
   try {
