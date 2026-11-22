@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import candidates from "../data/pilot-0.9.5-candidates.json";
+import verification from "../data/pilot-0.9.5-verification.json";
 import { checkFactText } from "../lib/fact-check";
 import {
   knowledgeSeedCards,
+  type KnowledgeCard,
   type LaboratoryCard,
   type ProjectCard,
   type UniversityCard,
@@ -380,6 +383,75 @@ test("negated opening is not read as an opening and an actual contradiction uses
         /2031/.test(item.suggestion)
     )
   );
+});
+
+test("an explicit current denial or a plan-only status contradicts an active laboratory", () => {
+  for (const text of [
+    active.title + " сегодня не действует.",
+    "Сейчас " + active.title + " не работает.",
+    active.title + " пока только планируется к открытию.",
+  ]) {
+    const result = checkFactText(text, [active, planned]);
+    const placement = result.findings.find(
+      ({ level, checkpoint }) => level === "red" && checkpoint === "placement"
+    );
+    assert.equal(
+      placement?.sourceCardId,
+      active.id,
+      text + " " + JSON.stringify(result.findings)
+    );
+    assert.match(
+      placement?.suggestion ?? "",
+      /Действует на площадке вуза с 2022 года/
+    );
+  }
+
+  const approved = new Set(verification.approvedIds);
+  const cards = candidates.cards
+    .filter(({ card }) => approved.has(card.id))
+    .map(({ card }) => ({ ...card, status: "approved" }) as KnowledgeCard);
+  assert.equal(cards.length, 16);
+  const liveText =
+    "Центр промышленного дизайна МИДиС с роботом KUKA только планируется к открытию в УНК кампуса и сегодня не действует.";
+  const result = checkFactText(liveText, cards);
+  assert.ok(
+    result.findings.some(
+      ({ level, checkpoint, sourceCardId, quote }) =>
+        level === "red" &&
+        checkpoint === "placement" &&
+        sourceCardId === "lab-midis-kuka" &&
+        quote === liveText
+    ),
+    JSON.stringify(result.findings)
+  );
+});
+
+test("a denial in another time, location, or entity cannot negate an active laboratory", () => {
+  for (const text of [
+    planned.title + " сейчас не действует.",
+    active.title + " в 2021 году не работала.",
+    "В 2033 году " + active.title + " не будет действовать.",
+    active.title + " не действует в УНК кампуса.",
+    active.title + " в новом УНК кампуса сегодня не действует.",
+    active.title + " только планируется к открытию в новом УНК кампуса.",
+    active.title +
+      " не только планируется к открытию, но и работает на площадке вуза.",
+    active.title +
+      " планируется к открытию в УНК кампуса и соседний склад сегодня не действует.",
+    active.title +
+      " планируется к открытию в УНК кампуса и соседний склад строится и сегодня не действует.",
+    active.title + " откроется в УНК кампуса в 2033 году и не действует.",
+    active.title + " сотрудничает с обсерваторией, которая сейчас не работает.",
+    active.title + " сегодня не действует?",
+  ]) {
+    const result = checkFactText(text, [active, planned]);
+    assert.ok(
+      !result.findings.some(
+        ({ level, checkpoint }) => level === "red" && checkpoint === "placement"
+      ),
+      text + " " + JSON.stringify(result.findings)
+    );
+  }
 });
 
 test("an unrelated single author claim does not alter an explicitly joint project", () => {

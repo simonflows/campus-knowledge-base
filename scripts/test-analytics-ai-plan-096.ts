@@ -6,6 +6,7 @@ import {
   type AnalyticsSnapshot,
 } from "../lib/canon-analytics-ai";
 import { buildAnalyticsReport } from "../lib/analytics";
+import { currentCanonSources } from "../lib/canon-ai";
 import candidates from "../data/pilot-0.9.5-candidates.json";
 import verification from "../data/pilot-0.9.5-verification.json";
 import type { CanonSource } from "../lib/canon-context";
@@ -108,10 +109,12 @@ test("one model interpretation can change report rows to a university passport",
   );
   assert.ok(original.cards.some((card) => card.id === project.id));
   let calls = 0;
+  let modelInstruction = "";
   const result = await run(
     institutionQuery,
     async (_request, actor, instruction, input) => {
       calls++;
+      modelInstruction = instruction;
       const data: {
         query: string;
         criteria: { usesDefaultCardTypes: boolean };
@@ -131,11 +134,11 @@ test("one model interpretation can change report rows to a university passport",
           {
             sourceId: source.id,
             factId: fact.id,
-            quote: fact.text.slice(0, 80),
           },
         ]),
       };
-    }
+    },
+    async () => ({ ...fixture, cards: [...fixture.cards].reverse() })
   );
   assert.equal(calls, 1);
   assert.equal(result.ai.originalQuery, institutionQuery);
@@ -145,8 +148,41 @@ test("one model interpretation can change report rows to a university passport",
     [passport.id]
   );
   assert.equal(result.summary.projects, 0);
+  const source = currentCanonSources(fixture.cards).find((item) => item.cardId === passport.id)!;
+  const fact = source.facts.find(({ field }) => field === "referenceDescription")!;
+  assert.equal(result.ai.citations[0]?.versionId, source.versionId);
+  assert.equal(result.ai.citations[0]?.quote, fact.text);
+  assert.match(modelInstruction, /"sourceId":"s1","factId":"f1"\}/);
   assert.equal(result.ai.citations[0]?.href, result.cards[0].sourceHref);
   assert.match(result.cards[0].sourceHref, /&version=cv-[a-f0-9]{64}$/);
+});
+
+test("the approved MIDIS passport can be cited by its complete short university field", async () => {
+  const ids = new Set(verification.approvedIds);
+  const cards = candidates.cards
+    .filter(({ card }) => ids.has(card.id))
+    .map(({ card }) => ({ ...card, status: "approved" }) as KnowledgeCard);
+  assert.equal(cards.length, 16);
+  const snapshot = { cards, types: [] };
+  const source = currentCanonSources(cards).find(({ cardId }) => cardId === passport.id)!;
+  const short = source.facts.find(({ field }) => field === "universityId")!;
+  const long = source.facts.find(({ field }) => field === "referenceDescription")!;
+  assert.equal(short.text, "МИДиС");
+  assert.ok(long.text.includes(short.text) && long.text.length > 8);
+  const exact = { sourceId: source.id, factId: short.id, quote: " МИДиС " };
+  const result = await runCandidate(
+    institutionQuery, snapshot, candidate(passportQuery, null, [exact])
+  );
+  assert.equal(result.ai.status, "ready");
+  assert.equal(result.ai.appliedQuery, passportQuery);
+  assert.deepEqual(result.ai.citations.map(({ cardId, field, quote, versionId }) =>
+    [cardId, field, quote, versionId]), [[passport.id, "universityId", "МИДиС", source.versionId]]);
+  const fragment = await runCandidate(
+    institutionQuery, snapshot, candidate(passportQuery, null, [{ ...exact, factId: long.id }])
+  );
+  assert.equal(fragment.ai.status, "failed");
+  assert.deepEqual(fragment.ai.citations, []);
+  assert.deepEqual(fragment.cards, buildAnalyticsReport(institutionQuery, cards).cards);
 });
 
 test("a model clarification or rejected rewrite leaves the proven KUKA report visible", async () => {
@@ -291,8 +327,8 @@ test("unknown industry, lost negation, changed explicit filters and unsupported 
   }
 });
 
-test("citations must use literal evidence from the selected report rows", async () => {
-  for (const kind of ["unknown-source", "outside-report", "rewritten-quote"]) {
+test("references must name an exact field from the selected report rows", async () => {
+  for (const kind of ["unknown-source", "unknown-fact", "outside-report", "rewritten-quote"]) {
     const result = await run(
       institutionQuery,
       async (_request, _actor, _instruction, input) => {
@@ -300,7 +336,7 @@ test("citations must use literal evidence from the selected report rows", async 
         const source = sources.find(
           (item) =>
             item.cardId ===
-            (kind === "rewritten-quote" ? passport.id : project.id)
+            (kind === "outside-report" ? project.id : passport.id)
         );
         assert.ok(source);
         const fact = source.facts.find(
@@ -312,11 +348,8 @@ test("citations must use literal evidence from the selected report rows", async 
           output: candidate(passportQuery, null, [
             {
               sourceId: kind === "unknown-source" ? "forged-source" : source.id,
-              factId: fact.id,
-              quote:
-                kind === "rewritten-quote"
-                  ? "В источнике нет этой вымышленной фразы."
-                  : fact.text,
+              factId: kind === "unknown-fact" ? "forged-fact" : fact.id,
+              ...(kind === "rewritten-quote" && { quote: "В источнике нет этой вымышленной фразы." }),
             },
           ]),
         };
@@ -329,11 +362,29 @@ test("citations must use literal evidence from the selected report rows", async 
   }
 });
 
+test("an ID-only reference cannot add a citation to an empty report", async () => {
+  const query = "Робот PANASONIC";
+  const source = currentCanonSources(fixture.cards).find(({ cardId }) => cardId === lab.id)!;
+  const fact = source.facts.find(({ field }) => field.startsWith("equipment."))!;
+  assert.equal(buildAnalyticsReport(query, fixture.cards).cards.length, 0);
+  const result = await runCandidate(query, fixture, candidate(query, null, [{
+    sourceId: source.id,
+    factId: fact.id,
+  }]));
+  assert.equal(result.ai.status, "failed");
+  assert.deepEqual(result.cards, []);
+  assert.deepEqual(result.ai.citations, []);
+});
+
 test("a change even in an uncited source discards the model plan and uses fresh ordinary rows", async () => {
   let reloads = 0;
+  const source = currentCanonSources(fixture.cards).find(({ cardId }) => cardId === passport.id)!;
   const result = await run(
     institutionQuery,
-    async () => ({ status: "ready", output: candidate(passportQuery) }),
+    async () => ({
+      status: "ready",
+      output: candidate(passportQuery, null, [{ sourceId: source.id, factId: source.facts[0].id }]),
+    }),
     async () => {
       reloads++;
       return {
@@ -352,6 +403,7 @@ test("a change even in an uncited source discards the model plan and uses fresh 
   assert.equal(reloads, 1);
   assert.equal(result.ai.reason, "sources-changed");
   assert.equal(result.ai.appliedQuery, undefined);
+  assert.deepEqual(result.ai.citations, []);
   assert.ok(
     result.cards.some(
       (card) => card.title === "Вуз МИДиС — обновлённый учебный проект"

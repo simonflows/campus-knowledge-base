@@ -8,7 +8,7 @@ import {
 } from "./analytics";
 import { currentCanonSources, type CanonChatAnswer } from "./canon-ai";
 import {
-  validateCanonQuote,
+  resolveCanonReference,
   type CanonCitation,
   type CanonSource,
 } from "./canon-context";
@@ -49,10 +49,10 @@ const clarification = {
     "Уточните запрос. Не удалось однозначно сохранить все исходные условия.",
 };
 
-const quoteSchema = z.strictObject({
+const referenceSchema = z.strictObject({
   sourceId: z.string().min(1).max(120),
   factId: z.string().min(1).max(120),
-  quote: z.string().trim().min(8).max(1200),
+  quote: z.string().trim().min(1).max(1200).optional(),
 });
 const outputSchema = z
   .strictObject({
@@ -60,7 +60,7 @@ const outputSchema = z
     clarification: z
       .enum(["type", "university", "equipment", "period", "query"])
       .nullable(),
-    quotes: z.array(quoteSchema).max(6),
+    quotes: z.array(referenceSchema).max(6),
   })
   .refine((result) => result.query === null || result.clarification === null);
 
@@ -87,8 +87,9 @@ const instruction = [
   "Сохрани все условия: типы, вузы и их роли, оборудование и каждую марку, отрасли, партнёров, стадии, контур, отрицания и связи.",
   "Уточняй только явно имеющийся смысл. Например, для «Покажи вуз МИДиС» предложи «Покажи паспорт вуза МИДиС», если есть такой паспорт.",
   "Не добавляй производителей, университеты, партнёров или другие имена, которых нет в запросе. При неоднозначности задай уточнение.",
-  "Не возвращай числа, строки, отчёт или итоги. При желании выбери до шести дословных цитат из фактов карточек, которые отбирает запрос.",
-  'Верни только JSON {"query":"предложение или null","clarification":null,"quotes":[{"sourceId":"s1","factId":"f1","quote":"дословная цитата"}]}.',
+  "Не возвращай числа, строки, отчёт или итоги. При желании выбери до шести полей карточек, которые отбирает запрос.",
+  "Для каждого поля укажи только точную пару sourceId и factId из входа. Не придумывай идентификаторы и не переписывай текст поля.",
+  'Верни только JSON {"query":"предложение или null","clarification":null,"quotes":[{"sourceId":"s1","factId":"f1"}]}.',
   'Если нужен вопрос, верни {"query":null,"clarification":"type|university|equipment|period|query","quotes":[]}, указав ровно одно значение.',
 ].join(" ");
 
@@ -374,8 +375,8 @@ export async function buildAnalyticsWithAi({
   }
   const chosen = new Set(report.cards.map((row) => row.id));
   const eligible = sources.filter((source) => chosen.has(source.cardId));
-  const citations = parsed.data.quotes.map((quote) =>
-    validateCanonQuote(quote, eligible)
+  const citations = parsed.data.quotes.map((reference) =>
+    resolveCanonReference(reference, eligible)
   );
   if (citations.some((citation) => citation === null)) {
     return withAi(currentReport, latestSources, {

@@ -1,13 +1,110 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import candidates from "../data/pilot-0.9.5-candidates.json";
+import verification from "../data/pilot-0.9.5-verification.json";
 import { knowledgeSeedCards, type KnowledgeCard } from "../lib/knowledge";
 
+const approvedIds = new Set(verification.approvedIds);
+const approvedPilotCards = candidates.cards
+  .filter(({ card }) => approvedIds.has(card.id))
+  .map(({ card }) => ({ ...card, status: "approved" }) as KnowledgeCard);
 const loadContext = () => import("../lib/canon-context").catch(() => null);
 const laboratory = () => {
   const card = knowledgeSeedCards.find(card => card.type === "laboratory");
   assert.ok(card);
   return { ...structuredClone(card), status: "approved", title: "Центр МИДиС — KUKA", equipment: ["Робот-манипулятор KUKA"], owners: ["PRIVATE OWNER"], ownerIds: ["private-id"], referenceDescription: "Робот KUKA действует на площадке МИДиС.", stopFormula: "Не переносить объект в кампус." } as KnowledgeCard;
 };
+
+test("model field references resolve to canonical text without trusting a model-authored quotation", async () => {
+  const { reviewFactsWithAi } = await import("../lib/canon-ai");
+  const card = laboratory();
+  assert.ok(card.type === "laboratory");
+  for (const [text, expected] of [[card.equipment[0], "supported"], ["Робот KUKA лечит пациентов на Луне.", "unknown"]]) {
+    const result = await reviewFactsWithAi({ request: new Request("https://canon.invalid"), accountId: "ref", text, cards: [card], ask: async (_r, _a, _i, payload) => {
+      const { sources } = JSON.parse(payload); const source = sources[0];
+      const fact = source.facts.find((fact: { field: string }) => fact.field === "equipment.0");
+      return { status: "ready", output: { claims: [{ id: 1, verdict: "supported", explanation: "Опора", correction: "", evidence: [{ sourceId: source.id, factId: fact.id }] }] } };
+    } });
+    assert.equal(result.status, "ready");
+    if (result.status === "ready") {
+      assert.equal(result.claims[0].verdict, expected);
+      assert.equal(result.claims[0].evidence[0].quote, card.equipment[0]);
+    }
+  }
+});
+
+test("only a cited typed placement status can prove a scoped denial of current operation", async () => {
+  const { reviewFactsWithAi } = await import("../lib/canon-ai");
+  const card = { ...laboratory(), title: "Лаборатория робота KUKA", placementStatus: "active" as const };
+  for (const [text, field, expected] of [
+    [`${card.title} сегодня не действует.`, "placementStatus", "contradicted"],
+    [`${card.title} сегодня не действует.`, "partner", "unknown"],
+    ["Лаборатория орбитальных двигателей сегодня не действует.", "placementStatus", "unknown"],
+    [`${card.title} в ${new Date().getUTCFullYear() + 3} году не действует.`, "placementStatus", "unknown"],
+  ]) {
+    const result = await reviewFactsWithAi({ request: new Request("https://canon.invalid"), accountId: "placement-ref", text, cards: [card], ask: async (_r, _a, _i, payload) => {
+      const { sources } = JSON.parse(payload); const source = sources[0]; const fact = source.facts.find((fact: { field: string }) => fact.field === field);
+      return { status: "ready", output: { claims: [{ id: 1, verdict: "contradicted", explanation: "Опора", correction: "", evidence: [{ sourceId: source.id, factId: fact.id }] }] } };
+    } });
+    assert.equal(result.status, "ready");
+    if (result.status === "ready") assert.equal(result.claims[0].verdict, expected, `${field}: ${text}`);
+  }
+});
+
+test("a status-only citation cannot infer missing location details or deny existing activity before a planned move", async () => {
+  const { reviewFactsWithAi, mergeAiFactReview } = await import("../lib/canon-ai");
+  const { checkFactText } = await import("../lib/fact-check");
+  for (const [placementStatus, placementDetails, text] of [
+    ["active", "Лаборатория интерферометрии действует в УНК кампуса.", "Лаборатория интерферометрии действует в УНК кампуса."],
+    ["planned", "Лаборатория интерферометрии действует на площадке вуза; планируется к открытию в УНК кампуса.", "Лаборатория интерферометрии действует на площадке вуза."],
+  ] as const) {
+    const card = { ...laboratory(), title: "Лаборатория интерферометрии", placementStatus, placementDetails, referenceDescription: text };
+    const ordinary = checkFactText(text, [card]);
+    assert.equal(ordinary.summary.red, 0);
+    const review = await reviewFactsWithAi({ request: new Request("https://canon.invalid"), accountId: "status-only", text, cards: [card], ask: async (_r, _a, _i, payload) => {
+      const { sources } = JSON.parse(payload); const source = sources[0]; const fact = source.facts.find((fact: { field: string }) => fact.field === "placementStatus");
+      return { status: "ready", output: { claims: [{ id: 1, verdict: "contradicted", explanation: "Опора", correction: "", evidence: [{ sourceId: source.id, factId: fact.id }] }] } };
+    } });
+    assert.equal(review.status, "ready");
+    if (review.status === "ready") {
+      assert.equal(review.claims[0].verdict, "unknown");
+      assert.equal(mergeAiFactReview(ordinary, review).summary.red, 0);
+    }
+  }
+});
+
+test("ID-only chat answers and fact evidence retain the full field and its qualifications", async () => {
+  const { answerCanonChat, reviewFactsWithAi } = await import("../lib/canon-ai");
+  const card = { ...laboratory(), referenceDescription: "Гипотетический сценарий. Робот KUKA лечит пациентов." };
+  const chat = await answerCanonChat({ request: new Request("https://canon.invalid"), accountId: "ref-chat", question: "Где находится KUKA?", cards: [card], ask: async (_r, _a, _i, payload) => {
+    const { sources } = JSON.parse(payload); const source = sources[0]; const fact = source.facts.find((fact: { field: string }) => fact.field === "placementDetails");
+    return { status: "ready", output: { quotes: [{ sourceId: source.id, factId: fact.id }], service: null, clarify: false } };
+  } });
+  assert.equal(chat.status, "ready");
+  assert.ok(chat.citations[0].href.includes("version=cv-"));
+  assert.equal(chat.citations[0].field, "placementDetails");
+  const review = await reviewFactsWithAi({ request: new Request("https://canon.invalid"), accountId: "ref-qualification", text: "Робот KUKA лечит пациентов.", cards: [card], ask: async (_r, _a, _i, payload) => {
+    const { sources } = JSON.parse(payload); const source = sources[0]; const fact = source.facts.find((fact: { field: string }) => fact.field === "referenceDescription");
+    return { status: "ready", output: { claims: [{ id: 1, verdict: "supported", explanation: "Есть поле", correction: "", evidence: [{ sourceId: source.id, factId: fact.id }] }] } };
+  } });
+  assert.equal(review.status, "ready");
+  if (review.status === "ready") {
+    assert.equal(review.claims[0].verdict, "unknown");
+    assert.equal(review.claims[0].evidence[0].quote, card.referenceDescription);
+  }
+});
+
+test("a typed status reference cannot transfer another university's KUKA laboratory to the claim", async () => {
+  const { reviewFactsWithAi } = await import("../lib/canon-ai");
+  const own = { ...laboratory(), title: "Лаборатория робота KUKA МИДиС", folderId: "01_universities/midis/infrastructure", placementStatus: "active" as const };
+  const other = { ...own, id: "another-kuka", title: "Лаборатория робота KUKA ЧелГУ", folderId: "01_universities/csu/infrastructure" };
+  const review = await reviewFactsWithAi({ request: new Request("https://canon.invalid"), accountId: "different-kuka", text: `${own.title} сегодня не действует.`, cards: [own, other], ask: async (_r, _a, _i, payload) => {
+    const { sources } = JSON.parse(payload); const source = sources.find((source: { cardId: string }) => source.cardId === other.id); const fact = source.facts.find((fact: { field: string }) => fact.field === "placementStatus");
+    return { status: "ready", output: { claims: [{ id: 1, verdict: "contradicted", explanation: "Опора", correction: "", evidence: [{ sourceId: source.id, factId: fact.id }] }] } };
+  } });
+  assert.equal(review.status, "ready");
+  if (review.status === "ready") assert.equal(review.claims[0].verdict, "unknown");
+});
 
 test("context contains approved field evidence and excludes private ownership and unpublished changes", async () => {
   const subject = await loadContext();
@@ -36,6 +133,68 @@ test("quote validation requires the supplied source, exact field and verbatim ev
   assert.equal(subject.validateCanonQuote({ ...valid, sourceId: "foreign" }, sources), null);
   assert.equal(subject.validateCanonQuote({ ...valid, factId: "stopFormula" }, sources), null);
   assert.equal(subject.validateCanonQuote({ ...valid, quote: "K" }, sources), null);
+});
+
+test("a short literal field is valid evidence only when the entire field is quoted", async () => {
+  const { buildCanonSources, validateCanonQuote } = await import("../lib/canon-context");
+  assert.equal(approvedPilotCards.length, 16);
+  const sources = buildCanonSources(approvedPilotCards, {});
+  const source = sources.find(({ cardId }) => cardId === "lab-midis-kuka")!;
+  const affiliation = source.facts.find(({ field }) => field === "affiliation")!;
+  const equipment = source.facts.find(({ field }) => field === "equipment.0")!;
+  assert.equal(affiliation.text, "МИДиС");
+  const exact = { sourceId: source.id, factId: affiliation.id, quote: " МИДиС " };
+  assert.equal(validateCanonQuote(exact, sources)?.quote, "МИДиС");
+  assert.equal(validateCanonQuote({ ...exact, quote: "МИДи" }, sources), null);
+  assert.equal(validateCanonQuote({ ...exact, quote: " " }, sources), null);
+  assert.ok(equipment.text.includes("KUKA"));
+  assert.equal(validateCanonQuote({ ...exact, factId: equipment.id, quote: "KUKA" }, sources), null);
+});
+
+test("chat and fact review accept the complete five-character affiliation in the current pilot", async () => {
+  const { answerCanonChat, currentCanonSources, reviewFactsWithAi } = await import("../lib/canon-ai");
+  assert.equal(approvedPilotCards.length, 16);
+  const source = currentCanonSources(approvedPilotCards).find(({ cardId }) => cardId === "lab-midis-kuka")!;
+  const affiliation = source.facts.find(({ field }) => field === "affiliation")!;
+  const equipment = source.facts.find(({ field }) => field === "equipment.0")!;
+  assert.equal(affiliation.text, "МИДиС");
+  const quote = { sourceId: source.id, factId: affiliation.id, quote: " МИДиС " };
+  const request = new Request("https://canon.invalid/api/assistant");
+  const chatInput = {
+    request, cards: approvedPilotCards, question: "Где находится лаборатория с роботом KUKA?",
+  };
+  const chat = await answerCanonChat({
+    ...chatInput,
+    accountId: "staff",
+    ask: async () => ({
+      status: "ready",
+      output: { quotes: [quote], service: null, clarify: false },
+    }),
+  });
+  assert.equal(chat.status, "ready");
+  assert.deepEqual(chat.citations.map((item) => [item.field, item.quote, item.versionId]),
+    [["affiliation", affiliation.text, source.versionId]]);
+  const local = await answerCanonChat({
+    ...chatInput,
+    question: "Где находится KUKA?",
+    cards: approvedPilotCards.flatMap((card) => card.id === source.cardId && card.type === "laboratory"
+      ? [{ ...card, placementDetails: "", referenceDescription: "" }] : []),
+    accountId: null,
+  });
+  assert.equal(local.citations[0]?.field, "affiliation");
+  assert.equal(local.citations[0]?.quote, affiliation.text);
+  const fact = await reviewFactsWithAi({
+    request, accountId: "staff", text: equipment.text + ".", cards: approvedPilotCards,
+    ask: async () => ({
+      status: "ready",
+      output: { claims: [{ id: 1, verdict: "supported", explanation: "Подтверждено", correction: "",
+        evidence: [{ sourceId: source.id, factId: equipment.id, quote: equipment.text }, quote] }] },
+    }),
+  });
+  assert.equal(fact.status, "ready");
+  if (fact.status !== "ready") return;
+  assert.equal(fact.claims[0].verdict, "supported");
+  assert.deepEqual(fact.claims[0].evidence.map(({ quote: text }) => text), [equipment.text, affiliation.text]);
 });
 
 test("a pending record without an approved snapshot cannot enter model context", async () => {

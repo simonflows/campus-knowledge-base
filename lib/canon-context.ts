@@ -11,7 +11,8 @@ export type CanonSource = {
   facts: CanonFact[];
   constraints: string[];
 };
-export type CanonQuoteInput = { sourceId: string; factId: string; quote: string };
+export type CanonReferenceInput = { sourceId: string; factId: string; quote?: string };
+export type CanonQuoteInput = CanonReferenceInput & { quote: string };
 export type CanonCitation = CanonQuoteInput & {
   cardId: string;
   versionId: string;
@@ -80,15 +81,32 @@ export function buildCanonSources(cards: KnowledgeCard[], versions: Record<strin
   });
 }
 
-export function validateCanonQuote(input: CanonQuoteInput, sources: CanonSource[]): CanonCitation | null {
+function findCanonFact(input: CanonReferenceInput, sources: CanonSource[]) {
   const source = sources.find(source => source.id === input.sourceId);
   const fact = source?.facts.find(fact => fact.id === input.factId);
-  const quote = input.quote.trim();
-  if (!source || !fact || quote.length < 8 || quote.length > 1200 || !fact.text.includes(quote)) return null;
+  return source && fact ? { source, fact } : null;
+}
+
+function citeCanonFact({ source, fact }: { source: CanonSource; fact: CanonFact }): CanonCitation {
   return {
     // Display and verify the complete canonical field, including negation and qualifications.
     // A model-selected substring must never become a new standalone positive assertion.
     sourceId: source.id, factId: fact.id, quote: fact.text, cardId: source.cardId, versionId: source.versionId,
     title: source.title, href: source.href, field: fact.field, label: fact.label,
   };
+}
+
+export function validateCanonQuote(input: CanonQuoteInput, sources: CanonSource[]): CanonCitation | null {
+  const found = findCanonFact(input, sources);
+  const quote = typeof input.quote === "string" ? input.quote.trim() : "";
+  if (!found || !quote || quote.length > 1200) return null;
+  const { text } = found.fact;
+  if (quote.length < Math.min(8, text.length) || !text.includes(quote)) return null;
+  return citeCanonFact(found);
+}
+
+export function resolveCanonReference(input: CanonReferenceInput, sources: CanonSource[]): CanonCitation | null {
+  if (input.quote !== undefined) return validateCanonQuote({ ...input, quote: input.quote }, sources);
+  const found = findCanonFact(input, sources);
+  return found ? citeCanonFact(found) : null;
 }

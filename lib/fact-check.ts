@@ -464,6 +464,29 @@ const futurePlacement =
   /(?:планиру[а-яё]*|до\s+(?:завершения|открытия|ввода)|после\s+(?:ввода|открытия)|буд(?:ет|ут))(?![\p{L}])/iu;
 const plannedOpening =
   /планиру[а-яё]*\s+(?:к\s+открытию|открытие|открыть)|откроется|(?:открытие|ввод)\s+запланирован[а-яё]*/iu;
+const presentTime =
+  /(?:сейчас|сегодня|пока|ещ[её]|в\s+настоящее\s+время|на\s+данный\s+момент)/iu;
+const presentPrefix = new RegExp("^" + presentTime.source + "\\s+", "iu");
+const presentDenial = new RegExp(
+  "^(.+?)\\s+(?:(" +
+    presentTime.source +
+    ")\\s+)?не\\s+(?:работает|действует|функционирует|открыт[ао]?|запущен[ао]?)\\s*[.!]*$",
+  "iu"
+);
+const openingAndDenial = new RegExp(
+  "^(.+?)\\s+(?:(?:только|лишь)\\s+)?(?:" +
+    plannedOpening.source +
+    ")(?:\\s+(?!и(?:\\s|$))[^\\s,.!?;]+){0,16}\\s+и$",
+  "iu"
+);
+const openingOnly = new RegExp(
+  "^(.+?)\\s+(?:" +
+    presentTime.source +
+    "\\s+)?(?:только|лишь)\\s+(?:" +
+    plannedOpening.source +
+    ")\\s*[.!]*$",
+  "iu"
+);
 const previousSubject =
   /^\s*(?:он[аи]?|эт(?:от|а|о|и)\s+(?:проект|объект|лаборатор[а-яё]*|тренаж[её]р|робот))\s/iu;
 const statementSegmenter = new Intl.Segmenter("ru", {
@@ -582,6 +605,34 @@ function uniqueScopedCard<T extends KnowledgeCard>(
   return scoped.length === 1 ? scoped[0] : undefined;
 }
 
+export function deniesCurrentOperation(
+  statement: string,
+  lab: LaboratoryCard,
+  labs: LaboratoryCard[]
+): boolean {
+  if (lab.placementStatus !== "active" || statement.length > 500) return false;
+  const claim = statement.replace(presentPrefix, "");
+  const denial = presentDenial.exec(claim);
+  const precedingPlan = denial && openingAndDenial.exec(denial[1]);
+  // A coordinated denial after a plan must explicitly refer to the present.
+  if (precedingPlan && !denial[2] && claim === statement) return false;
+  const subject =
+    precedingPlan?.[1] ?? denial?.[1] ?? openingOnly.exec(claim)?.[1];
+  if (!subject) return false;
+
+  // Resolve the complete subject before scoring a negative claim. The alias
+  // may connect the lab and its equipment with «с» in place of «и».
+  const withoutLinkers = (text: string) =>
+    tokenizeKnowledgeText(text)
+      .filter((word) => !/^(?:и|с|со)$/u.test(word))
+      .join(" ");
+  const names = labs.filter((card) =>
+    [projectTitle(card), card.title, card.id].some((name) =>
+      equivalentWords(withoutLinkers(subject), withoutLinkers(name))
+    )
+  );
+  return names.length === 1 && names[0].id === lab.id;
+}
 function collectScopedFindings(
   statements: string[],
   projects: ProjectCard[],
@@ -732,7 +783,7 @@ function collectScopedFindings(
         ((lab.placementStatus === "planned" &&
           (campusHere || !previouslyActive)) ||
           (lab.placementStatus === "active" && campusHere && !currentCampus));
-      if (contradicts || wrongOpening) {
+      if (contradicts || wrongOpening || deniesCurrentOperation(statement, lab, labs)) {
         const details =
           lab.placementDetails.trim() ||
           placementStatusLabels[lab.placementStatus];
