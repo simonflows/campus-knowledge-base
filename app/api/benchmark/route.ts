@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getComparisonStorageMode } from "@/lib/deploy-storage";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { z } from "zod";
 
 import {
@@ -145,6 +147,8 @@ export async function POST(request: NextRequest) {
         { status: 403 }
       );
   }
+
+  if (!(await getComparisonStorageMode())) return unavailableStorageResponse();
 
   if (mode === "live" && (yandexConfigured || alibabaConfigured)) {
     const retryAfter = reserveRun(Date.now());

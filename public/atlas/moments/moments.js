@@ -106,4 +106,5 @@ const start = () => { if (!window.__momentsManual) mountAll(document); };
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
 else start();
 
-export default { mount, mountAll, unmountAll, ready, lib };
+const moments = { mount, mountAll, unmountAll, ready, lib };
+export default moments;

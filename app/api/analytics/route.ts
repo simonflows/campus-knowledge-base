@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { buildAnalyticsReport } from "@/lib/analytics";
 import { getAllCardTypes, getCanonicalKnowledgeCards } from "@/lib/models";
 import { analyticsQuerySchema } from "@/lib/validation/analytics";
@@ -29,19 +30,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  try {
-    const [cards, types] = await Promise.all([
-      getCanonicalKnowledgeCards(),
-      getAllCardTypes(),
-    ]);
-    const report = buildAnalyticsReport(parsed.data.query, cards, types);
-
-    return NextResponse.json(report);
-  } catch (error) {
-    console.error("Ошибка сборки аналитики:", error);
-    return NextResponse.json(
-      { error: "Не удалось собрать аналитику по базе" },
-      { status: 503 }
-    );
-  }
+  const data = await Promise.all([
+    getCanonicalKnowledgeCards(), getAllCardTypes(),
+  ]).catch(() => null);
+  if (!data) return unavailableStorageResponse();
+  const [cards, types] = data;
+  return NextResponse.json(buildAnalyticsReport(parsed.data.query, cards, types));
 }

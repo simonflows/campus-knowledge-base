@@ -1,5 +1,6 @@
 "use client";
 
+import { getTrustedPreviewOrigin } from "./config";
 import {
   BRIDGE_VERSION,
   isValidMessage,
@@ -11,17 +12,16 @@ interface MessageHandler {
   (message: BridgeMessage<BridgePayload>): void;
 }
 
-let parentWindow: Window | null = null;
+let preview: { parent: Window; origin: string } | null = null;
 let secret: string | null = null;
-let isReady = false;
 const handlers = new Map<string, MessageHandler>();
 
 export function isBridgeReady(): boolean {
-  return isReady;
+  return secret !== null;
 }
 
 export function getParentWindow(): Window | null {
-  return parentWindow;
+  return isBridgeReady() ? preview?.parent ?? null : null;
 }
 
 export function getSecret(): string | null {
@@ -31,10 +31,11 @@ export function getSecret(): string | null {
 export function postMessage(
   message: Omit<BridgeMessage<BridgePayload>, "version">
 ) {
-  if (!parentWindow) {
-    return;
-  }
-  parentWindow.postMessage({ ...message, version: BRIDGE_VERSION }, "*");
+  if (!preview || !isBridgeReady()) return;
+  preview.parent.postMessage(
+    { ...message, version: BRIDGE_VERSION },
+    preview.origin
+  );
 }
 
 export function onMessage(type: string, handler: MessageHandler) {
@@ -46,44 +47,34 @@ export function offMessage(type: string) {
 }
 
 function handleMessage(event: MessageEvent) {
-  if (!event.source || event.source === window) {
-    return;
-  }
+  if (!preview || event.source !== preview.parent || event.origin !== preview.origin) return;
 
   const data = event.data;
   if (!isValidMessage(data)) {
     return;
   }
 
-  if (!isReady && data.type === "ping") {
+  if (data.type === "ping") {
     const payload = data.payload as { secret?: string };
-    if (typeof payload?.secret === "string") {
-      parentWindow = event.source as Window;
-      secret = payload.secret;
-      isReady = true;
-    }
+    if (typeof payload?.secret !== "string" || !payload.secret) return;
+    secret ??= payload.secret;
+    if (payload.secret !== secret) return;
+    postMessage({ type: "ping", payload: { secret } });
   }
 
-  if (isReady && data.type === "ping") {
-    const payload = data.payload as { secret?: string };
-    if (payload?.secret === secret) {
-      postMessage({ type: "ping", payload: { secret: secret } });
-    }
-  }
-
-  const handler = handlers.get(data.type);
-  if (handler) {
-    handler(data as BridgeMessage<BridgePayload>);
-  }
+  if (!isBridgeReady()) return;
+  handlers.get(data.type)?.(data);
 }
 
-export function init() {
+export function init(trustedOrigin: string) {
+  const origin = getTrustedPreviewOrigin("development", trustedOrigin);
+  if (!origin || window.parent === window) return null;
+  preview = { parent: window.parent, origin };
   window.addEventListener("message", handleMessage);
   return () => {
     window.removeEventListener("message", handleMessage);
-    parentWindow = null;
+    preview = null;
     secret = null;
-    isReady = false;
     handlers.clear();
   };
 }

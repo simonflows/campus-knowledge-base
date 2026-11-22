@@ -9,6 +9,7 @@ import { requireFixtureDatabase } from "./qa-fixture";
 import { installPilotFixture } from "./pilot-fixture";
 import { knowledgeSeedCards } from "../lib/knowledge";
 import { runEditorialRoutes } from "./test-editorial-routes";
+import { measurePilotLoad } from "./measure-pilot-load";
 import runRequestBrowserChecks from "./requests-browser-check";
 
 async function main() {
@@ -42,6 +43,12 @@ async function main() {
       await delay(300);
     }
     assert.ok(ready, "Isolated production server not ready");
+    const readiness = await fetch(base + "/api/ready");
+    assert.equal(readiness.status, 200, "Isolated production server must see all working tables");
+    const loadProfile = process.env.CAMPUS_QA_MEASURE_LOAD;
+    if (loadProfile === "smoke" || loadProfile === "pilot") {
+      await measurePilotLoad(credentials("demo-pr-midis"), loadProfile);
+    }
     await runEditorialRoutes(credentials);
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
@@ -70,6 +77,8 @@ async function main() {
       const project = knowledgeSeedCards.find(card => card.id === "project-susu-digital-twin")!;
       await ownerFormPage.goto(base + "/knowledge?card=" + project.id);
       await ownerFormPage.getByRole("button", { name: "Редактировать карточку", exact: true }).click();
+      const designatedOwner = people.account("demo-owner-susu");
+      await ownerFormPage.getByLabel("Персональный доступ к правке").selectOption(designatedOwner.id);
       const [update] = await Promise.all([
         ownerFormPage.waitForResponse(response =>
           response.request().method() === "PUT" &&
@@ -78,10 +87,12 @@ async function main() {
         ownerFormPage.getByRole("button", { name: "Сохранить изменения", exact: true }).click(),
       ]);
       assert.equal(update.status(), 200);
-      const submitted = update.request().postDataJSON() as { owners: string[] };
+      const submitted = update.request().postDataJSON() as { owners: string[]; ownerIds: string[] };
       assert.deepEqual(submitted.owners, project.owners, "Each owner name must retain its organization");
+      assert.deepEqual(submitted.ownerIds, [designatedOwner.id]);
+      assert.deepEqual((await update.json()).ownerIds, [designatedOwner.id]);
       await ownerFormPage.close();
-      console.log("PASS card edit preserves existing owner identities");
+      console.log("PASS card edit preserves existing owner labels and assigns a personal account");
 
       const page = await browser.newPage();
       await page.goto(base + "/login#" + marker);

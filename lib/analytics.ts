@@ -198,12 +198,12 @@ const READINESS_KEYWORDS: Array<{
   { stage: "Внедрено", keywords: ["внедрен", "внедрён"] },
 ];
 
-const CONTOUR_KEYWORDS: Array<{ contour: Contour; keywords: string[] }> = [
-  { contour: "ПИШ", keywords: ["пиш", "передов"] },
-  { contour: "УМНОЦ", keywords: ["умноц"] },
+const CONTOUR_KEYWORDS: Array<{ contour: Contour; pattern: RegExp }> = [
+  { contour: "ПИШ", pattern: /(?<![\p{L}\p{N}_])(?:пиш(?![\p{L}\p{N}_])|передов\p{L}*)/u },
+  { contour: "УМНОЦ", pattern: /(?<![\p{L}\p{N}_])умноц(?![\p{L}\p{N}_])/u },
   {
     contour: "собственный проект вуза",
-    keywords: ["собственн"],
+    pattern: /(?<![\p{L}\p{N}_])собственн\p{L}*/u,
   },
 ];
 
@@ -425,7 +425,7 @@ function parseQuery(
     includesAny(filterQuery, item.keywords)
   ).map((item) => item.stage);
   const contours = CONTOUR_KEYWORDS.filter((item) =>
-    includesAny(filterQuery, item.keywords)
+    item.pattern.test(filterQuery)
   ).map((item) => item.contour);
   const hasCampusContour =
     /контур[а-яёa-z]*\s+(?:в\s+)?кампус/.test(query) ||

@@ -6,6 +6,7 @@ import { isStorageWritable } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
 import type { CardEditRequest, KnowledgeCard } from "@/lib/knowledge";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   editRequestCreateSchema,
   editRequestUpdateSchema,
@@ -49,7 +50,12 @@ export async function POST(request: NextRequest, context: RouteContext) {
   }
 
   const { id } = await context.params;
-  const card = await getKnowledgeCardById(id);
+  let card;
+  try {
+    card = await getKnowledgeCardById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
 
   if (!card || !visibleKnowledgeCard(user, card)) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
@@ -125,7 +131,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   }
 
   const { id } = await context.params;
-  const card = await getKnowledgeCardById(id);
+  let card;
+  try {
+    card = await getKnowledgeCardById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
 
   if (!card || !visibleKnowledgeCard(user, card)) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });

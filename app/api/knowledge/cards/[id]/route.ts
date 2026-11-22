@@ -1,10 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canEditCard, visibleKnowledgeCard } from "@/lib/auth";
+import {
+  areCardOwnerIdsAssignable,
+  canEditCard,
+  resolveLegacyCardOwnerIds,
+  sameCardOwnerScope,
+  visibleKnowledgeCard,
+} from "@/lib/auth";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { folderIds, getCardStatus } from "@/lib/knowledge";
+import { sessionDirectory } from "@/lib/pilot-auth";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   getCardTypeById,
   getKnowledgeCardById,
@@ -40,7 +48,12 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   }
 
   const { id } = await context.params;
-  const current = await getKnowledgeCardById(id);
+  let current;
+  try {
+    current = await getKnowledgeCardById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
 
   if (!current) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
@@ -103,7 +116,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       { status: 400 }
     );
 
-  if (cardInput.type !== current.type) {
+  if (cardInput.type !== current.type ||
+      (cardInput.type === "custom" && current.type === "custom" && cardInput.customTypeId !== current.customTypeId)) {
     return NextResponse.json(
       { error: "Тип карточки нельзя изменить после создания" },
       { status: 400 }
@@ -111,7 +125,12 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   }
 
   if (cardInput.type === "custom") {
-    const typeDef = await getCardTypeById(cardInput.customTypeId);
+    let typeDef;
+    try {
+      typeDef = await getCardTypeById(cardInput.customTypeId);
+    } catch {
+      return unavailableStorageResponse();
+    }
 
     if (!typeDef) {
       return NextResponse.json(
@@ -145,8 +164,32 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     cardInput = {
       ...cardInput,
       owners: current.owners,
+      ownerIds: current.ownerIds,
       folderId: current.folderId,
     };
+    if (!sameCardOwnerScope(current, cardInput)) {
+      return NextResponse.json(
+        { error: "Папку, вуз и участников проекта меняет координатор" },
+        { status: 403 }
+      );
+    }
+  } else {
+    const directory = sessionDirectory();
+    const changedScope = !sameCardOwnerScope(current, cardInput);
+    const ownerIds =
+      cardInput.ownerIds ?? current.ownerIds ?? resolveLegacyCardOwnerIds(cardInput, directory) ??
+      (changedScope ? [] : undefined);
+    if (
+      ownerIds !== undefined &&
+      (cardInput.ownerIds !== undefined || changedScope) &&
+      !areCardOwnerIdsAssignable(cardInput, ownerIds, directory)
+    ) {
+      return NextResponse.json(
+        { error: "Укажите действующих владельцев из этого раздела карточек" },
+        { status: 400 }
+      );
+    }
+    cardInput = { ...cardInput, ownerIds };
   }
 
   try {
@@ -187,10 +230,6 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         },
         { status: 409 }
       );
-    console.error("Ошибка обновления карточки базы знаний:", error);
-    return NextResponse.json(
-      { error: "Ошибка обновления карточки" },
-      { status: 500 }
-    );
+    return unavailableStorageResponse();
   }
 }

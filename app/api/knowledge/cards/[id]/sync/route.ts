@@ -6,6 +6,7 @@ import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getCardStatus } from "@/lib/knowledge";
 import { getKnowledgeCardById } from "@/lib/models";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -29,7 +30,12 @@ export async function POST(_request: Request, context: RouteContext) {
       { status: 401 }
     );
   const { id } = await context.params;
-  const existing = await getKnowledgeCardById(id);
+  let existing;
+  try {
+    existing = await getKnowledgeCardById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
 
   if (!existing) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });

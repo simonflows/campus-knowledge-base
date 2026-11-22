@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { editorialContentSchema, type EditorialContent } from "./editorial";
-import { RECOVERY_PREFIX } from "./editorial-session-cleanup";
+import { editorialRecoveryStorage, RECOVERY_PREFIX } from "./editorial-session-cleanup";
 export { RECOVERY_PREFIX, clearEditorialRecovery } from "./editorial-session-cleanup";
 
 // Keep locally typed text even when its length prevents a server save.
@@ -38,29 +38,77 @@ const recoverySchema = z.object({
   savedAt: z.number(),
   content: recoveryContentSchema,
 });
+const tabRecoverySchema = recoverySchema.extend({ expiresAt: z.number() });
+const TAB_LIFETIME = 8 * 60 * 60 * 1000;
+const LEGACY_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 export type EditorialRecovery = z.infer<typeof recoverySchema>;
-export function readEditorialRecovery(ownerId: string): EditorialRecovery[] {
+
+const ownerPrefix = (ownerId: string) => `${RECOVERY_PREFIX}${ownerId}:`;
+const recoveryKey = (ownerId: string, documentId: string | null) =>
+  `${ownerPrefix(ownerId)}${documentId || "new"}`;
+
+function parseStoredValue(storage: Storage, key: string): unknown {
+  const raw = storage.getItem(key);
+  if (raw === null) return null;
   try {
-    const values: EditorialRecovery[] = [];
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function readTabCopy(storage: Storage, key: string, now: number) {
+  const parsed = tabRecoverySchema.safeParse(parseStoredValue(storage, key));
+  if (parsed.success) {
+    const { expiresAt, ...record } = parsed.data;
+    if (now < expiresAt) return record;
+  }
+  storage.removeItem(key);
+  return null;
+}
+
+export function migrateEditorialRecovery(ownerId: string) {
+  try {
+    const storage = editorialRecoveryStorage();
+    const now = Date.now();
     for (const key of Object.keys(localStorage)) {
-      if (!key.startsWith(RECOVERY_PREFIX)) continue;
-      const raw = localStorage.getItem(key);
-      if (raw === null) continue;
-      let value: unknown;
-      try {
-        value = JSON.parse(raw);
-      } catch {
-        continue;
-      }
-      const parsed = recoverySchema.safeParse(value);
+      if (!key.startsWith(ownerPrefix(ownerId))) continue;
+      const legacy = recoverySchema.safeParse(parseStoredValue(localStorage, key));
       if (
-        !parsed.success ||
-        Date.now() - parsed.data.savedAt > 7 * 24 * 60 * 60 * 1000
-      ) {
+        !legacy.success ||
+        legacy.data.ownerId !== ownerId ||
+        recoveryKey(ownerId, legacy.data.documentId) !== key
+      ) continue;
+      if (now - legacy.data.savedAt >= LEGACY_LIFETIME) {
         localStorage.removeItem(key);
         continue;
       }
-      if (parsed.data.ownerId === ownerId) values.push(parsed.data);
+      const existing = readTabCopy(storage, key, now);
+      if (existing) {
+        if (existing.version !== legacy.data.version ||
+          JSON.stringify(existing.content) !== JSON.stringify(legacy.data.content)
+        ) continue;
+      } else {
+        storage.setItem(key, JSON.stringify({ ...legacy.data, expiresAt: now + TAB_LIFETIME }));
+      }
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Keep any copies that could not be transferred to the current tab.
+  }
+}
+
+export function readEditorialRecovery(ownerId: string): EditorialRecovery[] {
+  try {
+    const storage = editorialRecoveryStorage();
+    const now = Date.now();
+    const values: EditorialRecovery[] = [];
+    for (const key of Object.keys(storage)) {
+      if (!key.startsWith(ownerPrefix(ownerId))) continue;
+      const copy = readTabCopy(storage, key, now);
+      if (copy?.ownerId === ownerId && recoveryKey(ownerId, copy.documentId) === key) {
+        values.push(copy);
+      }
     }
     return values.sort((a, b) => b.savedAt - a.savedAt);
   } catch {
@@ -74,11 +122,12 @@ export function saveEditorialRecovery(
   content: EditorialContent
 ) {
   try {
-    const record = { ownerId, documentId, version, savedAt: Date.now(), content };
-    if (!recoverySchema.safeParse(record).success) return false;
-
-    localStorage.setItem(
-      `${RECOVERY_PREFIX}${ownerId}:${documentId || "new"}`,
+    const storage = editorialRecoveryStorage();
+    const savedAt = Date.now();
+    const record = { ownerId, documentId, version, savedAt, expiresAt: savedAt + TAB_LIFETIME, content };
+    if (!tabRecoverySchema.safeParse(record).success) return false;
+    storage.setItem(
+      recoveryKey(ownerId, documentId),
       JSON.stringify(record)
     );
     const previous = readEditorialRecovery(ownerId).filter(
@@ -96,8 +145,6 @@ export function removeEditorialRecovery(
   documentId: string | null
 ) {
   try {
-    localStorage.removeItem(
-      `${RECOVERY_PREFIX}${ownerId}:${documentId || "new"}`
-    );
+    editorialRecoveryStorage().removeItem(recoveryKey(ownerId, documentId));
   } catch {}
 }

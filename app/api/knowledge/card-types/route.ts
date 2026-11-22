@@ -9,35 +9,21 @@ import {
   customCardCounts,
   getAllKnowledgeCards,
 } from "@/lib/models";
-import { mockCustomCardTypes } from "@/lib/mock-data";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { cardTypeInputSchema } from "@/lib/validation/knowledge";
 
 export async function GET() {
-  const dbAvailable = await isStorageWritable();
-
-  if (dbAvailable) {
-    try {
-      const [types, cards, user] = await Promise.all([
-        getAllCardTypes(),
-        getAllKnowledgeCards(),
-        getSessionUser(),
-      ]);
-
-      const counts = customCardCounts(visibleKnowledgeCards(user, cards));
-      return NextResponse.json(
-        types.map((type) => ({
-          ...type,
-          cardCount: counts[type.id] ?? 0,
-        })), { headers: { "Cache-Control": "private, no-store" } }
-      );
-    } catch (error) {
-      console.error("Ошибка получения типов карточек:", error);
-    }
+  try {
+    const [types, cards, user] = await Promise.all([
+      getAllCardTypes(), getAllKnowledgeCards(), getSessionUser(),
+    ]);
+    const counts = customCardCounts(visibleKnowledgeCards(user, cards));
+    return NextResponse.json(types.map((type) => ({
+      ...type, cardCount: counts[type.id] ?? 0,
+    })), { headers: { "Cache-Control": "private, no-store" } });
+  } catch {
+    return unavailableStorageResponse();
   }
-
-  return NextResponse.json(
-    mockCustomCardTypes.map((type) => ({ ...type, cardCount: 0 }))
-  );
 }
 
 export async function POST(request: NextRequest) {

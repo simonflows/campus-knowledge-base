@@ -77,6 +77,7 @@ async function main() {
   const candidate = await getKnowledgeCardById(firstSubmit.candidateCardId);
   assert.ok(candidate);
   assert.deepEqual(candidate.owners, [recipientLeader.ownershipLabel]);
+  assert.deepEqual(candidate.ownerIds, [recipientLeader.id]);
   console.log("PASS retries with a withdrawn source and simultaneous create, answer and submit");
 
   for (const result of ["approved", "rejected"] as const) {

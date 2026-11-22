@@ -5,6 +5,7 @@ import { getEditorial } from "@/lib/editorial-models";
 import { isStorageWritable } from "@/lib/db";
 import { syncArticleRecord } from "@/lib/disk-sync-service";
 import { getArticleById } from "@/lib/models";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -38,7 +39,12 @@ export async function POST(_request: Request, context: RouteContext) {
   }
 
   const { id } = await context.params;
-  const existing = await getArticleById(id);
+  let existing;
+  try {
+    existing = await getArticleById(id);
+  } catch {
+    return unavailableStorageResponse();
+  }
   if (!existing)
     return NextResponse.json(
       { error: "Согласованная статья не найдена" },

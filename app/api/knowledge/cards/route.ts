@@ -1,24 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import {
+  areCardOwnerIdsAssignable,
+  canAssignCardOwner,
   canCreateCard,
   visibleKnowledgeCard,
   visibleKnowledgeCards,
   getUserOwnershipLabel,
   isCardOwner,
+  resolveLegacyCardOwnerIds,
 } from "@/lib/auth";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { folderIds } from "@/lib/knowledge";
+import { sessionDirectory } from "@/lib/pilot-auth";
 import {
   createKnowledgeCard,
   deleteKnowledgeCard,
-  ensureKnowledgeSeed,
   getAllKnowledgeCards,
   getCardTypeById,
 } from "@/lib/models";
-import { mockKnowledgeCards } from "@/lib/mock-data";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   buildCustomFieldValuesSchema,
   knowledgeCardInputSchema,
@@ -26,19 +29,12 @@ import {
 
 export async function GET() {
   const user = await getSessionUser();
-  const dbAvailable = await isStorageWritable();
-
-  if (dbAvailable) {
-    try {
-      await ensureKnowledgeSeed();
-      const cards = await getAllKnowledgeCards();
-      return NextResponse.json(visibleKnowledgeCards(user, cards), { headers: { "Cache-Control": "private, no-store" } });
-    } catch (error) {
-      console.error("Ошибка получения карточек базы знаний:", error);
-    }
+  try {
+    const cards = await getAllKnowledgeCards();
+    return NextResponse.json(visibleKnowledgeCards(user, cards), { headers: { "Cache-Control": "private, no-store" } });
+  } catch {
+    return unavailableStorageResponse();
   }
-
-  return NextResponse.json(visibleKnowledgeCards(user, mockKnowledgeCards), { headers: { "Cache-Control": "private, no-store" } });
 }
 
 function extractUniversityFolderId(folderId: string): string | null {
@@ -192,19 +188,28 @@ export async function POST(request: NextRequest) {
         folderId: folderIds.customType(typeDef.id),
         customFields: customFields.data,
       };
-    } catch (error) {
-      console.error("Ошибка проверки пользовательского типа:", error);
-      return NextResponse.json(
-        { error: "Не удалось проверить поля пользовательского типа" },
-        { status: 500 }
-      );
+    } catch {
+      return unavailableStorageResponse();
     }
   }
 
-  if (user.role !== "admin" && !isCardOwner(user, cardInput.owners)) {
+  if (user.role === "admin") {
+    const directory = sessionDirectory();
+    const ownerIds = cardInput.ownerIds ?? resolveLegacyCardOwnerIds(cardInput, directory) ?? [];
+    if (!areCardOwnerIdsAssignable(cardInput, ownerIds, directory)) {
+      return NextResponse.json(
+        { error: "Владельцы должны иметь доступ к этому разделу карточек" },
+        { status: 400 }
+      );
+    }
+    cardInput = { ...cardInput, ownerIds };
+  } else {
     cardInput = {
       ...cardInput,
-      owners: [getUserOwnershipLabel(user), ...cardInput.owners],
+      owners: isCardOwner(user, cardInput.owners)
+        ? cardInput.owners
+        : [getUserOwnershipLabel(user), ...cardInput.owners],
+      ownerIds: canAssignCardOwner(user, cardInput) ? [user.id] : [],
     };
   }
 
@@ -239,12 +244,8 @@ export async function POST(request: NextRequest) {
         : created;
 
     return NextResponse.json(visibleKnowledgeCard(user, card), { status: 201 });
-  } catch (error) {
-    console.error("Ошибка создания карточки базы знаний:", error);
-    return NextResponse.json(
-      { error: "Ошибка создания карточки" },
-      { status: 500 }
-    );
+  } catch {
+    return unavailableStorageResponse();
   }
 }
 
@@ -294,11 +295,7 @@ export async function DELETE(request: NextRequest) {
   try {
     await deleteKnowledgeCard(id);
     return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Ошибка удаления карточки базы знаний:", error);
-    return NextResponse.json(
-      { error: "Ошибка удаления карточки" },
-      { status: 500 }
-    );
+  } catch {
+    return unavailableStorageResponse();
   }
 }

@@ -17,6 +17,8 @@ import {
 import { authenticatePilot, demoLoginEnabled, getSessionIdentity, pilotLoginReady } from "@/lib/pilot-auth";
 import { loginSchema } from "@/lib/validation/access";
 
+const sessionResponseOptions = { headers: { "Cache-Control": "private, no-store" } };
+
 export async function GET() {
   const user = await getSessionUser();
 
@@ -24,7 +26,7 @@ export async function GET() {
     user,
     adminPinRequired: demoLoginEnabled() && isAdminPinRequired(),
     demoLogin: demoLoginEnabled(),
-  });
+  }, sessionResponseOptions);
 }
 
 export async function POST(request: NextRequest) {
@@ -87,7 +89,7 @@ export async function POST(request: NextRequest) {
   }
 
   clearLoginFailures(accountKey);
-  const response = NextResponse.json({ user }, { headers: { "Cache-Control": "private, no-store" } });
+  const response = NextResponse.json({ user }, sessionResponseOptions);
   response.cookies.set(
     SESSION_COOKIE,
     signSessionToken(user.id),
@@ -105,7 +107,7 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const response = NextResponse.json({ user: null });
+  const response = NextResponse.json({ user: null }, sessionResponseOptions);
   response.cookies.set(SESSION_COOKIE, "", {
     ...sessionCookieOptions,
     maxAge: 0,

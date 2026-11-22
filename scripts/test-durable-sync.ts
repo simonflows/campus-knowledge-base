@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { GetCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { docClient, resetDbAvailableCache } from "../lib/db";
 import { knowledgeSeedCards, type KnowledgeCard } from "../lib/knowledge";
 import { articleSeed, type ReadyArticle } from "../lib/articles";
@@ -36,7 +36,16 @@ async function main() {
   };
   let failCsv = true;
   let changeDuringUpload = false;
+  let commentDuringUpload = false;
+  const concurrentRequest = {
+    id: "request-fixture", authorId: "fixture", authorName: "Fixture", authorRole: "staff",
+    authorOrganization: "Fixture", message: "Уточнить источник", createdAt: initial.updatedAt, status: "open" as const,
+  };
+  let expectedRecoveryFile: string | null = null;
   let sawSecondPage = false;
+  let failScan = false;
+  let finishConcurrentExport = false;
+  let expectBoundedDatabaseWork = false;
   const originalSend = docClient.send;
   const originalFetch = globalThis.fetch;
   const rejectStale = () => {
@@ -44,16 +53,23 @@ async function main() {
       name: "ConditionalCheckFailedException",
     });
   };
-  docClient.send = (async (command: unknown) => {
+  docClient.send = (async (command: unknown, options?: { abortSignal?: AbortSignal }) => {
     if (command instanceof ListTablesCommand) return { TableNames: [] };
-    if (command instanceof GetCommand)
+    if (command instanceof GetCommand) {
+      if (command.input.ProjectionExpression?.includes("diskSync.sourceUpdatedAt")) {
+        assert.equal(command.input.ConsistentRead, true);
+        assert.ok(options?.abortSignal);
+      }
       return {
         Item:
           command.input.TableName === TableName.ARTICLES
             ? currentArticle
             : currentCard,
       };
+    }
     if (command instanceof ScanCommand) {
+      if (expectBoundedDatabaseWork) assert.ok(options?.abortSignal, "Each export scan has an abort signal");
+      if (failScan) throw new Error("Fixture database read error");
       if (command.input.TableName === TableName.KNOWLEDGE_CARDS) {
         if (command.input.ExclusiveStartKey) {
           sawSecondPage = true;
@@ -68,12 +84,28 @@ async function main() {
         return { Items: [currentArticle] };
       return { Items: [] };
     }
+    if (command instanceof PutCommand) {
+      if (finishConcurrentExport) {
+        currentCard = { ...currentCard, diskSync: { ...currentCard.diskSync!, status: "synced", filePath: "new-export.md" } };
+        finishConcurrentExport = false;
+      }
+      const values = command.input.ExpressionAttributeValues!;
+      if (command.input.ConditionExpression?.includes("diskSync.#syncStatus") && values[":syncStatus"] !== currentCard.diskSync?.status) rejectStale();
+      currentCard = command.input.Item as KnowledgeCard;
+      return {};
+    }
     assert.ok(command instanceof UpdateCommand);
     const input = command.input;
     const values = input.ExpressionAttributeValues!;
+    if (expectBoundedDatabaseWork) assert.ok(options?.abortSignal, "Each export state write has its own abort signal");
     assert.ok(input.ConditionExpression?.includes("updatedAt = :version"));
     const isArticle = input.TableName === TableName.ARTICLES;
     const current = isArticle ? currentArticle : currentCard;
+    if (values[":source"] && (current.diskSync?.sourceUpdatedAt !== values[":source"] || current.diskSync?.status !== values[":pending"])) rejectStale();
+    if (input.ConditionExpression?.includes("attribute_not_exists(diskSync)") && current.diskSync) rejectStale();
+    if (input.ConditionExpression?.includes("diskSync.#syncStatus = :syncStatus") && values[":syncStatus"] !== current.diskSync?.status) rejectStale();
+    if (input.ConditionExpression?.includes("diskSync.attemptId = :observedAttempt") && values[":observedAttempt"] !== current.diskSync?.attemptId) rejectStale();
+    if (input.ConditionExpression?.includes("attribute_not_exists(diskSync.attemptId)") && current.diskSync?.attemptId) rejectStale();
     if (
       values[":version"] !== current.updatedAt ||
       (values[":attempt"] && values[":attempt"] !== current.diskSync?.attemptId)
@@ -91,6 +123,7 @@ async function main() {
       if (currentCard.status && currentCard.status !== "approved")
         rejectStale();
       currentCard = { ...currentCard, diskSync: values[":diskSync"] };
+      if (input.ReturnValues === "ALL_NEW") return { Attributes: currentCard };
     }
     return {};
   }) as typeof docClient.send;
@@ -107,6 +140,7 @@ async function main() {
     );
     assert.equal(currentCard.diskSync?.status, "pending");
     assert.ok(currentCard.diskSync?.attemptId);
+    if (expectedRecoveryFile) assert.equal(currentCard.diskSync?.lastSuccessfulExport?.filePath, expectedRecoveryFile);
     if (url.hostname === "cloud-api.yandex.net") {
       if (url.pathname.endsWith("/resources/upload"))
         return Response.json({
@@ -116,6 +150,10 @@ async function main() {
     }
     assert.equal(init?.method, "PUT");
     const target = url.searchParams.get("path")!;
+    if (commentDuringUpload && target.endsWith(".csv")) {
+      commentDuringUpload = false;
+      await setKnowledgeCardModeration(currentCard.id, { editRequests: [concurrentRequest] }, currentCard.updatedAt);
+    }
     if (
       changeDuringUpload &&
       target.endsWith(".md") &&
@@ -143,12 +181,24 @@ async function main() {
     await assert.rejects(setKnowledgeCardModeration(initial.id, { editRequests: [] }, obsoleteVersion), {
       name: "ConditionalCheckFailedException",
     });
+    expectBoundedDatabaseWork = true;
     await syncKnowledgeCardRecord(initial);
     assert.equal(currentCard.diskSync?.status, "failed");
     assert.equal(currentCard.diskSync?.fileUploaded, true);
     failCsv = false;
     await retryKnowledgeCardSync(initial.id);
     assert.equal(currentCard.diskSync?.status, "synced");
+    await assert.rejects(syncKnowledgeCardRecord(initial), { name: "ConditionalCheckFailedException" });
+    assert.equal(currentCard.diskSync?.status, "synced", "A stale start cannot erase a later successful export");
+    expectedRecoveryFile = currentCard.diskSync!.filePath;
+    failCsv = true;
+    await retryKnowledgeCardSync(initial.id);
+    assert.equal(currentCard.diskSync?.status, "failed");
+    assert.equal(currentCard.diskSync?.lastSuccessfulExport?.filePath, expectedRecoveryFile);
+    // A previous complete export is still on Disk when retrying the same immutable paths.
+    assert.equal(currentCard.diskSync?.summaryUploaded, true);
+    expectedRecoveryFile = null;
+    failCsv = false;
     changeDuringUpload = true;
     await assert.rejects(syncKnowledgeCardRecord(currentCard), {
       name: "ConditionalCheckFailedException",
@@ -158,6 +208,32 @@ async function main() {
     await retryKnowledgeCardSync(initial.id);
     assert.equal(currentCard.diskSync?.status, "synced");
     assert.equal(currentCard.diskSync?.sourceUpdatedAt, "2026-11-21T00:00:00Z");
+    const beforeComment = currentCard.updatedAt;
+    commentDuringUpload = true;
+    const completed = await retryKnowledgeCardSync(initial.id);
+    assert.notEqual(currentCard.updatedAt, beforeComment);
+    assert.equal(currentCard.diskSync?.status, "synced");
+    assert.equal(currentCard.diskSync?.sourceUpdatedAt, currentCard.updatedAt, "A comment during transfer preserves completion");
+    assert.deepEqual(currentCard.editRequests, [concurrentRequest], "Transfer completion preserves the new comment");
+    assert.equal(completed?.updatedAt, currentCard.updatedAt, "API returns the version actually updated");
+    assert.equal(completed?.diskSync?.sourceUpdatedAt, currentCard.updatedAt);
+    assert.deepEqual(completed?.editRequests, [concurrentRequest]);
+    await setKnowledgeCardModeration(initial.id, { editRequests: [] }, currentCard.updatedAt);
+    assert.equal(currentCard.diskSync?.sourceUpdatedAt, currentCard.updatedAt, "Comments retain the already-exported version");
+    for (const action of [
+      () => setKnowledgeCardModeration(initial.id, { editRequests: [] }, currentCard.updatedAt),
+      () => updateKnowledgeCard(initial.id, knowledgeCardInputSchema.parse(currentCard), undefined, currentCard.updatedAt),
+    ]) {
+      currentCard = { ...currentCard, diskSync: { ...currentCard.diskSync!, status: "pending" } };
+      finishConcurrentExport = true;
+      await assert.rejects(action(), { name: "ConditionalCheckFailedException" });
+      assert.equal(currentCard.diskSync?.filePath, "new-export.md");
+    }
+    failScan = true;
+    await retryKnowledgeCardSync(initial.id);
+    assert.equal(currentCard.diskSync?.status, "failed", "A failed preparation is persisted");
+    failScan = false;
+    expectBoundedDatabaseWork = false;
     await assert.rejects(
       setArticleDiskSync(
         currentArticle.id,

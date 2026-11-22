@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import {
   GetCommand,
   PutCommand,
@@ -193,18 +194,21 @@ export async function mutateInformationRequest(
     if (item.status !== "answered" || !item.answer || !item.evidenceUrl)
       throw new RequestError("Сначала нужен ответ с источником", 409);
     const cardId = `request-${id}`;
+    const recipients = sessionDirectory().filter(account =>
+      account.universityId === item.recipientUniversityId
+    );
+    const leads = recipients.filter(account => account.role === "university_owner");
+    const owner = leads.length === 1
+      ? leads[0]
+      : recipients.find(account => account.id === item.answeredBy &&
+          (account.role === "university_owner" || account.role === "university_pr"));
     const card: ProjectCard = {
       id: cardId,
       type: "project",
       title: item.subject,
       folderId: `01_universities/${item.recipientUniversityId}/products`,
-      owners: [
-        sessionDirectory().find(
-          (account) =>
-            account.role === "university_owner" &&
-            account.universityId === item.recipientUniversityId
-        )?.ownershipLabel ?? item.recipientUniversityId,
-      ],
+      owners: [owner?.ownershipLabel ?? item.recipientUniversityId],
+      ownerIds: owner ? [owner.id] : [],
       referenceDescription: `${item.answer}\nИсточник: ${item.evidenceUrl}`,
       stopFormula:
         "Ответ на запрос: не использовать как утверждённый факт до проверки координатором.",
@@ -249,6 +253,12 @@ export async function mutateInformationRequest(
       );
       return next;
     } catch (error) {
+      if (
+        error instanceof TransactionCanceledException &&
+        error.CancellationReasons?.some(
+          ({ Code }) => Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)
+        )
+      ) throw error;
       if ((error as Error).name === "TransactionCanceledException") {
         const current = await getInformationRequest(id);
         if (

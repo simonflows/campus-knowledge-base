@@ -4,10 +4,9 @@ import { runWithAiProvider } from "@/lib/ai-providers";
 import {
   flattenArticleChunks,
   isApprovedArticle,
-  type ReadyArticle,
 } from "@/lib/articles";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
-import { isStorageWritable } from "@/lib/db";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   buildArticleMessages,
   buildDeterministicArticleDraft,
@@ -22,43 +21,11 @@ import {
   selectUniversityMetricCards,
 } from "@/lib/editor";
 import type { KnowledgeCard } from "@/lib/knowledge";
-import { mockArticles, mockKnowledgeCards } from "@/lib/mock-data";
 import {
-  ensureArticleSeed,
-  ensureKnowledgeSeed,
   getAllArticles,
   getCanonicalKnowledgeCards,
 } from "@/lib/models";
 import { generateArticleInputSchema } from "@/lib/validation/articles";
-
-async function loadCards(): Promise<KnowledgeCard[]> {
-  if (await isStorageWritable()) {
-    try {
-      await ensureKnowledgeSeed();
-      return await getCanonicalKnowledgeCards();
-    } catch (error) {
-      console.error("Не удалось загрузить карточки для редактора:", error);
-    }
-  }
-
-  return mockKnowledgeCards;
-}
-
-async function loadArticles(): Promise<ReadyArticle[]> {
-  if (await isStorageWritable()) {
-    try {
-      await ensureArticleSeed();
-      return await getAllArticles();
-    } catch (error) {
-      console.error(
-        "Не удалось загрузить готовые статьи для редактора:",
-        error
-      );
-    }
-  }
-
-  return mockArticles.filter(isApprovedArticle);
-}
 
 function sourceSummary(card: KnowledgeCard) {
   return {
@@ -75,8 +42,14 @@ export async function POST(request: NextRequest) {
       { error: "Запрещён кросс-доменный запрос" },
       { status: 403 }
     );
-  if (!(await getSessionUser()))
+  const user = await getSessionUser();
+  if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
+  if (user.role === "guest")
+    return NextResponse.json(
+      { error: "Гостям недоступна подготовка черновиков" },
+      { status: 403 }
+    );
   let body: unknown;
 
   try {
@@ -101,7 +74,9 @@ export async function POST(request: NextRequest) {
   }
 
   const { query, basis, provider, audience, outlet, length } = parsed.data;
-  const [cards, articles] = await Promise.all([loadCards(), loadArticles()]);
+  const data = await Promise.all([getCanonicalKnowledgeCards(), getAllArticles()]).catch(() => null);
+  if (!data) return unavailableStorageResponse();
+  const [cards, articles] = data;
 
   const metricCards = selectUniversityMetricCards(query, cards);
   if (
@@ -241,12 +216,19 @@ export async function POST(request: NextRequest) {
   }
 
   if (!articlePayload) {
-    articlePayload = buildDeterministicArticleDraft({
-      query,
-      selectedCards,
-      matchedArticles: usedArticles,
-      referenceChunks,
-    });
+    try {
+      articlePayload = buildDeterministicArticleDraft({
+        query,
+        selectedCards,
+        matchedArticles: usedArticles,
+        referenceChunks,
+      });
+    } catch {
+      return NextResponse.json(
+        { error: "Не удалось собрать черновик из выбранных источников. Уточните тему или выберите меньше блоков." },
+        { status: 422 }
+      );
+    }
   }
 
   const sources = articlePayload.sourceCardIds

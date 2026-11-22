@@ -1,32 +1,23 @@
 import "../data-workspaces.css";
 
 import { AnalyticsWorkspace } from "@/components/analytics/analytics-workspace";
-import { getStorageMode } from "@/lib/db";
+import { StorageUnavailable } from "@/components/storage-unavailable";
+import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
 import { getCanonicalKnowledgeCards } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
 
-async function getCardsCount(): Promise<{
-  cardsCount: number;
-  dbAvailable: boolean;
-}> {
-  const mode = await getStorageMode();
-  try {
-    const cards = await getCanonicalKnowledgeCards();
-    return {
-      cardsCount: cards.length,
-      dbAvailable: mode === "dynamodb" || mode === "local-json",
-    };
-  } catch (error) {
-    console.error("Не удалось загрузить карточки для аналитики:", error);
-    return { cardsCount: 0, dbAvailable: false };
-  }
-}
-
 export default async function AnalyticsPage() {
-  const { cardsCount, dbAvailable } = await getCardsCount();
-
+  const data = await Promise.all([
+    getCanonicalKnowledgeCards(),
+    getReadableStorageMode(),
+  ]).catch(() => null);
+  if (!data) return <StorageUnavailable title="Аналитика кампуса" />;
+  const [cards, mode] = data;
   return (
-    <AnalyticsWorkspace cardsCount={cardsCount} dbAvailable={dbAvailable} />
+    <AnalyticsWorkspace
+      cardsCount={cards.length}
+      dbAvailable={mode !== "static-export"}
+    />
   );
 }

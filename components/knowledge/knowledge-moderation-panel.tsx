@@ -43,16 +43,22 @@ export function KnowledgeModerationPanel({
 
   if (cards.length === 0) return null;
 
-  const handleAction = async (cardId: string, action: "approve" | "reject") => {
+  const handleAction = async (
+    card: KnowledgeCard,
+    action: "approve" | "reject"
+  ) => {
     if (busyId !== null) return;
-    setBusyId(`${cardId}-${action}`);
+    setBusyId(`${card.id}-${action}`);
 
     try {
       const response = await fetch(
-        `/api/knowledge/cards/${cardId}/moderation`,
+        `/api/knowledge/cards/${card.id}/moderation`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "If-Match": card.updatedAt,
+          },
           body: JSON.stringify({ action }),
         }
       );
@@ -171,7 +177,7 @@ export function KnowledgeModerationPanel({
                     type="button"
                     size="sm"
                     className="h-10 flex-1 sm:h-7 sm:flex-none"
-                    onClick={() => handleAction(card.id, "approve")}
+                    onClick={() => handleAction(card, "approve")}
                     disabled={!ready || busyId !== null}
                   >
                     <CheckCircle2 className="h-4 w-4" />
@@ -182,7 +188,7 @@ export function KnowledgeModerationPanel({
                     variant="outline"
                     size="sm"
                     className="h-10 flex-1 sm:h-7 sm:flex-none"
-                    onClick={() => handleAction(card.id, "reject")}
+                    onClick={() => handleAction(card, "reject")}
                     disabled={busyId !== null}
                   >
                     <XCircle className="h-4 w-4" />

@@ -19,7 +19,32 @@ function sendRouteChange() {
   postMessage({ type: "route-change", payload: getUrlPayload() });
 }
 
-export function init() {
+export function getPreviewNavigationUrl(
+  value: unknown,
+  currentHref: string,
+  basePath: string
+): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+
+  try {
+    const current = new URL(currentHref);
+    const target = new URL(value, current);
+    if (
+      (target.protocol !== "http:" && target.protocol !== "https:") ||
+      target.origin !== current.origin ||
+      target.username ||
+      target.password ||
+      (basePath &&
+        target.pathname !== basePath &&
+        !target.pathname.startsWith(`${basePath}/`))
+    ) return null;
+    return target.href;
+  } catch {
+    return null;
+  }
+}
+
+export function init(basePath: string) {
   const originalPushState = history.pushState;
   const originalReplaceState = history.replaceState;
 
@@ -40,10 +65,9 @@ export function init() {
   };
 
   const handleNavigate = (message: { payload?: unknown }) => {
-    const payload = message.payload as { url?: string } | undefined;
-    if (payload?.url) {
-      window.location.href = payload.url;
-    }
+    const payload = message.payload as { url?: unknown } | undefined;
+    const url = getPreviewNavigationUrl(payload?.url, window.location.href, basePath);
+    if (url) window.location.assign(url);
   };
 
   onMessage("get-url", handleGetUrl);

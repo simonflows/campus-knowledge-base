@@ -8,11 +8,19 @@ import {
   READINESS_STAGES,
   type CardTypeDefinition,
   type CustomCardField,
+  type CustomFieldValue,
 } from "@/lib/knowledge";
 
 const text = z.string().trim().min(1, "Заполните поле");
 const longText = z.string().trim().min(1, "Заполните поле").max(10_000);
 const textList = z.array(text).default([]);
+const universityIdSchema = text.refine(
+  (id) => universities.some((university) => university.id === id),
+  "Выберите вуз из списка резидентов"
+);
+const ownerIds = z.array(text.max(80)).max(2000)
+  .refine(ids => new Set(ids).size === ids.length, "Владельцы не должны повторяться")
+  .optional();
 
 export const evidenceUrlSchema = z
   .string()
@@ -41,6 +49,7 @@ export const structuredMetricSchema = z.object({
 });
 
 const baseCardSchema = z.object({
+  ownerIds,
   title: text.max(200),
   folderId: text,
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -51,14 +60,14 @@ const baseCardSchema = z.object({
 const projectCardSchema = baseCardSchema.extend({
   type: z.literal("project"),
   sphere: text,
-  initiatorUniversityId: text,
+  initiatorUniversityId: universityIdSchema,
   coExecutors: textList,
   industrialPartner: text,
   readinessStage: z.enum(READINESS_STAGES),
   contour: z.enum(CONTOURS),
   confirmedFigures: textList,
   isJoint: z.boolean().default(false),
-  participantUniversityIds: textList,
+  participantUniversityIds: z.array(universityIdSchema).default([]),
 });
 
 const laboratoryCardSchema = baseCardSchema.extend({
@@ -167,6 +176,7 @@ export const cardTypeUpdateSchema = z
 export type CardTypeInput = z.infer<typeof cardTypeInputSchema>;
 
 const customCardSchema = z.object({
+  ownerIds,
   type: z.literal("custom"),
   customTypeId: text,
   title: text.max(200),
@@ -226,7 +236,7 @@ export const knowledgeCardInputSchema = z
 
 export type KnowledgeCardInput = z.infer<typeof knowledgeCardInputSchema>;
 
-function isEmptyValue(value: unknown): boolean {
+function isEmptyValue(value: unknown): value is undefined | null | "" | [] {
   return (
     value === undefined ||
     value === null ||
@@ -235,8 +245,8 @@ function isEmptyValue(value: unknown): boolean {
   );
 }
 
-function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
-  let base: z.ZodTypeAny;
+function customFieldValueSchema(field: CustomCardField) {
+  let base: z.ZodType<CustomFieldValue>;
 
   switch (field.type) {
     case "longText":
@@ -249,7 +259,7 @@ function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
       base = z
         .string()
         .trim()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "Укажите дату в формате ГГГГ-ММ-ДД");
+        .pipe(z.iso.date("Укажите дату в формате ГГГГ-ММ-ДД"));
       break;
     case "list":
       base = z.array(z.string().trim().min(1, "Заполните элемент списка"));
@@ -270,26 +280,31 @@ function customFieldValueSchema(field: CustomCardField): z.ZodTypeAny {
       base = z.string().trim().max(1_000, "Слишком длинный текст");
   }
 
-  return z.any().superRefine((value, ctx) => {
-    if (isEmptyValue(value)) {
+  const schema = z.unknown().transform((value, ctx) => {
+    const normalized = typeof value === "string" ? value.trim() : value;
+    if (isEmptyValue(normalized)) {
       if (field.required) {
         ctx.addIssue({
           code: "custom",
           message: "Заполните обязательное поле",
         });
+        return z.NEVER;
       }
-      return;
+      return normalized;
     }
 
-    const parsed = base.safeParse(value);
+    const parsed = base.safeParse(normalized);
 
     if (!parsed.success) {
       ctx.addIssue({
         code: "custom",
         message: parsed.error.issues[0]?.message ?? "Некорректное значение",
       });
+      return z.NEVER;
     }
+    return parsed.data;
   });
+  return field.required ? schema : schema.optional();
 }
 
 export function buildCustomFieldValuesSchema(typeDef: CardTypeDefinition) {

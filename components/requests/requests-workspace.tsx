@@ -1,6 +1,6 @@
 "use client";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -249,23 +249,43 @@ export function RequestsWorkspace({
   const detailPane = useRef<HTMLElement>(null);
   const listPane = useRef<HTMLElement>(null);
   const operation = useRef<string | null>(null);
-  const upsert = (item: InformationRequest) =>
+  const refreshRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => refreshRequest.current?.abort(), []);
+
+  const upsert = (item: InformationRequest) => {
+    if (refreshRequest.current) {
+      refreshRequest.current.abort();
+      refreshRequest.current = null;
+      setRefreshing(false);
+    }
     setItems((current) => [
       item,
       ...current.filter((row) => row.id !== item.id),
     ]);
+  };
   const refresh = async () => {
-    if (refreshing) return;
+    if (refreshRequest.current) return;
+    const controller = new AbortController();
+    refreshRequest.current = controller;
     setRefreshing(true);
     try {
-      const response = await fetch("/api/requests", { cache: "no-store" });
+      const response = await fetch("/api/requests", {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
       const data = await response.json();
+      if (controller.signal.aborted) return;
       if (!response.ok) throw new Error(data.error);
       setItems(data.items);
     } catch {
-      toast.error("Не удалось обновить входящие");
+      if (!controller.signal.aborted)
+        toast.error("Не удалось обновить входящие");
     } finally {
-      setRefreshing(false);
+      if (!controller.signal.aborted) {
+        refreshRequest.current = null;
+        setRefreshing(false);
+      }
     }
   };
   const send = async (e: React.FormEvent) => {
@@ -495,6 +515,7 @@ export function RequestsWorkspace({
                         edit();
                       }}
                       className="rounded-lg border px-2.5 py-2"
+                      disabled={busy}
                       required
                     >
                       <option value="">Выберите вуз</option>
@@ -519,6 +540,7 @@ export function RequestsWorkspace({
                         edit();
                       }}
                       maxLength={180}
+                      disabled={busy}
                       required
                     />
                   </Field>
@@ -535,6 +557,7 @@ export function RequestsWorkspace({
                         edit();
                       }}
                       maxLength={4000}
+                      disabled={busy}
                       required
                     />
                     {initialCardId ? (

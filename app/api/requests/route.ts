@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
-import { isDatabaseAvailable } from "@/lib/db";
+import { getStorageMode, isDatabaseAvailable } from "@/lib/db";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   createInformationRequestSchema,
   mockInformationRequests,
@@ -18,7 +19,9 @@ export async function GET() {
       { error: "Войдите в аккаунт для просмотра запросов" },
       { status: 401 }
     );
-  if (!(await isDatabaseAvailable()))
+  const mode = await getStorageMode();
+  if (mode === "read-only") return unavailableStorageResponse();
+  if (mode !== "dynamodb")
     return NextResponse.json(
       { items: mockInformationRequests, dbAvailable: false },
       { headers: { "Cache-Control": "private, no-store" } }

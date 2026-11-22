@@ -17,33 +17,53 @@ function pilotDirectory() {
   try {
     const rows = pilotDirectorySchema.parse(JSON.parse(process.env.CAMPUS_PILOT_ACCOUNTS || "[]"));
     if (new Set(rows.map(row => row.login)).size !== rows.length || new Set(rows.map(row => row.keyHash)).size !== rows.length) return [];
-    // Old cards can identify a person by name alone. Require their organization
-    // when the personal directory and legacy profiles assign that name to different organizations.
-    const organizationsByName = new Map<string, Set<string>>();
-    function registerName(name: string, organization: string) {
+    // Count distinct identities, including inactive legacy profiles that still occur on cards.
+    const claims = new Map<string, Map<string, Set<string>>>();
+    const universityOwnerCounts = new Map<string, number>();
+    function registerName(name: string, organization: string, id: string) {
       const label = normalizeOwnerLabel(name);
-      const organizations = organizationsByName.get(label) ?? new Set<string>();
-      organizations.add(organization);
-      organizationsByName.set(label, organizations);
+      const organizations = claims.get(label) ?? new Map<string, Set<string>>();
+      const members = organizations.get(organization) ?? new Set<string>();
+      members.add(id);
+      organizations.set(organization, members);
+      claims.set(label, organizations);
     }
     for (const profile of demoAccounts) {
-      for (const name of [...profile.ownerAliases, ...profile.organizationAliases]) registerName(name, profile.organization);
+      const members = rows.filter(row => row.profile === profile.id);
+      const ids = members.length ? members.map(row => "pilot-" + row.login) : [profile.id];
+      for (const name of profile.ownerAliases) {
+        for (const id of ids) registerName(name, profile.organization, id);
+      }
+      for (const label of profile.organizationAliases) {
+        registerName(label, profile.organization, "organization:" + profile.organization);
+      }
     }
     for (const row of rows) {
       const profile = getDemoAccount(row.profile)!;
-      if (profile.ownerAliases.length) registerName(row.name, profile.organization);
+      if (profile.ownerAliases.length) registerName(row.name, profile.organization, "pilot-" + row.login);
+      if (profile.role === "university_owner" && profile.universityId) {
+        const count = universityOwnerCounts.get(profile.universityId) ?? 0;
+        universityOwnerCounts.set(profile.universityId, count + 1);
+      }
     }
     return rows.map(row => {
       const profile = toSessionUser(getDemoAccount(row.profile)!);
       const names = profile.ownerAliases.length ? new Set([...profile.ownerAliases, row.name]) : [];
+      const ownerAliases: string[] = [];
+      for (const name of names) {
+        const organizations = claims.get(normalizeOwnerLabel(name))!;
+        if (organizations.get(profile.organization)?.size === 1) {
+          ownerAliases.push(organizations.size === 1 && !name.includes(",") ? name : name + ", " + profile.organization);
+        }
+      }
       const user: SessionUser = {
         ...profile,
         id: "pilot-" + row.login,
         name: row.name,
         ownershipLabel: row.name + ", " + profile.organization,
-        ownerAliases: Array.from(names, name => organizationsByName.get(normalizeOwnerLabel(name))!.size > 1
-          ? name + ", " + profile.organization
-          : name),
+        ownerAliases,
+        soleUniversityOwner: profile.role === "university_owner" &&
+          !!profile.universityId && universityOwnerCounts.get(profile.universityId) === 1,
       };
       return { user, row };
     });

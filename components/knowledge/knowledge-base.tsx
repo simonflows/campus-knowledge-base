@@ -51,6 +51,7 @@ import {
   canManageTypes,
   canModerate,
   roleShortLabels,
+  type CardOwnerCandidate,
   type SessionUser,
 } from "@/lib/auth";
 import { diskSyncStatusLabels } from "@/lib/disk-sync";
@@ -90,6 +91,7 @@ type KnowledgeBaseProps = {
   initialQuery?: string;
   dbAvailable: boolean;
   currentUser: SessionUser | null;
+  ownerCandidates?: CardOwnerCandidate[];
 };
 
 export function KnowledgeBase({
@@ -101,6 +103,7 @@ export function KnowledgeBase({
   initialQuery = "",
   dbAvailable,
   currentUser,
+  ownerCandidates,
 }: KnowledgeBaseProps) {
   const router = useRouter();
   const params = useSearchParams();
@@ -371,10 +374,12 @@ export function KnowledgeBase({
 
           {selectedCard && editingCard ? (
             <KnowledgeCardForm
+              key={editingCard.id}
               cards={cards}
               customTypes={customTypes}
               dbAvailable={dbAvailable}
               currentUser={currentUser}
+              ownerCandidates={ownerCandidates}
               initialCard={editingCard}
               onCreated={handleCreated}
               onUpdated={handleCardSaved}
@@ -591,6 +596,7 @@ export function KnowledgeBase({
                   customTypes={customTypes}
                   dbAvailable={dbAvailable}
                   currentUser={currentUser}
+                  ownerCandidates={ownerCandidates}
                   defaultFolderId={selectedFolderId}
                   onCreated={handleCreated}
                   onCancel={() => setShowForm(false)}

@@ -5,7 +5,7 @@ import { docClient } from "../lib/db";
 import { articleSeed } from "../lib/articles";
 import { TableName } from "../lib/schema";
 
-function requireDisposableDatabase() {
+export function requireDisposableDatabase() {
   assert.equal(process.env.CAMPUS_QA_DISPOSABLE, "yes", "Use an isolated in-memory QA database and set CAMPUS_QA_DISPOSABLE=yes");
   assert.equal(process.env.DOCUMENT_API_ENDPOINT, "http://127.0.0.1:8000", "Only the loopback QA Document API is allowed");
   assert.ok(process.env.AWS_ACCESS_KEY_ID === "campusLocalTest", "Use only the fixture identity");

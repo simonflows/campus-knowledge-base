@@ -69,11 +69,17 @@ import {
   type EditorialRevision,
 } from "@/lib/editorial";
 import {
+  migrateEditorialRecovery,
   readEditorialRecovery,
   removeEditorialRecovery,
   saveEditorialRecovery,
   type EditorialRecovery,
 } from "@/lib/editorial-recovery";
+import {
+  editorialRecoveryStorage,
+  EDITORIAL_SESSION_ENDED,
+  EDITORIAL_SESSION_END_KEY,
+} from "@/lib/editorial-session-cleanup";
 
 type Props = {
   initialArticles: ReadyArticle[];
@@ -102,21 +108,27 @@ const blank = (user?: SessionUser | null) =>
 const emptyRecoveries: EditorialRecovery[] = [];
 function recoveryList(ownerId?: string) {
   let snapshot = emptyRecoveries;
+  let ended = false;
   const listeners = new Set<() => void>();
   const refresh = () => {
-    snapshot = ownerId ? readEditorialRecovery(ownerId) : emptyRecoveries;
+    snapshot = ownerId && !ended ? readEditorialRecovery(ownerId) : emptyRecoveries;
     listeners.forEach((notify) => notify());
   };
   return {
     refresh,
+    end() {
+      ended = true;
+      refresh();
+    },
     getSnapshot: () => snapshot,
     subscribe(notify: () => void) {
       listeners.add(notify);
+      if (ownerId && !ended) migrateEditorialRecovery(ownerId);
       refresh();
-      window.addEventListener("storage", refresh);
+      window.addEventListener("focus", refresh);
       return () => {
         listeners.delete(notify);
-        window.removeEventListener("storage", refresh);
+        window.removeEventListener("focus", refresh);
       };
     },
   };
@@ -169,7 +181,9 @@ function EditorSession({
     [serverDocument, setServerDocument] = useState<EditorialDocument | null>(
       null
     );
-  const [recoveryStore] = useState(() => recoveryList(currentUser?.id));
+  const [recoveryStore] = useState(() =>
+    recoveryList(currentUser?.role === "guest" ? undefined : currentUser?.id)
+  );
   const recoveries = useSyncExternalStore(
     recoveryStore.subscribe,
     recoveryStore.getSnapshot,
@@ -231,6 +245,7 @@ function EditorSession({
     const endSession = () => {
       active.current = false;
       requests.abort();
+      recoveryStore.end();
       setEnded(true);
       setSurface("library");
       setDoc(null);
@@ -242,13 +257,22 @@ function EditorSession({
       setLegacy([]);
       setDocuments([]);
     };
-    window.addEventListener("campus-session-ended", endSession);
+    const syncSession = (event: StorageEvent) => {
+      if (event.key !== EDITORIAL_SESSION_END_KEY) return;
+      try {
+        editorialRecoveryStorage();
+      } catch {}
+      endSession();
+    };
+    window.addEventListener(EDITORIAL_SESSION_ENDED, endSession);
+    window.addEventListener("storage", syncSession);
     return () => {
       active.current = false;
       requests.abort();
-      window.removeEventListener("campus-session-ended", endSession);
+      window.removeEventListener(EDITORIAL_SESSION_ENDED, endSession);
+      window.removeEventListener("storage", syncSession);
     };
-  }, [refresh]);
+  }, [recoveryStore, refresh]);
 
   const acceptVersion = (next: EditorialDocument | null) => {
     docRef.current = next;
@@ -305,7 +329,7 @@ function EditorSession({
     setServerDocument(diverged ? next : null);
     setSaveStatus(
       recovery
-        ? "Восстановлен неотправленный текст с этого устройства"
+        ? "Восстановлен неотправленный текст из копии в этой вкладке"
         : next
           ? "Сохранено на сервере"
           : "Новый личный черновик"
@@ -583,7 +607,16 @@ function EditorSession({
       setBusy(false);
     }
   };
-  const recover = async (recovery: EditorialRecovery) => {
+  const recover = async (selected: EditorialRecovery) => {
+    if (!currentUser || !active.current) return;
+    const recovery = readEditorialRecovery(currentUser.id).find(
+      (copy) => copy.documentId === selected.documentId
+    );
+    if (!recovery) {
+      recoveryStore.refresh();
+      toast.info("Копия черновика больше недоступна в этой вкладке");
+      return;
+    }
     setBusy(true);
     try {
       if (!(await flush()) || !active.current) return;

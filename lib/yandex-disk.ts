@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { isApprovedArticle, type ReadyArticle } from "./articles";
-import { createPendingDiskSync, type DiskSyncInfo } from "./disk-sync";
+import {
+  createPendingDiskSync,
+  lastSuccessfulDiskExport,
+  type DiskSyncInfo,
+} from "./disk-sync";
 import {
   folderIds,
   getCardTypeLabel,
@@ -13,8 +17,9 @@ import {
 } from "./knowledge";
 
 const DISK_API_BASE = "https://cloud-api.yandex.net/v1/disk";
-const DISK_ROOT = "disk:";
-const REQUEST_TIMEOUT_MS = 30_000;
+export function diskAttemptDeadline(): AbortSignal {
+  return AbortSignal.timeout(30_000);
+}
 
 export const DISK_CARD_SUMMARY_FILE = "_Сводная_таблица_карточек.csv";
 export const DISK_ARTICLE_SUMMARY_FILE = "_Сводная_таблица_статей.csv";
@@ -72,7 +77,8 @@ function toDisplayPath(segments: string[]): string {
 }
 
 function toResourcePath(segments: string[]): string {
-  return `${DISK_ROOT}/${segments.join("/")}`;
+  const root = process.env.YANDEX_DISK_ROOT_MODE === "app" ? "app:" : "disk:";
+  return `${root}/${segments.join("/")}`;
 }
 
 export function getCardDiskFolderSegments(card: KnowledgeCard): string[] {
@@ -299,11 +305,37 @@ function getCardFolderLabel(card: KnowledgeCard): string {
   return card.folderId;
 }
 
+function matchingDiskBackup(
+  item: { updatedAt: string; diskSync?: DiskSyncInfo },
+  revisionId?: string
+) {
+  const complete = lastSuccessfulDiskExport(item.diskSync);
+  if (
+    complete?.sourceUpdatedAt === item.updatedAt &&
+    complete.sourceRevisionId === revisionId
+  )
+    return { filePath: complete.filePath, complete: true };
+
+  const sync = item.diskSync;
+  if (
+    sync?.sourceUpdatedAt === item.updatedAt &&
+    sync.sourceRevisionId === revisionId
+  )
+    return {
+      filePath: sync.fileUploaded ? sync.filePath : undefined,
+      complete: sync.status === "synced",
+    };
+
+  return { filePath: undefined, complete: false };
+}
+
 export function buildArticlesSummaryCsv(
   article: ReadyArticle,
   allArticles: ReadyArticle[]
 ): string {
   const universityId = article.universityId;
+  const approved = allArticles.filter(isApprovedArticle);
+  const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
     [
       "ID",
@@ -318,36 +350,34 @@ export function buildArticlesSummaryCsv(
       "Согласованный снимок реестра (UTC)",
       "Состояние MD",
     ],
-    ...allArticles
-      .filter(
-        (item) => isApprovedArticle(item) && item.universityId === universityId
-      )
+    ...approved
+      .filter((item) => item.universityId === universityId)
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map((item) => [
-        item.id,
-        item.title,
-        getUniversityName(item.universityId),
-        item.projectTitle,
-        item.topic,
-        item.sourceCardTitles.join(", "),
-        item.updatedAt,
-        item.approval!.revisionId,
-        item.id !== article.id &&
-        item.diskSync?.sourceRevisionId === item.approval!.revisionId &&
-        item.diskSync.fileUploaded &&
-        item.diskSync.filePath
-          ? item.diskSync.filePath
-          : toDisplayPath([
+      .map((item) => {
+        const revisionId = item.approval!.revisionId;
+        const isTarget =
+          item.id === article.id &&
+          item.updatedAt === article.updatedAt &&
+          revisionId === article.approval?.revisionId;
+        const backup = matchingDiskBackup(item, revisionId);
+        return [
+          item.id,
+          item.title,
+          getUniversityName(item.universityId),
+          item.projectTitle,
+          item.topic,
+          item.sourceCardTitles.join(", "),
+          item.updatedAt,
+          revisionId,
+          (!isTarget && backup.filePath) ||
+            toDisplayPath([
               ...getArticleDiskFolderSegments(item),
               getArticleBackupFileName(item),
             ]),
-        snapshotVersion(allArticles.filter(isApprovedArticle)),
-        item.id === article.id ||
-        (item.diskSync?.status === "synced" &&
-          item.diskSync.sourceRevisionId === item.approval!.revisionId)
-          ? "Выгружена"
-          : "Ожидает выгрузки",
-      ]),
+          snapshotAt,
+          isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
+        ];
+      }),
   ];
 
   return buildCsv(rows);
@@ -359,6 +389,10 @@ export function buildKnowledgeCardsSummaryCsv(
   customTypes: CardTypeDefinition[] = []
 ): string {
   const targetFolder = getCardDiskFolderSegments(card).join("/");
+  const approved = allCards
+    .map(getApprovedVersion)
+    .filter((item): item is KnowledgeCard => item !== null);
+  const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
     [
       "ID",
@@ -371,40 +405,31 @@ export function buildKnowledgeCardsSummaryCsv(
       "Согласованный снимок реестра (UTC)",
       "Состояние MD",
     ],
-    ...allCards
-      .map(getApprovedVersion)
-      .filter((item): item is KnowledgeCard => item !== null)
+    ...approved
       .filter(
         (item) => getCardDiskFolderSegments(item).join("/") === targetFolder
       )
       .sort((left, right) => left.id.localeCompare(right.id))
-      .map((item) => [
-        item.id,
-        item.title,
-        item.type,
-        getCardDiskFolderSegments(item).join(" / "),
-        item.owners.join(", "),
-        item.updatedAt,
-        item.id !== card.id &&
-        item.diskSync?.sourceUpdatedAt === item.updatedAt &&
-        item.diskSync.fileUploaded &&
-        item.diskSync.filePath
-          ? item.diskSync.filePath
-          : toDisplayPath([
-              ...getCardDiskFolderSegments(item),
+      .map((item) => {
+        const segments = getCardDiskFolderSegments(item);
+        const isTarget = item.id === card.id && item.updatedAt === card.updatedAt;
+        const backup = matchingDiskBackup(item);
+        return [
+          item.id,
+          item.title,
+          item.type,
+          segments.join(" / "),
+          item.owners.join(", "),
+          item.updatedAt,
+          (!isTarget && backup.filePath) ||
+            toDisplayPath([
+              ...segments,
               getKnowledgeCardBackupFileName(item, customTypes),
             ]),
-        snapshotVersion(
-          allCards
-            .map(getApprovedVersion)
-            .filter((item): item is KnowledgeCard => item !== null)
-        ),
-        item.id === card.id ||
-        (item.diskSync?.status === "synced" &&
-          item.diskSync.sourceUpdatedAt === item.updatedAt)
-          ? "Выгружена"
-          : "Ожидает выгрузки",
-      ]),
+          snapshotAt,
+          isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
+        ];
+      }),
   ];
 
   return buildCsv(rows);
@@ -445,6 +470,8 @@ export function buildArticleMarkdown(article: ReadyArticle): string {
 }
 
 function describeDiskError(error: unknown): string {
+  if (error instanceof Error && error.name === "TimeoutError")
+    return "Истекло время выгрузки на Яндекс Диск. Попытку можно повторить.";
   if (error instanceof YandexDiskError) {
     if (error.status === 401) {
       return "Яндекс Диск отклонил токен YANDEX_DISK_OAUTH_TOKEN. Проверьте права доступа.";
@@ -463,6 +490,7 @@ function describeDiskError(error: unknown): string {
 }
 
 async function diskRequest(
+  signal: AbortSignal,
   token: string,
   url: string,
   init: RequestInit = {}
@@ -474,7 +502,7 @@ async function diskRequest(
         Authorization: `OAuth ${token}`,
         ...(init.headers ?? {}),
       },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal,
       cache: "no-store",
     });
   } catch (error) {
@@ -482,12 +510,18 @@ async function diskRequest(
   }
 }
 
-async function ensureFolder(token: string, segments: string[]): Promise<void> {
-  let current = DISK_ROOT;
+async function ensureFolder(
+  signal: AbortSignal,
+  token: string,
+  segments: string[]
+): Promise<void> {
+  const folderSegments: string[] = [];
 
   for (const segment of segments) {
-    current = `${current}/${segment}`;
+    folderSegments.push(segment);
+    const current = toResourcePath(folderSegments);
     const response = await diskRequest(
+      signal,
       token,
       `${DISK_API_BASE}/resources?path=${encodeURIComponent(current)}`,
       { method: "PUT" }
@@ -503,16 +537,19 @@ async function ensureFolder(token: string, segments: string[]): Promise<void> {
 }
 
 async function uploadFile(
+  signal: AbortSignal,
   token: string,
   segments: string[],
   fileName: string,
   content: string,
   contentType: string
 ): Promise<string> {
-  await ensureFolder(token, segments);
+  signal.throwIfAborted();
+  await ensureFolder(signal, token, segments);
 
   const resourcePath = toResourcePath([...segments, fileName]);
   const uploadResponse = await diskRequest(
+    signal,
     token,
     `${DISK_API_BASE}/resources/upload?path=${encodeURIComponent(
       resourcePath
@@ -555,7 +592,7 @@ async function uploadFile(
       method: "PUT",
       headers: { "Content-Type": contentType },
       body: content,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal,
       cache: "no-store",
       redirect: "error",
     });
@@ -576,7 +613,8 @@ async function uploadFile(
 export async function syncKnowledgeCardToDisk(
   card: KnowledgeCard,
   allCards: KnowledgeCard[],
-  customTypes: CardTypeDefinition[] = []
+  customTypes: CardTypeDefinition[] = [],
+  signal: AbortSignal = diskAttemptDeadline()
 ): Promise<DiskSyncInfo> {
   if (!isCardApproved(card))
     throw new YandexDiskError("Выгрузка черновика запрещена.", 409);
@@ -598,6 +636,7 @@ export async function syncKnowledgeCardToDisk(
   try {
     const token = getToken();
     await uploadFile(
+      signal,
       token,
       [],
       "_КАК_ЧИТАТЬ_РЕЗЕРВ.md",
@@ -606,6 +645,7 @@ export async function syncKnowledgeCardToDisk(
     );
 
     const filePath = await uploadFile(
+      signal,
       token,
       segments,
       fileName,
@@ -623,6 +663,7 @@ export async function syncKnowledgeCardToDisk(
         const target = toDisplayPath([...segments, fileName]);
         pointerPaths.push(
           await uploadFile(
+            signal,
             token,
             pointerSegments,
             `${versionStamp(card.updatedAt)}--${sanitizeFileName(card.id)}.link.md`,
@@ -633,6 +674,7 @@ export async function syncKnowledgeCardToDisk(
       }
     }
     const summaryPath = await uploadFile(
+      signal,
       token,
       segments,
       summaryName,
@@ -643,7 +685,7 @@ export async function syncKnowledgeCardToDisk(
     return {
       status: "synced",
       lastAttemptAt: attemptedAt,
-      lastSyncedAt: attemptedAt,
+      lastSyncedAt: new Date().toISOString(),
       message: null,
       folderPath: toDisplayPath(segments),
       filePath,
@@ -655,24 +697,33 @@ export async function syncKnowledgeCardToDisk(
     };
   } catch (error) {
     return {
+      ...createPendingDiskSync(previous),
       status: "failed",
       lastAttemptAt: attemptedAt,
-      lastSyncedAt: previous.lastSyncedAt ?? null,
       message: describeDiskError(error),
       folderPath: toDisplayPath(segments),
       filePath: toDisplayPath([...segments, fileName]),
       summaryPath: toDisplayPath([...segments, summaryName]),
       sourceUpdatedAt: card.updatedAt,
-      fileUploaded,
-      summaryUploaded: false,
-      pointerPaths,
+      fileUploaded:
+        fileUploaded ||
+        (previous.filePath === toDisplayPath([...segments, fileName]) &&
+          !!previous.fileUploaded),
+      summaryUploaded:
+        previous.summaryPath === toDisplayPath([...segments, summaryName]) &&
+        !!previous.summaryUploaded,
+      pointerPaths:
+        previous.filePath === toDisplayPath([...segments, fileName])
+          ? [...new Set([...(previous.pointerPaths ?? []), ...pointerPaths])]
+          : pointerPaths,
     };
   }
 }
 
 export async function syncArticleToDisk(
   article: ReadyArticle,
-  allArticles: ReadyArticle[]
+  allArticles: ReadyArticle[],
+  signal: AbortSignal = diskAttemptDeadline()
 ): Promise<DiskSyncInfo> {
   if (!isApprovedArticle(article))
     throw new YandexDiskError(
@@ -691,6 +742,7 @@ export async function syncArticleToDisk(
   try {
     const token = getToken();
     await uploadFile(
+      signal,
       token,
       [],
       "_КАК_ЧИТАТЬ_РЕЗЕРВ.md",
@@ -699,6 +751,7 @@ export async function syncArticleToDisk(
     );
 
     const filePath = await uploadFile(
+      signal,
       token,
       segments,
       fileName,
@@ -707,6 +760,7 @@ export async function syncArticleToDisk(
     );
     fileUploaded = true;
     const summaryPath = await uploadFile(
+      signal,
       token,
       segments,
       summaryName,
@@ -717,7 +771,7 @@ export async function syncArticleToDisk(
     return {
       status: "synced",
       lastAttemptAt: attemptedAt,
-      lastSyncedAt: attemptedAt,
+      lastSyncedAt: new Date().toISOString(),
       message: null,
       folderPath: toDisplayPath(segments),
       filePath,
@@ -729,17 +783,22 @@ export async function syncArticleToDisk(
     };
   } catch (error) {
     return {
+      ...createPendingDiskSync(previous),
       status: "failed",
       lastAttemptAt: attemptedAt,
-      lastSyncedAt: previous.lastSyncedAt ?? null,
       message: describeDiskError(error),
       folderPath: toDisplayPath(segments),
       filePath: toDisplayPath([...segments, fileName]),
       summaryPath: toDisplayPath([...segments, summaryName]),
       sourceUpdatedAt: article.updatedAt,
       sourceRevisionId: article.approval!.revisionId,
-      fileUploaded,
-      summaryUploaded: false,
+      fileUploaded:
+        fileUploaded ||
+        (previous.filePath === toDisplayPath([...segments, fileName]) &&
+          !!previous.fileUploaded),
+      summaryUploaded:
+        previous.summaryPath === toDisplayPath([...segments, summaryName]) &&
+        !!previous.summaryUploaded,
     };
   }
 }

@@ -138,9 +138,15 @@ async function main() {
   const originalFetch = globalThis.fetch;
   // Only dummy test credentials are used; every request is intercepted locally.
   process.env.YANDEX_DISK_OAUTH_TOKEN = "fixture-test-token";
+  delete process.env.YANDEX_DISK_ROOT_MODE;
   let failSummary = false;
   let timeoutUpload = false;
+  let deadline: AbortController | undefined;
+  const requestSignals = new Set<AbortSignal | null | undefined>();
+  const createdFolders: string[] = [];
+  const requestedUploads: string[] = [];
   const uploadedPaths: string[] = [];
+  const existingFolders = new Set<string>();
   globalThis.fetch = (async (
     input: string | URL | Request,
     init?: RequestInit
@@ -152,17 +158,39 @@ async function main() {
           ? input.href
           : input.url
     );
+    requestSignals.add(init?.signal);
+    init?.signal?.throwIfAborted();
     if (url.hostname === "cloud-api.yandex.net") {
-      if (url.pathname.endsWith("/resources/upload"))
+      assert.equal(new Headers(init?.headers).get("authorization"), "OAuth fixture-test-token");
+      const path = url.searchParams.get("path");
+      assert.ok(path);
+      if (url.pathname.endsWith("/resources/upload")) {
+        assert.equal(init?.method, "GET");
+        assert.equal(url.searchParams.get("overwrite"), "true");
+        requestedUploads.push(path);
         return Response.json({
-          href: `https://uploader.disk.yandex.net/fixture?path=${encodeURIComponent(url.searchParams.get("path") ?? "")}`,
+          href: `https://uploader.disk.yandex.net/fixture?path=${encodeURIComponent(path)}`,
         });
-      return new Response(null, { status: 201 });
+      }
+      assert.ok(url.pathname.endsWith("/resources"));
+      assert.equal(init?.method, "PUT");
+      createdFolders.push(path);
+      const existed = existingFolders.has(path);
+      existingFolders.add(path);
+      return new Response(null, { status: existed ? 409 : 201 });
     }
     assert.equal(url.hostname, "uploader.disk.yandex.net");
     assert.equal(init?.method, "PUT");
+    assert.equal(new Headers(init?.headers).get("authorization"), null);
     const target = url.searchParams.get("path")!;
     uploadedPaths.push(target);
+    if (
+      deadline &&
+      target.endsWith(".md") &&
+      !target.endsWith("_КАК_ЧИТАТЬ_РЕЗЕРВ.md")
+    ) {
+      deadline.abort(new DOMException("Fixture deadline", "TimeoutError"));
+    }
     if (timeoutUpload)
       throw new DOMException("Simulated timeout", "TimeoutError");
     if (failSummary && target.endsWith(".csv"))
@@ -174,7 +202,13 @@ async function main() {
     await assert.rejects(syncArticleToDisk(unapproved, [unapproved]));
     assert.equal(uploadedPaths.length, 0);
     failSummary = true;
+    requestSignals.clear();
     const partial = await syncKnowledgeCardToDisk(card, [card, pending]);
+    assert.equal(
+      requestSignals.size,
+      1,
+      "All Disk requests must share one attempt deadline"
+    );
     assert.equal(partial.status, "failed");
     assert.equal(partial.fileUploaded, true);
     assert.equal(partial.summaryUploaded, false);
@@ -183,6 +217,25 @@ async function main() {
     assert.equal(retry.status, "synced");
     assert.equal(retry.filePath, partial.filePath);
     assert.equal(retry.summaryPath, partial.summaryPath);
+    deadline = new AbortController();
+    const nextVersion = {
+      ...card,
+      updatedAt: "2026-11-21T12:00:00Z",
+      diskSync: retry,
+    };
+    const limited = await syncKnowledgeCardToDisk(
+      nextVersion,
+      [nextVersion],
+      [],
+      deadline.signal
+    );
+    assert.equal(limited.status, "failed");
+    assert.equal(limited.fileUploaded, true);
+    assert.equal(limited.summaryUploaded, false);
+    assert.equal(limited.lastSuccessfulExport?.filePath, retry.filePath);
+    assert.equal(limited.lastSuccessfulExport?.summaryPath, retry.summaryPath);
+    assert.equal(limited.lastSyncedAt, retry.lastSyncedAt);
+    deadline = undefined;
     const newer = await syncKnowledgeCardToDisk(
       {
         ...card,
@@ -209,6 +262,64 @@ async function main() {
     assert.equal(articleRetry.filePath, timedOut.filePath);
     console.log(
       "✓ Fake transport: draft guards, partial CSV failure, timeout, safe retry and immutable version paths"
+    );
+
+    const jointProject = knowledgeSeedCards.find(
+      (item) => item.type === "project" && item.isJoint
+    );
+    assert.ok(jointProject?.type === "project");
+    for (const root of ["disk:/", "app:/"]) {
+      if (root === "app:/") process.env.YANDEX_DISK_ROOT_MODE = "app";
+      createdFolders.length = 0;
+      requestedUploads.length = 0;
+      uploadedPaths.length = 0;
+
+      const projectExport = await syncKnowledgeCardToDisk(jointProject, [
+        jointProject,
+      ]);
+      const articleExport = await syncArticleToDisk(article, [article]);
+      const repeatedExport = await syncKnowledgeCardToDisk(jointProject, [
+        jointProject,
+      ]);
+      assert.equal(projectExport.status, "synced");
+      assert.equal(articleExport.status, "synced");
+      assert.equal(repeatedExport.status, "synced");
+      assert.equal(
+        projectExport.pointerPaths?.length,
+        jointProject.participantUniversityIds.length
+      );
+      assert.equal(repeatedExport.filePath, projectExport.filePath);
+      assert.equal(repeatedExport.summaryPath, projectExport.summaryPath);
+      assert.deepEqual(repeatedExport.pointerPaths, projectExport.pointerPaths);
+
+      const guidePath = "_КАК_ЧИТАТЬ_РЕЗЕРВ.md";
+      const projectFiles = [
+        guidePath,
+        projectExport.filePath,
+        ...(projectExport.pointerPaths ?? []),
+        projectExport.summaryPath,
+      ];
+      const relativePaths = [
+        ...projectFiles,
+        guidePath,
+        articleExport.filePath,
+        articleExport.summaryPath,
+        ...projectFiles,
+      ];
+      const expectedFolders = relativePaths.flatMap((path) => {
+        assert.ok(path);
+        const segments = path.split("/").slice(0, -1);
+        return segments.map(
+          (_, index) => root + segments.slice(0, index + 1).join("/")
+        );
+      });
+      const expectedUploads = relativePaths.map((path) => root + path);
+      assert.deepEqual(createdFolders, expectedFolders);
+      assert.deepEqual(requestedUploads, expectedUploads);
+      assert.deepEqual(uploadedPaths, expectedUploads);
+    }
+    console.log(
+      "✓ Both Disk roots support directory creation, guide, Markdown, CSV and joint pointers on repeat export"
     );
   } finally {
     globalThis.fetch = originalFetch;

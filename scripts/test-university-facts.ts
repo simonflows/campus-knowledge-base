@@ -15,7 +15,7 @@ import {
   knowledgeCardInputSchema,
   structuredMetricSchema,
 } from "../lib/validation/knowledge";
-import { canConfirmJointParticipation, canRequestEdit, getDemoAccount, isCardOwner, visibleKnowledgeCard, visibleKnowledgeCards } from "../lib/auth";
+import { canConfirmJointParticipation, canRequestEdit, getDemoAccount, isCardOwner, toSessionUser, visibleKnowledgeCard, visibleKnowledgeCards } from "../lib/auth";
 
 let passed = 0;
 function test(name: string, run: () => void) {
@@ -282,7 +282,7 @@ test("Новая редакция сохраняет официальную ве
 });
 test("Видимость редакций, служебных полей и обращений зависит от роли", () => {
   const reader = getDemoAccount("demo-ministry")!;
-  const editor = getDemoAccount("demo-owner-midis")!;
+  const editor = toSessionUser(getDemoAccount("demo-owner-midis")!);
   const guest = getDemoAccount("demo-guest")!;
   const inquiry: CardEditRequest = {
     id: "fixture-request", authorId: reader.id, authorName: reader.name, authorRole: reader.role,

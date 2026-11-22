@@ -166,7 +166,10 @@ export function KnowledgeCardAccessPanel({
         `/api/knowledge/cards/${card.id}/moderation`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "If-Match": card.updatedAt,
+          },
           body: JSON.stringify({ action }),
         }
       );

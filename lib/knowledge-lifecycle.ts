@@ -38,7 +38,7 @@ export function knowledgeUpdateModeration(
   >
 > {
   const changed = Object.keys(input).some(
-    (key) =>
+    (key) => key !== "ownerIds" &&
       JSON.stringify(current[key as keyof KnowledgeCard]) !==
       JSON.stringify(input[key as keyof KnowledgeCardInput])
   );

@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Document, Packer, Paragraph, HeadingLevel, TextRun, ExternalHyperlink } from "docx";
 import { getSessionUser } from "@/lib/auth-server";
-import { getEditorial, getEditorialRevisions } from "@/lib/editorial-models";
+import { getEditorialWithRevisions } from "@/lib/editorial-models";
 import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
+import { getApprovedVersion } from "@/lib/knowledge";
+import { getKnowledgeCardById } from "@/lib/models";
 type Context = { params: Promise<{ id: string }> };
 export async function GET(request: NextRequest, context: Context) {
   const user = await getSessionUser();
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   try {
-    const doc = await getEditorial((await context.params).id, user);
+    const { document: doc, revisions } = await getEditorialWithRevisions((await context.params).id, user);
     const revisionId =
       request.nextUrl.searchParams.get("revisionId") || doc.revisionId;
-    const revision = (await getEditorialRevisions(doc, user)).find(
+    const revision = revisions.find(
       (r) => r.id === revisionId
     );
     if (!revision)
@@ -25,6 +27,10 @@ export async function GET(request: NextRequest, context: Context) {
       (event) => event.action === "approved" && event.revisionId === revision.id
     );
     const publicOrigin = new URL(process.env.CAMPUS_PUBLIC_ORIGIN || request.nextUrl.origin).origin;
+    const sources = await Promise.all([...new Set(content.sourceCardIds)].map(async id => {
+      const card = await getKnowledgeCardById(id);
+      return { id, approved: card && getApprovedVersion(card) };
+    }));
     const children = [
       new Paragraph({
         text: content.title || "Без заголовка",
@@ -48,19 +54,20 @@ export async function GET(request: NextRequest, context: Context) {
         ),
       ]),
       new Paragraph({
-        text: "Источники: официальные данные / проверенные факты",
+        text: "Источники редакции",
         heading: HeadingLevel.HEADING_2,
       }),
-      ...content.sourceCardIds.map(
-        (id, i) =>
-          new Paragraph({
+      ...sources.map(({ id, approved }, i) =>
+        approved
+          ? new Paragraph({
             children: [
               new ExternalHyperlink({
                 link: new URL("/knowledge?card=" + encodeURIComponent(id) + "&version=approved", publicOrigin).href,
-                children: [new TextRun({ text: `${i + 1}. ${content.sourceCardTitles[i] || id} — ID: ${id}`, style: "Hyperlink" })],
+                children: [new TextRun({ text: `${i + 1}. ${content.sourceCardTitles[content.sourceCardIds.indexOf(id)] || approved.title} — ID: ${id}`, style: "Hyperlink" })],
               }),
             ],
           })
+          : new Paragraph(`${i + 1}. Источник недоступен в утверждённой базе (ID: ${id})`)
       ),
       new Paragraph(`ID материала: ${doc.id}. ID редакции: ${revision.id}.`),
       new Paragraph(

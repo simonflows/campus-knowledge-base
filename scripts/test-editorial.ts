@@ -17,7 +17,7 @@ import {
   listEditorial,
   mutateEditorial,
 } from "../lib/editorial-models";
-import { getAllArticles, ensureKnowledgeSeed } from "../lib/models";
+import { getAllArticles } from "../lib/models";
 import { articleSeed } from "../lib/articles";
 import { knowledgeSeedCards } from "../lib/knowledge";
 function testLocalRecovery() {
@@ -28,7 +28,7 @@ function testLocalRecovery() {
     savedAt: Date.now(),
     content: editorialContentSchema.parse({ title: "Текст для восстановления" }),
   };
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
   const storage = Object.assign(
     Object.create({
       getItem(this: Record<string, string>, key: string) {
@@ -43,10 +43,13 @@ function testLocalRecovery() {
     }),
     {
       [RECOVERY_PREFIX + "qa-owner:invalid"]: '{"ownerId":',
-      [RECOVERY_PREFIX + "qa-owner:qa-draft"]: JSON.stringify(record),
+      [RECOVERY_PREFIX + "qa-owner:qa-draft"]: JSON.stringify({
+        ...record,
+        expiresAt: record.savedAt + 60_000,
+      }),
     }
   );
-  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: storage });
   try {
     assert.deepEqual(
       readEditorialRecovery(record.ownerId),
@@ -103,8 +106,8 @@ function testLocalRecovery() {
     assert.equal(saveEditorialRecovery(record.ownerId, record.documentId, 4, invalidCopy), false);
     assert.equal(readEditorialRecovery(record.ownerId).find(copy => copy.documentId === record.documentId)?.version, 3);
   } finally {
-    if (descriptor) Object.defineProperty(globalThis, "localStorage", descriptor);
-    else Reflect.deleteProperty(globalThis, "localStorage");
+    if (descriptor) Object.defineProperty(globalThis, "sessionStorage", descriptor);
+    else Reflect.deleteProperty(globalThis, "sessionStorage");
   }
 }
 
@@ -173,7 +176,6 @@ async function main() {
     (e: unknown) => e instanceof EditorialError && e.status === 409
   );
   const revision = saved.document.revisionId;
-  await ensureKnowledgeSeed();
   const submitted = await mutateEditorial(doc.id, owner, {
     action: "submit",
     version: saved.document.version,

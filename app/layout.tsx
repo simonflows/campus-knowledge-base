@@ -18,6 +18,7 @@ import { demoLoginEnabled } from "@/lib/pilot-auth";
 import { countIncomingRequests } from "@/lib/information-requests-models";
 import { getStorageMode } from "@/lib/db";
 import { getLocalStoreReadProblem } from "@/lib/local-store";
+import { getTrustedPreviewOrigin } from "@/lib/bridge/config";
 
 const appName = "Справочник кампуса «Южный Урал»";
 const description =
@@ -34,6 +35,10 @@ export default async function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   const assetBase = process.env.BASE_PATH || "";
+  const previewOrigin = getTrustedPreviewOrigin(
+    process.env.NODE_ENV,
+    process.env.CAMPUS_PREVIEW_ORIGIN
+  );
   const [user, storageMode] = await Promise.all([
     getSessionUser(),
     getStorageMode(),
@@ -76,7 +81,9 @@ export default async function RootLayout({
         <a className="skip atlas-skip" href="#main-content">
           Перейти к содержимому
         </a>
-        <BridgeProvider />
+        {previewOrigin && (
+          <BridgeProvider trustedOrigin={previewOrigin} basePath={assetBase} />
+        )}
         <header className="nav atlas-header">
           <div className="wrap atlas-wrap atlas-header-row">
             <Link className="brand" href="/" aria-label={`${appName}, главная`}>
@@ -101,10 +108,12 @@ export default async function RootLayout({
               <Database size={14} aria-hidden="true" />
               <span>
                 {localReadProblem
-                  ? `${localReadProblem} Показаны примеры, запись отключена.`
+                  ? `${localReadProblem} Запись отключена.`
                   : storageMode === "local-json"
                     ? "Локальное демо. Совместная редактура и межвузовские запросы доступны с общей базой."
-                    : "Демонстрационные примеры. Общая база недоступна, сохранение отключено."}
+                    : storageMode === "static-export"
+                      ? "Демонстрационные примеры. Сохранение отключено."
+                      : "Общая база недоступна. Сохранение отключено."}
               </span>
             </div>
           </div>

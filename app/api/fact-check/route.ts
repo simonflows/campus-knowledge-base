@@ -1,31 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { isStorageWritable } from "@/lib/db";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   buildCanonicalRewrite,
   checkFactText,
   type FactCheckResult,
 } from "@/lib/fact-check";
-import type { KnowledgeCard } from "@/lib/knowledge";
-import { mockKnowledgeCards } from "@/lib/mock-data";
-import { ensureKnowledgeSeed, getCanonicalKnowledgeCards } from "@/lib/models";
+import { getCanonicalKnowledgeCards } from "@/lib/models";
 import { factCheckInputSchema } from "@/lib/validation/fact-check";
-
-async function loadCards(): Promise<KnowledgeCard[]> {
-  if (await isStorageWritable()) {
-    try {
-      await ensureKnowledgeSeed();
-      return await getCanonicalKnowledgeCards();
-    } catch (error) {
-      console.error(
-        "Не удалось загрузить карточки для проверки текста:",
-        error
-      );
-    }
-  }
-
-  return mockKnowledgeCards;
-}
 
 function rewriteSummary(result: FactCheckResult | null) {
   if (!result) return null;
@@ -64,7 +46,8 @@ export async function POST(request: NextRequest) {
   }
 
   const { text, mode } = parsed.data;
-  const cards = await loadCards();
+  const cards = await getCanonicalKnowledgeCards().catch(() => null);
+  if (!cards) return unavailableStorageResponse();
   const result = checkFactText(text, cards);
 
   if (mode === "check") {

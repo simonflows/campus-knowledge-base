@@ -124,37 +124,45 @@ ufw enable
 ufw status verbose
 ```
 
-### 4.2. Настройка Fail2ban (`/etc/fail2ban/jail.local`)
-Создайте файл `/etc/fail2ban/jail.local` для блокировки IP-адресов при атаках на SSH и Nginx:
+### 4.2. Настройка Fail2ban (`/etc/fail2ban/jail.d/kanon.local`)
+Создайте файл `/etc/fail2ban/jail.d/kanon.local` для блокировки IP-адресов при повторяющихся событиях в журналах SSH и Nginx:
 
 ```ini
 [DEFAULT]
 bantime  = 1h
 findtime = 10m
 maxretry = 5
-backend  = systemd
 
 [sshd]
 enabled = true
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service + _COMM=sshd
 
 [nginx-http-auth]
 enabled = true
+backend = polling
+logpath = /var/log/nginx/error.log
 
 [nginx-botsearch]
 enabled = true
+backend = polling
+logpath = /var/log/nginx/access.log
 
 [nginx-limit-req]
 enabled = true
-filter  = nginx-limit-req
-logpath = /var/log/nginx/*error.log
+backend = polling
+logpath = /var/log/nginx/error.log
 ```
 
 Перезапустите службу:
 
 ```bash
+fail2ban-client -t
 systemctl enable --now fail2ban
 fail2ban-client status
 ```
+
+После включения UFW и после запуска Fail2ban проверяйте новый SSH-сеанс и внешний HTTPS-запрос к `/api/ready`. У каждого этапа свой временный таймер отката. Отменяйте его после проверок. `nginx-http-auth` отслеживает HTTP Basic Auth в Nginx. Вход приложения защищают его собственные лимиты и ограничение запросов Nginx.
 
 ---
 
@@ -203,6 +211,8 @@ node -e "const c=require('node:crypto'), k=c.randomBytes(32).toString('base64url
 
 Перед запуском менеджер секретов на сервере предоставляет `/run/campus/runtime.env`, доступный только доверенному оператору Docker. Используйте одну строку `ИМЯ=значение` на переменную. Compose читает значения буквально, поэтому справочник JSON должен занимать одну строку без дополнительных кавычек вокруг массива. После перезагрузки хоста менеджер секретов должен снова предоставить файл перед следующим обновлением конфигурации. Доступ к Docker позволяет читать окружение запущенных контейнеров. Храните сборочный каталог и образ отдельно от рабочих значений.
 
+На ВМ в Яндекс Облаке `kanon-runtime.service` запускает [загрузчик Lockbox](deploy/lockbox-runtime.py). Сервисный аккаунт ВМ читает только один секрет с адресом YDB и ключом Document API. До настройки первого входа загрузчик формирует файл только с настройками базы, пригодный для однократной миграции и проверки схемы. Для полного запуска оператор интерактивно выполняет `sudo /usr/bin/python3 /usr/local/lib/kanon/lockbox-runtime.py --create-owner`. Скрипт сохраняет только отпечаток ключа в `/var/lib/canon/accounts.json`. Повторный запуск `kanon-runtime.service` создаёт постоянный ключ подписи сессий в том же закрытом каталоге и формирует полный файл окружения. `kanon.service` проходит preflight и запускает Compose после `kanon-runtime.service`.
+
 ---
 
 ## 6. Запуск приложения через Docker Compose
@@ -226,13 +236,31 @@ docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-dep
 **2. Запустите контейнер и подготовьте базу до подключения Nginx.** Миграцию запускайте одним оператором при первом развёртывании и при выпуске с изменениями схемы. Она создаёт недостающие таблицы. Проверку хранилища выполняйте при каждом выпуске.
 
 ```bash
-docker compose --env-file /dev/null -f deploy/compose.prod.yml up --wait --wait-timeout 90
+docker compose --env-file /dev/null -f deploy/compose.prod.yml up --detach
 docker compose --env-file /dev/null -f deploy/compose.prod.yml exec -T app npm run db:migrate
 docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps app npm run check:deploy-storage
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8080/api/health
+docker compose --env-file /dev/null -f deploy/compose.prod.yml up --wait --wait-timeout 90
+curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8080/api/ready
 ```
 
 Переходите к Nginx после успешных проверок. При ошибке старта посмотрите состояние контейнера командой `docker compose --env-file /dev/null -f deploy/compose.prod.yml ps`. Ошибки проверки настроек видны в выводе команды из первого шага.
+
+`/api/health` проверяет процесс, а `/api/ready` проверяет доступность всех шести таблиц. Сбой готовности даёт `503`. Сначала создайте таблицы, затем дождитесь готовности. Подключите алерт по `/api/ready` и проверьте рабочую запись с правами приложения на тестовой YDB.
+
+**3. Загрузите утверждённые записи и сверьте владельцев.** Обращение к сайту не наполняет базу. Координатор готовит JSON с полями `approvedBy`, `approvedAt` в ISO UTC и `cards`. Каждая запись содержит `id`, `status: "approved"` и поля своего типа карточки. Для совместного проекта включите `participantApprovals` всех участвующих вузов. Для персонального назначения добавьте `ownerIds` из реестра. Пользовательские типы должны существовать в выбранной БД. Сверьте даты, источники и содержание вне приложения до загрузки.
+
+Сначала примените тот же порядок на тестовой YDB. Рабочий импорт запускает оператор после проверки конфигурации, снимка базы и dry-run. Файл хранится вне репозитория и монтируется только для чтения. Дайте UID 1001 право чтения файла через владельца или файловый ACL без разрешения для остальных пользователей.
+
+```bash
+docker compose --env-file /dev/null -f deploy/compose.prod.yml run --rm --no-deps \
+  -v /secure/approved-knowledge.json:/tmp/approved-knowledge.json:ro \
+  app npm run db:import-approved-knowledge -- /tmp/approved-knowledge.json
+# После сверки добавьте --apply после пути к файлу.
+```
+
+Команда проверяет весь входной файл до записи. С `--apply` она добавляет отсутствующие ID условной записью и оставляет существующие карточки. Если запись прервалась, повторите тот же проверенный файл и сверьте число добавленных и сохранённых. Проверьте публичный вид карточек до открытия прокси. Персональный ID пилота имеет вид `pilot-<login>`. Закрепите неоднозначные старые карточки за конкретными аккаунтами в форме координатора перед изменением реестра. Уже выданный логин принадлежит одному человеку.
+
+Команда `npm run check:disk-sync` читает метаданные утверждённых записей. Она возвращает агрегаты очереди, дату последней полной выгрузки и код `0` при пустой очереди и выгрузке за последние сутки. Код `1` требует проверить отставание, ошибки или отсутствие недавних изменений. Код `2` означает, что метаданные прочитать не удалось. Перед открытием доступа проверьте реальную запись на Диск и ручной повтор после частичного отказа. Подключите периодическое оповещение на стороне своего мониторинга.
 
 ---
 
@@ -364,6 +392,8 @@ server {
 
 `CAMPUS_TRUST_PROXY=true` разрешает учитывать IP клиента из `X-Forwarded-For` при ограничении попыток входа. Включайте его, когда к порту приложения обращается только доверенный прокси, который перезаписывает этот заголовок проверенным IP. В конфигурации Nginx выше используется адрес непосредственного клиента `$remote_addr`. По умолчанию ограничение попыток входа действует по учётной записи.
 
+На пилоте используйте один Nginx для общего лимита всех экземпляров приложения. При нескольких входных прокси настройте общий внешний лимит до расширения. Проверьте перезапись заголовка с адресом клиента и срабатывание `429` на тестовых аккаунтах.
+
 ---
 
 ## 8. Выпуск и установка SSL/TLS сертификата
@@ -463,6 +493,7 @@ curl -I https://canon.campus74.ru
 
 # 2. Проверка эндпоинта состояния сервиса
 curl -s https://canon.campus74.ru/api/health
+curl --fail --silent --show-error https://canon.campus74.ru/api/ready
 
 # 3. Проверка того, что порт 8080 закрыт извне (выполняется с другой машины)
 nc -zv canon.campus74.ru 8080

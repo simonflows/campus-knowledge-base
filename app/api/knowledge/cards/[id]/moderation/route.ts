@@ -67,8 +67,21 @@ async function handlePost(request: NextRequest, context: RouteContext) {
 
   const { action, comment } = parsed.data;
 
+  const expectedVersion = request.headers.get("if-match");
+  const withinDecisionScope = action === "confirm-participation"
+    ? Boolean(user.universityId && getRequiredUniversityApprovals(card).includes(user.universityId))
+    : canModerate(user);
+  if (withinDecisionScope && expectedVersion !== null && expectedVersion !== card.updatedAt) {
+    return NextResponse.json(
+      { error: "Карточка изменилась. Обновите её и повторите подтверждение." },
+      { status: 409 }
+    );
+  }
+
+  const participantId = action === "confirm-participation" &&
+    canConfirmJointParticipation(user, card) ? user.universityId : undefined;
   if (action === "confirm-participation") {
-    if (!canConfirmJointParticipation(user, card) || !user.universityId) {
+    if (!participantId) {
       return NextResponse.json(
         {
           error:
@@ -77,9 +90,16 @@ async function handlePost(request: NextRequest, context: RouteContext) {
         { status: 403 }
       );
     }
+  } else if (!canModerate(user)) {
+    return NextResponse.json(
+      { error: "Модерировать карточки может только администратор канона" },
+      { status: 403 }
+    );
+  }
 
+  if (participantId) {
     const approvals = Array.from(
-      new Set([...(card.participantApprovals ?? []), user.universityId])
+      new Set([...(card.participantApprovals ?? []), participantId])
     );
     const updated = await setKnowledgeCardModeration(
       id,
@@ -90,13 +110,6 @@ async function handlePost(request: NextRequest, context: RouteContext) {
     );
 
     return updated ? NextResponse.json(visibleKnowledgeCard(user, updated)) : NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
-  }
-
-  if (!canModerate(user)) {
-    return NextResponse.json(
-      { error: "Модерировать карточки может только администратор канона" },
-      { status: 403 }
-    );
   }
 
   if (

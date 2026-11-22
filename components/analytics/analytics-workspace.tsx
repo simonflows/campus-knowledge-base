@@ -6,7 +6,7 @@ import {
 import { AnimatedNumber } from "@/components/motion/animated-number";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
   BarChart3,
@@ -515,18 +515,20 @@ export function AnalyticsWorkspace({
   const [view, setView] = useState<ViewMode>("table");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const handleQueryChange = (value: string) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
     setQuery(value);
-
-    if (report) {
-      setReport(null);
-      setError(null);
-    }
+    setIsLoading(false);
+    setReport(null);
+    setError(null);
   };
 
   const requestAnalytics = async () => {
-    if (isLoading) return;
+    if (abortRef.current) return;
     const trimmed = query.trim();
 
     if (trimmed.length < 3) {
@@ -534,6 +536,8 @@ export function AnalyticsWorkspace({
       return;
     }
 
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsLoading(true);
     setError(null);
 
@@ -542,11 +546,13 @@ export function AnalyticsWorkspace({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: trimmed }),
+        signal: controller.signal,
       });
       const data = (await response.json().catch(() => null)) as
         | (AnalyticsReport & { error?: string })
         | null;
 
+      if (controller.signal.aborted) return;
       if (!response.ok || !data) {
         const message =
           data?.error ??
@@ -575,12 +581,16 @@ export function AnalyticsWorkspace({
         });
       }
     } catch {
+      if (controller.signal.aborted) return;
       const message =
         "Сервис аналитики недоступен. Проверьте соединение и попробуйте ещё раз.";
       setError(message);
       toast.error(message);
     } finally {
-      setIsLoading(false);
+      if (!controller.signal.aborted) {
+        abortRef.current = null;
+        setIsLoading(false);
+      }
     }
   };
 

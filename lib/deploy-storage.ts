@@ -1,3 +1,5 @@
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
+import { docClient, getStorageMode } from "./db";
 import type { TableDescription } from "@aws-sdk/client-dynamodb";
 import { TABLE_NAMES, TABLE_SCHEMAS, type TableName } from "./schema";
 
@@ -51,4 +53,34 @@ export async function checkDeployStorage(
     })
   );
   return results.filter((result) => result !== null);
+}
+
+/** Exercise the same runtime mode and primary keys used by the application. */
+export async function isRuntimeStorageReady(): Promise<boolean> {
+  try {
+    if ((await getStorageMode()) !== "dynamodb") return false;
+    await Promise.all(
+      TABLE_NAMES.map((TableName) =>
+        docClient.send(
+          new GetCommand({
+            TableName,
+            Key: { id: "__campus_readiness__" },
+            ProjectionExpression: "id",
+            ConsistentRead: true,
+          }),
+          { abortSignal: AbortSignal.timeout(2500) }
+        )
+      )
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The comparison workspace uses a labelled fixture in explicit demo modes. */
+export async function getComparisonStorageMode() {
+  const mode = await getStorageMode();
+  if (mode === "dynamodb") return (await isRuntimeStorageReady()) ? mode : null;
+  return mode === "read-only" ? null : mode;
 }

@@ -1,25 +1,20 @@
 import { HomeDashboard } from "@/components/home-dashboard";
 import { universities } from "@/lib/data";
-import { isStorageWritable } from "@/lib/db";
-import { mockKnowledgeCards } from "@/lib/mock-data";
-import { ensureKnowledgeSeed, getCanonicalKnowledgeCards } from "@/lib/models";
+import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
+import { StorageUnavailable } from "@/components/storage-unavailable";
+import { getCanonicalKnowledgeCards } from "@/lib/models";
 import { canSeeCard } from "@/lib/auth";
 import { getSessionUser } from "@/lib/auth-server";
-import type { KnowledgeCard, CampusCard } from "@/lib/knowledge";
+import type { CampusCard } from "@/lib/knowledge";
 export const dynamic = "force-dynamic";
 export default async function HomePage() {
   const user = await getSessionUser();
-  let cards: KnowledgeCard[] = mockKnowledgeCards;
-  let live = false;
-  if (await isStorageWritable()) {
-    try {
-      await ensureKnowledgeSeed();
-      cards = await getCanonicalKnowledgeCards();
-      live = true;
-    } catch (error) {
-      console.error("Не удалось загрузить данные главной", error);
-    }
-  }
+  const data = await Promise.all([
+    getCanonicalKnowledgeCards(),
+    getReadableStorageMode(),
+  ]).catch(() => null);
+  if (!data) return <StorageUnavailable title="Справочник кампуса" />;
+  const [cards, mode] = data;
   const visible = cards.filter((card) => canSeeCard(user, card));
   const passport =
     visible.find(
@@ -33,7 +28,7 @@ export default async function HomePage() {
       passport={passport}
       universities={universities}
       cardsCount={visible.length}
-      live={live}
+      live={mode !== "static-export"}
     />
   );
 }

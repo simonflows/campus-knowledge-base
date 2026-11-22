@@ -5,6 +5,7 @@ import {
   type ReadyArticle,
 } from "./articles";
 import { universities } from "./data";
+import { editorialContentSchema } from "./editorial";
 import { checkFactText } from "./fact-check";
 import {
   getApprovedVersion,
@@ -567,13 +568,14 @@ export function normalizeGeneratedArticle(
 
       if (!heading || chunks.length === 0) return null;
 
+      const id = `section-${index + 1}`;
       return {
-        id: asString(section.id) || `section-${index + 1}`,
+        id,
         heading,
         level: toSectionLevel(section.level),
         chunks: chunks.map((chunk, chunkIndex) => ({
           ...chunk,
-          id: `${asString(section.id) || `section-${index + 1}`}-chunk-${chunkIndex + 1}`,
+          id: `${id}-chunk-${chunkIndex + 1}`,
         })),
       };
     })
@@ -592,7 +594,7 @@ export function normalizeGeneratedArticle(
     asString(record.topic) ||
     (firstCard ? fallbackTopic(firstCard) : "Материалы базы знаний");
 
-  return generatedArticleSchema.parse({
+  const article = generatedArticleSchema.parse({
     noData: record.noData === true,
     noDataMessage:
       record.noData === true
@@ -609,6 +611,8 @@ export function normalizeGeneratedArticle(
     suggestedUniversityId: suggestedUniversityId || null,
     usedArticleIds: params.matchedArticles.map((article) => article.id),
   });
+  editorialContentSchema.parse(article);
+  return article;
 }
 
 export function buildNoDataDraft(params: {
@@ -799,6 +803,22 @@ export function groundGeneratedArticle(
   return null;
 }
 
+function splitLongParagraph(content: string) {
+  const parts: string[] = [];
+  let remaining = content.trim();
+  while (remaining.length > 4_000) {
+    const prefix = remaining.slice(0, 4_000);
+    const whitespace = prefix.search(/\s\S*$/u);
+    // Keep a long uninterrupted word from breaking the generation.
+    const limit = whitespace > 0 ? whitespace : 4_000;
+    const end = /[\uD800-\uDBFF]$/u.test(remaining.slice(0, limit)) ? limit - 1 : limit;
+    parts.push(remaining.slice(0, end).trimEnd());
+    remaining = remaining.slice(end).trimStart();
+  }
+  if (remaining) parts.push(remaining);
+  return parts;
+}
+
 export function buildDeterministicArticleDraft(params: {
   query: string;
   selectedCards: KnowledgeCard[];
@@ -959,20 +979,21 @@ export function buildDeterministicArticleDraft(params: {
     lead = opening
       ? formatUniversityMetric(opening.card, opening.metric)
       : `${getUniversityFullName(primary.universityId)}. Сведения о показателях в утверждённом паспорте отсутствуют. [${primary.id}]`;
-    for (const card of universityCards) {
+    for (const [cardIndex, card] of universityCards.entries()) {
       const metrics = card.structuredMetrics ?? [];
+      const sectionId = `section-metrics-${card.universityId}-${cardIndex + 1}`;
       sections.push({
-        id: `section-metrics-${card.universityId}`,
+        id: sectionId,
         heading: `Показатели ${getUniversityName(card.universityId)} по годам`,
         level: 2,
         chunks: metrics.length
           ? metrics.slice(0, 12).map((metric, index) => ({
-              id: `section-metrics-${card.universityId}-${index}`,
+              id: `${sectionId}-chunk-${index}`,
               content: formatUniversityMetric(card, metric),
             }))
           : [
               {
-                id: `section-metrics-${card.universityId}-empty`,
+                id: `${sectionId}-empty`,
                 content: `Для ${getUniversityName(card.universityId)} подтверждённых показателей по запросу нет. [${card.id}]`,
               },
             ],
@@ -1039,17 +1060,32 @@ export function buildDeterministicArticleDraft(params: {
       );
   }
 
-  return generatedArticleSchema.parse({
+  const article = generatedArticleSchema.parse({
     noData: false,
     noDataMessage: null,
-    title,
+    title: title.length <= 240 ? title : primary.title,
     lead,
-    sections,
+    sections: sections.flatMap(section => {
+      const chunks = section.chunks.flatMap(chunk =>
+        splitLongParagraph(chunk.content).map((content, index) => ({
+          id: index === 0 ? chunk.id : `${chunk.id}-part-${index + 1}`,
+          content,
+        }))
+      );
+      return Array.from({ length: Math.ceil(chunks.length / 12) }, (_, index) => ({
+        ...section,
+        id: index === 0 ? section.id : `${section.id}-part-${index + 1}`,
+        heading: section.heading.length <= 300 ? section.heading : primary.title,
+        chunks: chunks.slice(index * 12, (index + 1) * 12),
+      }));
+    }),
     sourceCardIds: params.selectedCards.map((card) => card.id),
     sourceCardTitles: params.selectedCards.map((card) => card.title),
     projectTitle: primary.title,
-    topic: fallbackTopic(primary),
+    topic: fallbackTopic(primary).slice(0, 240),
     suggestedUniversityId: findUniversityIdForCard(primary) ?? "susu",
     usedArticleIds: params.matchedArticles.map((article) => article.id),
   });
+  editorialContentSchema.parse(article);
+  return article;
 }

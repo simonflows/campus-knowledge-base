@@ -203,11 +203,21 @@ export async function callAlibabaAi(
   }
 
   const data = (await response.json().catch(() => null)) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      finish_reason?: unknown;
+      message?: { content?: unknown };
+    }>;
     usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
   } | null;
 
-  const text = data?.choices?.[0]?.message?.content?.trim();
+  const choice = data?.choices?.[0];
+  if (choice && choice.finish_reason !== "stop") {
+    throw new AlibabaAiError(
+      "Alibaba Cloud Model Studio вернул незавершённый ответ"
+    );
+  }
+  const content = choice?.message?.content;
+  const text = typeof content === "string" ? content.trim() : "";
 
   if (!text) {
     throw new AlibabaAiError("Alibaba Cloud Model Studio вернул пустой ответ");

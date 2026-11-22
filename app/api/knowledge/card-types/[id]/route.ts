@@ -131,7 +131,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       }
     }
 
-    const updated = await updateCardType(id, parsed.data);
+    const updated = await updateCardType(id, parsed.data, current.updatedAt);
 
     if (!updated) {
       return NextResponse.json(
@@ -144,6 +144,12 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ ...updated, cardCount });
   } catch (error) {
+    if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
+      return NextResponse.json(
+        { error: "Тип карточки изменился. Обновите страницу и повторите действие." },
+        { status: 409 }
+      );
+    }
     console.error("Ошибка обновления типа карточки:", error);
     return NextResponse.json(
       { error: "Ошибка обновления типа карточки" },

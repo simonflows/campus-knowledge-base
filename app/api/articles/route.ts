@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { publicArticle } from "@/lib/articles";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { getAllArticles } from "@/lib/models";
 export async function GET() {
   try {
@@ -7,7 +8,7 @@ export async function GET() {
       headers: { "Cache-Control": "no-store" },
     });
   } catch {
-    return NextResponse.json({ error: "Не удалось загрузить публикации" }, { status: 503 });
+    return unavailableStorageResponse();
   }
 }
 export async function POST() {

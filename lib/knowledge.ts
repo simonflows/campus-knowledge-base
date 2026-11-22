@@ -231,6 +231,8 @@ type KnowledgeCardBase = {
   title: string;
   folderId: string;
   owners: string[];
+  /** Missing on legacy records. When present, this is the authoritative personal assignment. */
+  ownerIds?: string[];
   referenceDescription: string;
   stopFormula: string;
   createdAt: string;

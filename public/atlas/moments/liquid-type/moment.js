@@ -15,7 +15,7 @@
   and the layout never changes, because the filter paints and never reflows.
 */
 let uid = 0;
-export default function (root, opts, lib) {
+export default function mountLiquidType(root, opts, lib) {
   const type = root.matches('h1, h2, .mo-lt__type') ? root : root.querySelector('.mo-lt__type, h1, h2');
   if (!type) return {};
   root.classList.add('mo-lt');

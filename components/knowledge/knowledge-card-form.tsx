@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { universities } from "@/lib/data";
-import type { SessionUser } from "@/lib/auth";
+import { canAssignCardOwner, type CardOwnerCandidate, type SessionUser } from "@/lib/auth";
 import {
   CONTOURS,
   folderIds,
@@ -99,6 +99,7 @@ type KnowledgeCardFormProps = {
   customTypes: CardTypeWithStats[];
   dbAvailable: boolean;
   currentUser: SessionUser | null;
+  ownerCandidates?: CardOwnerCandidate[];
   initialCard?: KnowledgeCard | null;
   defaultFolderId?: string | null;
   onCreated: (card: KnowledgeCard) => void;
@@ -111,6 +112,7 @@ export function KnowledgeCardForm({
   customTypes,
   dbAvailable,
   currentUser,
+  ownerCandidates = [],
   initialCard = null,
   defaultFolderId = null,
   onCreated,
@@ -157,6 +159,8 @@ export function KnowledgeCardForm({
   >(customCard?.customFields ?? {});
   const [title, setTitle] = useState(initialCard?.title ?? "");
   const [owners, setOwners] = useState(initialCard?.owners.join("\n") ?? "");
+  const [ownerIds, setOwnerIds] = useState(initialCard?.ownerIds);
+  const [ownerAssignmentEdited, setOwnerAssignmentEdited] = useState(false);
   const [folderId, setFolderId] = useState(
     initialCard?.folderId ??
       (defaultFolderId &&
@@ -241,6 +245,8 @@ export function KnowledgeCardForm({
   const [stopFormula, setStopFormula] = useState(
     initialCard?.stopFormula ?? ""
   );
+  // This version goes with the fields captured when the form opened.
+  const [editingVersion] = useState(initialCard?.updatedAt);
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [listDrafts, setListDrafts] = useState<Record<string, string>>({});
@@ -491,6 +497,7 @@ export function KnowledgeCardForm({
                 ? folderIds.joint
                 : folderId,
       owners: splitLines(owners),
+      ...(currentUser?.role === "admin" && ownerAssignmentEdited ? { ownerIds } : {}),
       referenceDescription,
       stopFormula,
     };
@@ -592,7 +599,9 @@ export function KnowledgeCardForm({
         method: isEdit ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(initialCard ? { "If-Match": initialCard.updatedAt } : {}),
+          ...(editingVersion === undefined
+            ? {}
+            : { "If-Match": editingVersion }),
         },
         body: JSON.stringify(cardPayload),
       });
@@ -763,6 +772,55 @@ export function KnowledgeCardForm({
                   : "Укажите каждого владельца с новой строки"}
               </p>
             </div>
+
+            {currentUser?.role === "admin" && type !== "campus" && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="card-owner-accounts">
+                  Персональный доступ к правке
+                </label>
+                <select
+                  id="card-owner-accounts"
+                  multiple
+                  size={4}
+                  className={cn(selectClassName, "h-auto")}
+                  aria-describedby="card-owner-accounts-hint"
+                  value={ownerIds ?? []}
+                  onChange={(event) => {
+                    setOwnerIds(Array.from(event.currentTarget.selectedOptions, option => option.value));
+                    setOwnerAssignmentEdited(true);
+                  }}
+                >
+                  {ownerCandidates.filter(candidate => canAssignCardOwner(candidate, {
+                    type,
+                    folderId: type === "custom" && selectedCustomType
+                      ? folderIds.customType(selectedCustomType.id)
+                      : type === "university"
+                        ? folderIds.subfolder(universityId, "passport")
+                        : type === "project" && isJoint ? folderIds.joint : folderId,
+                    owners: [],
+                    universityId,
+                    initiatorUniversityId,
+                    isJoint,
+                    participantUniversityIds,
+                  })).map(candidate => (
+                    <option key={candidate.id} value={candidate.id}>
+                      {candidate.ownershipLabel} ({candidate.id})
+                    </option>
+                  ))}
+                </select>
+                <p id="card-owner-accounts-hint" className="text-xs text-muted-foreground">
+                  {isEdit && ownerIds === undefined
+                    ? "У старой карточки доступ указан подписью. Выберите аккаунты, чтобы закрепить его за сотрудниками."
+                    : "Подписи владельцев видны в карточке. Персональное право правки задаётся аккаунтами."}
+                </p>
+                <Button type="button" variant="outline" size="sm" onClick={() => {
+                  setOwnerIds([]);
+                  setOwnerAssignmentEdited(true);
+                }}>
+                  Снять персональные назначения
+                </Button>
+              </div>
+            )}
 
             {type === "custom" ? (
               <div className="space-y-2">

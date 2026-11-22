@@ -80,7 +80,7 @@ const credentials = {
 };
 
 export async function initializeDemoDatabase(endpoint) {
-  const { ensureLocalDemoTables } = requireTs(
+  const { ensureLocalDemoTables, seedLocalDemoCorpus } = requireTs(
     "./init-local-demo.ts",
     import.meta.url
   );
@@ -91,6 +91,7 @@ export async function initializeDemoDatabase(endpoint) {
   });
   try {
     await ensureLocalDemoTables(client);
+    await seedLocalDemoCorpus(client);
   } finally {
     client.destroy();
   }

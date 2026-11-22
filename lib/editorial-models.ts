@@ -1,17 +1,20 @@
+import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import {
   GetCommand,
   ScanCommand,
   TransactWriteCommand,
+  type ScanCommandInput,
   type ScanCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
 import type { SessionUser } from "./auth";
 import { sessionDirectory } from "./pilot-auth";
-import { docClient, isDatabaseAvailable, getStorageMode } from "./db";
+import { docClient, isDatabaseAvailable } from "./db";
+import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
 import { checkFactText } from "./fact-check";
-import { getCanonicalKnowledgeCards } from "./models";
+import { getArticleById, getCanonicalKnowledgeCards } from "./models";
 import { isApprovedArticle, articleSeed, type ReadyArticle } from "./articles";
-import { createPendingDiskSync } from "./disk-sync";
+import { createPendingDiskSync, observedExportCondition } from "./disk-sync";
 import { readLocalStore } from "./local-store";
 import { getUniversityById } from "./knowledge";
 import {
@@ -35,13 +38,18 @@ async function available() {
     );
 }
 async function scan<T>(
-  table: (typeof TableName)[keyof typeof TableName]
+  table: TableName,
+  filter?: Pick<
+    ScanCommandInput,
+    "FilterExpression" | "ExpressionAttributeNames" | "ExpressionAttributeValues"
+  >
 ): Promise<T[]> {
   const rows: T[] = [];
   let key: ScanCommandOutput["LastEvaluatedKey"];
   do {
     const result: ScanCommandOutput = await docClient.send(
       new ScanCommand({
+        ...filter,
         TableName: table,
         ExclusiveStartKey: key,
         ConsistentRead: true,
@@ -72,15 +80,98 @@ async function getReadableEditorialHead(id: string, user: SessionUser) {
   return doc;
 }
 
-export async function getEditorial(id: string, user: SessionUser) {
+type EditorialEventRecord = {
+  id: string;
+  kind: "event";
+  documentId: string;
+  event?: EditorialEvent;
+};
+type EditorialHistoryRecord = EditorialRevision | EditorialEventRecord;
+
+function isEditorialEvent(
+  item: EditorialHistoryRecord
+): item is EditorialEventRecord {
+  return "kind" in item && item.kind === "event";
+}
+
+function isReadableRevision(
+  item: EditorialHistoryRecord,
+  doc: EditorialDocument,
+  user: SessionUser
+): item is EditorialRevision {
+  return (
+    item.documentId === doc.id &&
+    !isEditorialEvent(item) &&
+    item.number <= doc.version &&
+    (doc.ownerId === user.id || item.id === doc.submittedRevisionId)
+  );
+}
+
+function readableRevisions(
+  history: EditorialHistoryRecord[],
+  doc: EditorialDocument,
+  user: SessionUser
+) {
+  return history
+    .filter((item) => isReadableRevision(item, doc, user))
+    .sort((a, b) => b.number - a.number);
+}
+
+async function scanEditorialHistory(
+  doc: EditorialDocument,
+  user: SessionUser,
+  scope: "events" | "revisions" | "both"
+) {
+  const names: Record<string, string> = {
+    "#documentId": "documentId",
+    "#kind": "kind",
+  };
+  const values: Record<string, string | number> = {
+    ":documentId": doc.id,
+    ":event": "event",
+  };
+  const conditions: string[] = [];
+  if (scope !== "revisions") conditions.push("#kind = :event");
+
+  const owner = doc.ownerId === user.id;
+  if (scope !== "events" && (owner || doc.submittedRevisionId)) {
+    names["#number"] = "number";
+    values[":version"] = doc.version;
+    // Revision records have no kind, including those written before events had their own rows.
+    let revision =
+      "(attribute_not_exists(#kind) OR #kind <> :event) AND #number <= :version";
+    if (!owner && doc.submittedRevisionId) {
+      names["#id"] = "id";
+      values[":submittedRevisionId"] = doc.submittedRevisionId;
+      revision += " AND #id = :submittedRevisionId";
+    }
+    conditions.push(revision);
+  }
+
+  if (!conditions.length) return [];
+  const condition = conditions.length === 1
+    ? conditions[0]
+    : `(${conditions[0]} OR (${conditions[1]}))`;
+  return scan<EditorialHistoryRecord>(TableName.EDITORIAL_REVISIONS, {
+    FilterExpression: `#documentId = :documentId AND ${condition}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  });
+}
+
+async function readEditorial(
+  id: string,
+  user: SessionUser,
+  includeRevisions: boolean
+) {
   await available();
   let doc = await getReadableEditorialHead(id, user);
   for (let attempt = 0; attempt < 3; attempt++) {
-    const events = await scan<{
-      kind?: string;
-      documentId: string;
-      event?: EditorialEvent;
-    }>(TableName.EDITORIAL_REVISIONS);
+    const history = await scanEditorialHistory(
+      doc,
+      user,
+      includeRevisions ? "both" : "events"
+    );
     // A consistent scan can still see events committed after the first read.
     const latest = await getReadableEditorialHead(id, user);
     if (latest.version !== doc.version) {
@@ -89,28 +180,57 @@ export async function getEditorial(id: string, user: SessionUser) {
     }
 
     const combined = new Map(doc.events.map((item) => [item.id, item]));
-    for (const item of events) {
-      if (item.kind === "event" && item.documentId === id && item.event)
+    for (const item of history) {
+      if (isEditorialEvent(item) && item.documentId === id && item.event)
         combined.set(item.event.id, item.event);
     }
     return {
-      ...doc,
-      events: [...combined.values()].sort((a, b) => a.at.localeCompare(b.at)),
+      document: {
+        ...doc,
+        events: [...combined.values()].sort((a, b) => a.at.localeCompare(b.at)),
+      },
+      revisions: includeRevisions ? readableRevisions(history, doc, user) : [],
     };
   }
   throw new EditorialError("Черновик сейчас изменяется. Повторите запрос.", 409);
 }
-export async function getEditorialRevisions(doc: EditorialDocument, user: SessionUser) {
-  if (!canReadEditorial(user, doc)) throw new EditorialError("Черновик не найден", 404);
-  return (await scan<EditorialRevision>(TableName.EDITORIAL_REVISIONS))
-    .filter(
-      (r) =>
-        r.documentId === doc.id &&
-        !("kind" in r && r.kind === "event") &&
-        r.number <= doc.version &&
-        (doc.ownerId === user.id || r.id === doc.submittedRevisionId)
-    )
-    .sort((a, b) => b.number - a.number);
+
+export async function getEditorial(id: string, user: SessionUser) {
+  return (await readEditorial(id, user, false)).document;
+}
+
+export function getEditorialWithRevisions(id: string, user: SessionUser) {
+  return readEditorial(id, user, true);
+}
+
+export async function getEditorialRevisions(
+  doc: EditorialDocument,
+  user: SessionUser
+) {
+  if (!canReadEditorial(user, doc))
+    throw new EditorialError("Черновик не найден", 404);
+  const history = await scanEditorialHistory(doc, user, "revisions");
+  return readableRevisions(history, doc, user);
+}
+
+async function getEditorialRevision(
+  doc: EditorialDocument,
+  user: SessionUser,
+  revisionId: string
+) {
+  if (doc.ownerId !== user.id && revisionId !== doc.submittedRevisionId)
+    throw new EditorialError("Редакция не найдена", 404);
+  const { Item } = await docClient.send(
+    new GetCommand({
+      TableName: TableName.EDITORIAL_REVISIONS,
+      Key: { id: revisionId },
+      ConsistentRead: true,
+    })
+  );
+  const item = Item as EditorialHistoryRecord | undefined;
+  if (!item || item.id !== revisionId || !isReadableRevision(item, doc, user))
+    throw new EditorialError("Редакция не найдена", 404);
+  return item;
 }
 export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArticle) {
   return !isApprovedArticle(article) && Boolean(user && (user.role === "admin" ||
@@ -120,17 +240,10 @@ export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArt
 export async function listLegacyArticles(user: SessionUser | null): Promise<ReadyArticle[]> {
   if (!user || user.role === "guest") return [];
   const visible = (article: ReadyArticle) => canReadLegacyArticle(user, article);
-  if (await isDatabaseAvailable())
-    return (await scan<ReadyArticle>(TableName.ARTICLES)).filter(
-      visible
-    );
-  if ((await getStorageMode()) !== "local-json") return articleSeed.filter(visible);
-  try {
-    const store = await readLocalStore();
-    return store.articles.filter(visible);
-  } catch {
-    return articleSeed.filter(visible);
-  }
+  const mode = await getReadableStorageMode();
+  if (mode === "static-export") return articleSeed.filter(visible);
+  if (mode === "local-json") return (await readLocalStore()).articles.filter(visible);
+  return (await scan<ReadyArticle>(TableName.ARTICLES)).filter(visible);
 }
 function event(
   user: SessionUser,
@@ -338,15 +451,13 @@ export async function mutateEditorial(
   };
   let revision: EditorialRevision | undefined;
   let publication: ReadyArticle | undefined;
+  let previousPublication: ReadyArticle | null = null;
   let action: EditorialEvent["action"] = "saved";
   if (mutation.action === "save" || mutation.action === "restore") {
     let content: EditorialContent;
     if (mutation.action === "save") content = mutation.content;
     else {
-      const old = (await getEditorialRevisions(current, user)).find(
-        (r) => r.id === mutation.revisionId
-      );
-      if (!old) throw new EditorialError("Редакция не найдена", 404);
+      const old = await getEditorialRevision(current, user, mutation.revisionId);
       content = old.content;
     }
     content = await normalizeSources(content);
@@ -370,10 +481,7 @@ export async function mutateEditorial(
     next.submittedRevisionId = null;
     action = mutation.action === "save" ? "saved" : "restored";
   } else {
-    const target = (await getEditorialRevisions(current, user)).find(
-      (r) => r.id === mutation.revisionId
-    );
-    if (!target) throw new EditorialError("Редакция не найдена", 404);
+    const target = await getEditorialRevision(current, user, mutation.revisionId);
     if (mutation.action === "submit" || mutation.action === "approve") {
       if (
         !target.content.title.trim() ||
@@ -435,6 +543,7 @@ export async function mutateEditorial(
       next.status = "approved";
       next.approvedRevisionId = target.id;
       action = "approved";
+      previousPublication = current.approvedRevisionId ? await getArticleById(id) : null;
       publication = {
         title: target.content.title,
         lead: target.content.lead,
@@ -457,7 +566,7 @@ export async function mutateEditorial(
           approvedBy: user.id,
           approvedAt: now,
         },
-        diskSync: createPendingDiskSync(),
+        diskSync: createPendingDiskSync(previousPublication?.diskSync),
       };
     }
   }
@@ -506,11 +615,26 @@ export async function mutateEditorial(
         ConditionExpression: "attribute_not_exists(id)",
       },
     });
-  if (publication)
-    writes.push({ Put: { TableName: TableName.ARTICLES, Item: publication } });
+  if (publication) {
+    const observed = previousPublication && observedExportCondition(previousPublication);
+    const condition = observed && previousPublication?.approval
+      ? {
+          ...observed,
+          ConditionExpression: observed.ConditionExpression + " AND approval.revisionId = :previousRevision",
+          ExpressionAttributeValues: { ...observed.ExpressionAttributeValues, ":previousRevision": previousPublication.approval.revisionId },
+        }
+      : { ConditionExpression: "attribute_not_exists(id)" };
+    writes.push({ Put: { TableName: TableName.ARTICLES, Item: publication, ...condition } });
+  }
   try {
     await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
   } catch (error) {
+    if (
+      error instanceof TransactionCanceledException &&
+      error.CancellationReasons?.some(
+        ({ Code }) => Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)
+      )
+    ) throw error;
     if (
       error instanceof Error &&
       [
