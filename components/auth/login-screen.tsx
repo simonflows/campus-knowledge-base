@@ -9,6 +9,7 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
+  FlaskConical,
   KeyRound,
   LockKeyhole,
   LogOut,
@@ -17,6 +18,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
+import { cn } from "@/lib/utils";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -210,14 +213,15 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
               </form>
             </div>
           ) : null}
-          {!demo && (
-            <div className="flex flex-wrap items-center gap-4">
-              <a href={demoHref} className="desk-text-link">Попробовать в демо-режиме</a>
-              {currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
-                <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
-              )}
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-4">
+            <a href={demoHref} className={cn(buttonVariants({ variant: "outline", className: "gap-2 text-foreground" }))}>
+              <FlaskConical aria-hidden="true" />
+              Попробовать в демо-режиме
+            </a>
+            {!demo && currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
+              <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
+            )}
+          </div>
           {demo ? (
             <section aria-labelledby="demo-accounts">
               <div className="desk-access-selection">

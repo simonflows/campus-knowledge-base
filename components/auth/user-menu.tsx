@@ -14,10 +14,9 @@ import { clearEditorialRecovery } from "@/lib/editorial-session-cleanup";
 
 type UserMenuProps = {
   initialUser: SessionUser | null;
-  demoHref: string;
 };
 
-export function UserMenu({ initialUser, demoHref }: UserMenuProps) {
+export function UserMenu({ initialUser }: UserMenuProps) {
   const router = useRouter();
   const accountCurrent = usePathname() === "/login" ? "page" : undefined;
   const [isBusy, setIsBusy] = useState(false);
@@ -42,7 +41,6 @@ export function UserMenu({ initialUser, demoHref }: UserMenuProps) {
   if (!initialUser) {
     return (
       <div className="flex items-center gap-2">
-        <DemoEntry href={demoHref} />
         <Link
           href="/login"
           className={buttonVariants({
@@ -60,7 +58,6 @@ export function UserMenu({ initialUser, demoHref }: UserMenuProps) {
 
   return (
     <div className="flex items-center gap-2">
-      <DemoEntry href={demoHref} />
       <Link
         href="/login"
         aria-current={accountCurrent}
@@ -90,16 +87,5 @@ export function UserMenu({ initialUser, demoHref }: UserMenuProps) {
         <LogOut className="h-4 w-4" />
       </Button>
     </div>
-  );
-}
-
-function DemoEntry({ href }: { href: string }) {
-  return (
-    <a
-      className={buttonVariants({ variant: "outline", size: "sm" })}
-      href={href}
-    >
-      Демо<span className="hidden sm:inline">-режим</span>
-    </a>
   );
 }

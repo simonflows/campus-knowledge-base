@@ -61,7 +61,7 @@ export default async function WorkingLayout({
         showIntegrationStatus={
           process.env.NODE_ENV !== "production" && demoLoginEnabled()
         }
-        account={<UserMenu initialUser={user} demoHref={`${basePath}/demo`} />}
+        account={<UserMenu initialUser={user} />}
         banner={
           storageMode !== "dynamodb" ? (
             <div className="atlas-mode" role="status">

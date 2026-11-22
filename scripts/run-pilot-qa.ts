@@ -14,6 +14,7 @@ import { runCanonRoutes } from "./test-canon-routes";
 import { measurePilotLoad } from "./measure-pilot-load";
 import runRequestBrowserChecks from "./requests-browser-check";
 import { runFollowupBrowserChecks } from "./followup-browser-check";
+import { runFactResultUiChecks } from "./test-fact-result-ui-097";
 
 async function main() {
   const marker = await requireFixtureDatabase();
@@ -56,6 +57,9 @@ async function main() {
     await runCanonRoutes(credentials);
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
+      const factResultPage = await browser.newPage();
+      try { await runFactResultUiChecks(factResultPage, base); }
+      finally { await factResultPage.close(); }
       const analyticsPage = await browser.newPage({ reducedMotion: "reduce" });
       const analyticsLogin = await analyticsPage.request.post(base + "/api/auth/session", {
         headers: { Origin: base },

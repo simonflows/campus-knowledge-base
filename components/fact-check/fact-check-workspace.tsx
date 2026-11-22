@@ -354,6 +354,7 @@ export function FactCheckWorkspace({
   const [fileName, setFileName] = useState<string | null>(null);
   const [result, setResult] = useState<FactCheckResponse | null>(null);
   const [rewrite, setRewrite] = useState<CanonicalRewrite | null>(null);
+  const [rewriteRevision, setRewriteRevision] = useState<number | null>(null);
   const [rewriteCheck, setRewriteCheck] = useState<RewriteCheck | null>(null);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -363,8 +364,25 @@ export function FactCheckWorkspace({
   const [aiEnabled, setAiEnabled] = useState(true);
   const requestRevision = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const rewriteHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const heading = rewriteHeading.current;
+    if (!heading || rewriteRevision !== requestRevision.current) return;
+
+    const reduceMotion =
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
+      document.documentElement.dataset.motion === "off";
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView({
+      behavior: reduceMotion ? "instant" : "smooth",
+      block: "start",
+    });
+  }, [rewriteRevision]);
+
+  const FindingsContainer = rewrite ? "details" : "section";
 
   const visibleFindings = useMemo(() => {
     if (!result) return [];
@@ -395,6 +413,7 @@ export function FactCheckWorkspace({
     setIsRewriting(false);
     setResult(null);
     setRewrite(null);
+    setRewriteRevision(null);
     setRewriteCheck(null);
     setRewriteError(null);
     setError(null);
@@ -469,6 +488,7 @@ export function FactCheckWorkspace({
       setIsChecking(true);
       setError(null);
       setRewrite(null);
+      setRewriteRevision(null);
       setRewriteCheck(null);
       setRewriteError(null);
     } else {
@@ -520,11 +540,13 @@ export function FactCheckWorkspace({
       setFilter("all");
 
       if (mode === "rewrite") {
-        setRewrite(data.rewrite ?? null);
+        const nextRewrite = data.rewrite?.plainText.trim() ? data.rewrite : null;
+        setRewrite(nextRewrite);
+        setRewriteRevision(nextRewrite && !data.rewriteError ? revision : null);
         setRewriteCheck(data.rewriteCheck ?? null);
         setRewriteError(data.rewriteError ?? null);
 
-        if (!data.rewrite) {
+        if (!nextRewrite) {
           toast.error("Не удалось переписать текст по официальным данным");
         } else if (data.rewriteCheck?.isClean) {
           toast.success("Текст переписан по официальным данным", {
@@ -772,7 +794,7 @@ export function FactCheckWorkspace({
             <CardHeader>
               <h2 className="data-panel-title">
                 <ScanText aria-hidden="true" />
-                Итог проверки
+                {rewrite ? "Итог проверки исходного текста" : "Итог проверки"}
               </h2>
               <CardDescription>
                 Красный уровень блокирует публикацию до правки.
@@ -898,100 +920,16 @@ export function FactCheckWorkspace({
         </aside>
       </div>
 
-      {result ? (
-        <section className="atlas-stagger-in space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="font-heading text-xl font-semibold">
-                Разбор по уровням
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                Каждое замечание содержит источник и конкретное предложение по
-                исправлению.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {filters.map((item) => {
-                const count =
-                  item.value === "all"
-                    ? result.summary.total
-                    : result.summary[item.value];
-                return (
-                  <Button
-                    key={item.value}
-                    type="button"
-                    size="sm"
-                    variant={filter === item.value ? "default" : "outline"}
-                    aria-pressed={filter === item.value}
-                    onClick={() => setFilter(item.value)}
-                    className="text-xs"
-                  >
-                    {item.label}
-                    <Badge variant="secondary" className="ml-1 h-4 px-1.5">
-                      {count}
-                    </Badge>
-                  </Button>
-                );
-              })}
-            </div>
-          </div>
-
-          <CheckpointChips summaries={result.checkpoints} />
-
-          {visibleFindings.length > 0 ? (
-            <div className="space-y-3">
-              {visibleFindings.map((finding, index) => (
-                <FindingCard
-                  key={finding.id}
-                  finding={finding}
-                  index={index}
-                  busy={isChecking || isRewriting}
-                  onReplace={(target, replacement) => {
-                    const quote = target.quote;
-                    if (!quote || !replacement.trim()) return;
-                    const next = replaceCheckedFragment(
-                      text,
-                      quote,
-                      replacement,
-                      target.quoteStart,
-                      target.quoteEnd
-                    );
-                    if (next === null) {
-                      toast.error(
-                        "Фрагмент неоднозначен или изменён. Исправьте его в черновике и повторите проверку."
-                      );
-                      return;
-                    }
-                    setText(next);
-                    setFileName(null);
-                    resetOutput();
-                    void requestFactCheck("check", next);
-                  }}
-                />
-              ))}
-            </div>
-          ) : (
-            <Empty className="border">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Sparkles className="size-4" />
-                </EmptyMedia>
-                <EmptyTitle>В этом уровне замечаний нет</EmptyTitle>
-                <EmptyDescription>
-                  Переключите фильтр, чтобы увидеть остальные уровни разбора.
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          )}
-        </section>
-      ) : null}
-
       {result && (rewrite || rewriteError) ? (
         <section className="space-y-4">
           <Separator />
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
-              <h2 className="font-heading text-xl font-semibold">
+              <h2
+                ref={rewriteHeading}
+                tabIndex={rewrite ? -1 : undefined}
+                className="scroll-mt-4 font-heading text-xl font-semibold"
+              >
                 Текст, переписанный по официальным данным
               </h2>
               <p className="text-xs text-muted-foreground">
@@ -1009,6 +947,7 @@ export function FactCheckWorkspace({
                 {rewriteCheck ? (
                   <Badge
                     className={cn(
+                      "h-auto max-w-full justify-start whitespace-normal",
                       rewriteCheck.isClean && rewriteCheck.summary.green > 0
                         ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100"
                         : "bg-amber-100 text-amber-800 hover:bg-amber-100"
@@ -1055,7 +994,7 @@ export function FactCheckWorkspace({
           ) : null}
 
           {rewrite ? (
-            <article className="rounded-3xl border bg-card p-5 shadow-sm sm:p-6">
+            <article className="wrap-anywhere rounded-3xl border bg-card p-5 shadow-sm sm:p-6">
               <div className="space-y-2">
                 <Badge variant="outline" className="text-[11px]">
                   H1 · {rewrite.title.length} символов
@@ -1144,6 +1083,108 @@ export function FactCheckWorkspace({
             </article>
           ) : null}
         </section>
+      ) : null}
+
+      {result ? (
+        <FindingsContainer
+          key={rewriteRevision ?? "check"}
+          className={cn("atlas-stagger-in", rewrite && "rounded-2xl border bg-card")}
+        >
+          {rewrite ? (
+            <summary className="cursor-pointer list-inside rounded-2xl p-4 text-muted-foreground sm:px-5">
+              <h2 className="inline font-heading text-xl font-semibold text-foreground">
+                Разбор по уровням
+              </h2>
+            </summary>
+          ) : null}
+          <div className={cn("space-y-4", rewrite && "px-4 pb-4 sm:px-5 sm:pb-5")}>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                {!rewrite ? (
+                  <h2 className="font-heading text-xl font-semibold">
+                    Разбор по уровням
+                  </h2>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  Каждое замечание содержит источник и конкретное предложение по
+                  исправлению.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {filters.map((item) => {
+                  const count =
+                    item.value === "all"
+                      ? result.summary.total
+                      : result.summary[item.value];
+                  return (
+                    <Button
+                      key={item.value}
+                      type="button"
+                      size="sm"
+                      variant={filter === item.value ? "default" : "outline"}
+                      aria-pressed={filter === item.value}
+                      onClick={() => setFilter(item.value)}
+                      className="text-xs"
+                    >
+                      {item.label}
+                      <Badge variant="secondary" className="ml-1 h-4 px-1.5">
+                        {count}
+                      </Badge>
+                    </Button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <CheckpointChips summaries={result.checkpoints} />
+
+            {visibleFindings.length > 0 ? (
+              <div className="space-y-3">
+                {visibleFindings.map((finding, index) => (
+                  <FindingCard
+                    key={finding.id}
+                    finding={finding}
+                    index={index}
+                    busy={isChecking || isRewriting}
+                    onReplace={(target, replacement) => {
+                      const quote = target.quote;
+                      if (!quote || !replacement.trim()) return;
+                      const next = replaceCheckedFragment(
+                        text,
+                        quote,
+                        replacement,
+                        target.quoteStart,
+                        target.quoteEnd
+                      );
+                      if (next === null) {
+                        toast.error(
+                          "Фрагмент неоднозначен или изменён. Исправьте его в черновике и повторите проверку."
+                        );
+                        return;
+                      }
+                      setText(next);
+                      setFileName(null);
+                      resetOutput();
+                      void requestFactCheck("check", next);
+                    }}
+                  />
+                ))}
+              </div>
+            ) : (
+              <Empty className="border">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Sparkles className="size-4" />
+                  </EmptyMedia>
+                  <EmptyTitle>В этом уровне замечаний нет</EmptyTitle>
+                  <EmptyDescription>
+                    Переключите фильтр, чтобы увидеть остальные уровни разбора.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </div>
+        </FindingsContainer>
       ) : null}
     </div>
   );
