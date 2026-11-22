@@ -43,6 +43,11 @@ const fixture: AnalyticsSnapshot = {
 const institutionQuery = "Покажи вуз МИДиС";
 const passportQuery = "Покажи паспорт вуза МИДиС";
 
+type ModelInput = {
+  canonicalPlan?: { query: string | null; allowedSourceIds: string[] };
+  sources: CanonSource[];
+};
+
 function candidate(
   query: string | null,
   clarification: string | null = null,
@@ -110,18 +115,18 @@ test("one model interpretation can change report rows to a university passport",
   assert.ok(original.cards.some((card) => card.id === project.id));
   let calls = 0;
   let modelInstruction = "";
+  let modelInput: ModelInput | undefined;
   const result = await run(
     institutionQuery,
     async (_request, actor, instruction, input) => {
       calls++;
       modelInstruction = instruction;
-      const data: {
+      const data: ModelInput & {
         query: string;
         criteria: { usesDefaultCardTypes: boolean };
-        sources: CanonSource[];
       } = JSON.parse(input);
+      modelInput = data;
       assert.equal(actor, profile);
-      assert.match(instruction, /не.*(?:цифры|числа)/i);
       assert.equal(data.query, institutionQuery);
       assert.equal(data.criteria.usesDefaultCardTypes, true);
       const source = data.sources.find((item) => item.cardId === passport.id);
@@ -152,9 +157,112 @@ test("one model interpretation can change report rows to a university passport",
   const fact = source.facts.find(({ field }) => field === "referenceDescription")!;
   assert.equal(result.ai.citations[0]?.versionId, source.versionId);
   assert.equal(result.ai.citations[0]?.quote, fact.text);
+  assert.deepEqual(modelInput?.canonicalPlan, { query: passportQuery, allowedSourceIds: [source.id] });
+  assert.deepEqual(modelInput?.sources.map((item) => item.cardId), [passport.id]);
+  assert.match(modelInstruction, /сервер сам рассчитывает числа/i);
+  assert.match(modelInstruction, /JSON null без кавычек/u);
   assert.match(modelInstruction, /"sourceId":"s1","factId":"f1"\}/);
   assert.equal(result.ai.citations[0]?.href, result.cards[0].sourceHref);
   assert.match(result.cards[0].sourceHref, /&version=cv-[a-f0-9]{64}$/);
+});
+
+test("an already recognized equipment query sends its exact wording and only the selected laboratory", async () => {
+  const ids = new Set(verification.approvedIds);
+  const cards = candidates.cards
+    .filter(({ card }) => ids.has(card.id))
+    .map(({ card }) => ({ ...card, status: "approved" }) as KnowledgeCard);
+  const snapshot = { cards, types: [] };
+  const query = "робот кука";
+  const source = currentCanonSources(cards).find(({ cardId }) => cardId === "lab-midis-kuka")!;
+  const fact = source.facts.find(({ field, text }) => field.startsWith("equipment.") && /KUKA/i.test(text))!;
+  const captured: { payload?: ModelInput } = {};
+  const result = await buildAnalyticsWithAi({
+    request, accountId: profile, query, snapshot, loadCurrent: async () => snapshot,
+    ask: async (_request, _actor, _instruction, input) => {
+      captured.payload = JSON.parse(input);
+      return { status: "ready", output: candidate(query, null, [{ sourceId: source.id, factId: fact.id }]) };
+    },
+  });
+  assert.deepEqual(captured.payload?.canonicalPlan, { query, allowedSourceIds: [source.id] });
+  assert.deepEqual(captured.payload?.sources.map(({ cardId }) => cardId), [source.cardId]);
+  assert.equal(result?.ai.status, "ready");
+  assert.equal(result.ai.citations[0]?.quote, fact.text);
+  assert.equal(result.ai.appliedQuery, undefined);
+});
+
+test("a deterministic passport plan also works for a different university", async () => {
+  const other = knowledgeSeedCards.find(({ id }) => id === "university-susu")!;
+  const snapshot = { ...fixture, cards: [...fixture.cards, other] };
+  const query = "Покажи университет ЮУрГУ";
+  const expected = "Покажи паспорт вуза ЮУрГУ";
+  const source = currentCanonSources(snapshot.cards).find(({ cardId }) => cardId === other.id)!;
+  const captured: { payload?: ModelInput } = {};
+  const result = await buildAnalyticsWithAi({
+    request, accountId: profile, query, snapshot, loadCurrent: async () => snapshot,
+    ask: async (_request, _actor, _instruction, input) => {
+      captured.payload = JSON.parse(input);
+      return { status: "ready", output: candidate(expected) };
+    },
+  });
+  assert.deepEqual(captured.payload?.canonicalPlan, { query: expected, allowedSourceIds: [source.id] });
+  assert.deepEqual(captured.payload?.sources.map(({ cardId }) => cardId), [other.id]);
+  assert.equal(result?.ai.appliedQuery, expected);
+});
+
+test("unsupported analytics conditions get a clarification-only plan without facts", async () => {
+  const query = "Покажи лаборатории KUKA после 2024 года";
+  const captured: { payload?: ModelInput } = {};
+  const result = await run(query, async (_request, _actor, _instruction, input) => {
+    captured.payload = JSON.parse(input);
+    return { status: "ready", output: candidate(null, "period") };
+  });
+  assert.deepEqual(captured.payload?.canonicalPlan, { query: null, allowedSourceIds: [] });
+  assert.deepEqual(captured.payload?.sources, []);
+  assert.match(result.ai.clarification ?? "", /период/i);
+  assert.deepEqual(result.cards, []);
+});
+
+test("an unseen citation invalidates the whole model response even for an unchanged report", async () => {
+  const source = currentCanonSources(fixture.cards).find(({ cardId }) => cardId === project.id)!;
+  const result = await runCandidate(institutionQuery, fixture, candidate(institutionQuery, null, [{
+    sourceId: source.id, factId: source.facts[0].id,
+  }]));
+  assert.equal(result.ai.status, "failed");
+  assert.deepEqual(result.ai.citations, []);
+  assert.equal(result.ai.appliedQuery, undefined);
+  assert.ok(result.cards.some(({ id }) => id === project.id));
+});
+
+test("the model cannot echo an ordinary zero-row query instead of the proven passport plan", async () => {
+  const snapshot = { cards: [passport], types: [] };
+  const ordinary = buildAnalyticsReport(institutionQuery, snapshot.cards);
+  assert.deepEqual(ordinary.cards, []);
+  for (const proposed of [institutionQuery, ` ${passportQuery} `]) {
+    const result = await runCandidate(institutionQuery, snapshot, candidate(proposed));
+    assert.equal(result.ai.status, "failed");
+    assertOrdinaryReport(result, ordinary);
+  }
+});
+
+test("a clarification-only plan rejects a non-null echo, even when it would keep empty rows", async () => {
+  const snapshot = { cards: [passport], types: [] };
+  const query = "Робот FANUC";
+  const ordinary = buildAnalyticsReport(query, snapshot.cards);
+  assert.deepEqual(ordinary.cards, []);
+  const result = await runCandidate(query, snapshot, candidate(query));
+  assert.equal(result.ai.status, "failed");
+  assertOrdinaryReport(result, ordinary);
+});
+
+test("a model clarification must not arrive with citations", async () => {
+  const source = currentCanonSources(fixture.cards).find(({ cardId }) => cardId === passport.id)!;
+  const result = await runCandidate(institutionQuery, fixture, candidate(null, "university", [{
+    sourceId: source.id, factId: source.facts[0].id,
+  }]));
+  assert.equal(result.ai.status, "failed");
+  assert.deepEqual(result.ai.citations, []);
+  assert.equal(result.ai.clarification, undefined);
+  assert.ok(result.cards.some(({ id }) => id === project.id));
 });
 
 test("the approved MIDIS passport can be cited by its complete short university field", async () => {
@@ -281,18 +389,19 @@ test("missing KUKA/FANUC, equipment scope, or a quoted phrase cannot broaden a r
       buildAnalyticsReport(original, fixture.cards, fixture.types)
     );
   }
+  const exactQuery = "Покажи лаборатории с оборудованием KUKA и FANUC";
   const equivalent = await run(
-    "Покажи лаборатории с оборудованием KUKA и FANUC",
+    exactQuery,
     async () => ({
       status: "ready",
       output: candidate("Покажи лаборатории с оборудованием кука и FANUC"),
     })
   );
-  assert.deepEqual(
-    equivalent.cards.map((card) => card.id),
-    [lab.id]
-  );
-  assert.equal(equivalent.ai.status, "ready");
+  assertOrdinaryReport(equivalent, buildAnalyticsReport(exactQuery, fixture.cards, fixture.types));
+  assert.equal(equivalent.ai.status, "failed");
+  const exact = await runCandidate(exactQuery, fixture, candidate(exactQuery));
+  assert.deepEqual(exact.cards.map(({ id }) => id), [lab.id]);
+  assert.equal(exact.ai.status, "ready");
 });
 
 test("unknown industry, lost negation, changed explicit filters and unsupported logic require clarification", async () => {
@@ -329,32 +438,18 @@ test("unknown industry, lost negation, changed explicit filters and unsupported 
 
 test("references must name an exact field from the selected report rows", async () => {
   for (const kind of ["unknown-source", "unknown-fact", "outside-report", "rewritten-quote"]) {
-    const result = await run(
-      institutionQuery,
-      async (_request, _actor, _instruction, input) => {
-        const { sources }: { sources: CanonSource[] } = JSON.parse(input);
-        const source = sources.find(
-          (item) =>
-            item.cardId ===
-            (kind === "outside-report" ? project.id : passport.id)
-        );
-        assert.ok(source);
-        const fact = source.facts.find(
-          (f) => f.field === "referenceDescription"
-        );
-        assert.ok(fact);
-        return {
-          status: "ready",
-          output: candidate(passportQuery, null, [
-            {
-              sourceId: kind === "unknown-source" ? "forged-source" : source.id,
-              factId: kind === "unknown-fact" ? "forged-fact" : fact.id,
-              ...(kind === "rewritten-quote" && { quote: "В источнике нет этой вымышленной фразы." }),
-            },
-          ]),
-        };
-      }
-    );
+    const sources = currentCanonSources(fixture.cards);
+    const visible = sources.find(({ cardId }) => cardId === passport.id)!;
+    const source = kind === "outside-report" ? sources.find(({ cardId }) => cardId === project.id)! : visible;
+    const fact = source.facts.find(({ field }) => field === "referenceDescription")!;
+    const result = await runCandidate(institutionQuery, fixture, candidate(passportQuery, null, [
+      { sourceId: visible.id, factId: visible.facts[0].id },
+      {
+        sourceId: kind === "unknown-source" ? "forged-source" : source.id,
+        factId: kind === "unknown-fact" ? "forged-fact" : fact.id,
+        ...(kind === "rewritten-quote" && { quote: "В источнике нет этой вымышленной фразы." }),
+      },
+    ]));
     assert.equal(result.ai.status, "failed");
     assert.deepEqual(result.ai.citations, []);
     assert.equal(result.ai.appliedQuery, undefined);

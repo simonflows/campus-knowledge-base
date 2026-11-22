@@ -9,10 +9,11 @@ import {
   isGroundedArticleText,
   normalizeGeneratedArticle,
   selectRelevantCards,
+  serializeCardForPrompt,
 } from "../lib/editor";
 import candidates from "../data/pilot-0.9.5-candidates.json";
 import verification from "../data/pilot-0.9.5-verification.json";
-import { assistEditorial } from "../lib/editor-assist";
+import { assistEditorial, requestEditorSuggestion } from "../lib/editor-assist";
 import {
   editorialContentSchema,
   type EditorialDocument,
@@ -176,6 +177,98 @@ test("one supported title cannot vouch for a fabricated fact or a transferred me
   ]) {
     assert.ok(groundGeneratedArticle(makeDraft(lead), ctx.selectedCards), lead);
   }
+});
+
+test("an exact approved title sends only the matching title and accepts grounded attribution", async () => {
+  const imported = candidates.cards.find(({ card }) => card.id === "lab-midis-kuka")!.card;
+  const lab = { ...imported, status: "approved" } as KnowledgeCard;
+  const original = lab.title;
+  const rewritten = `По данным карточки, ${original}`;
+  const captured: { instruction?: string; data?: unknown } = {};
+  const result = await requestEditorSuggestion({
+    request: new Request("http://localhost:8080"), accountId: "fixture-staff",
+    action: "rewrite", original, cards: [lab, passport],
+    ask: async (_request, _account, instruction, input) => {
+      captured.instruction = instruction;
+      captured.data = JSON.parse(input);
+      return { status: "ready", output: { text: rewritten } };
+    },
+  });
+  assert.deepEqual(captured.data, { original, scope: "title", sources: [original] });
+  assert.match(captured.instruction ?? "", /не превращай заголовок в абзац/i);
+  assert.equal(checkEditorialEvidence(rewritten, [lab]).canPublish, true);
+  assert.deepEqual(result, { status: "ready", suggestion: { action: "rewrite", text: rewritten } });
+
+  for (const text of [
+    original + ". В 2024 году здесь открыли новый центр.",
+    original + ". Робот выполняет подводные работы.",
+  ]) {
+    const rejected = await requestEditorSuggestion({
+      request: new Request("http://localhost:8080"), accountId: "fixture-staff",
+      action: "rewrite", original, cards: [lab, passport],
+      ask: async () => ({ status: "ready", output: { text } }),
+    });
+    assert.equal(rejected.status, "failed");
+  }
+});
+
+test("a paragraph rewrite keeps source context and cannot discard qualifying text", async () => {
+  const original = "Гипотетический учебный сценарий. Робот KUKA лечит пациентов.";
+  const seed = knowledgeSeedCards.find(({ id }) => id === "lab-midis-kuka")!;
+  const lab: KnowledgeCard = { ...seed, status: "approved", referenceDescription: original };
+  const captured: { instruction?: string; data?: unknown } = {};
+  const result = await requestEditorSuggestion({
+    request: new Request("http://localhost:8080"), accountId: "fixture-staff",
+    action: "rewrite", original, cards: [lab],
+    ask: async (_request, _account, instruction, input) => {
+      captured.instruction = instruction;
+      captured.data = JSON.parse(input);
+      return { status: "ready", output: { text: "Робот KUKA лечит пациентов." } };
+    },
+  });
+  assert.deepEqual(captured.data, { original, scope: "fragment", sources: [serializeCardForPrompt(lab)] });
+  assert.match(captured.instruction ?? "", /имена, даты, числа.*даже если они есть в карточках/i);
+  assert.match(captured.instruction ?? "", /отрицания, условия, оговорки/i);
+  assert.equal(result.status, "failed");
+});
+
+test("a title-only rewrite cannot substitute or append a different verified field", async () => {
+  const imported = candidates.cards.find(({ card }) => card.id === "lab-midis-kuka")!.card;
+  const lab = { ...imported, status: "approved" } as KnowledgeCard;
+  assert.equal(lab.type, "laboratory");
+  const original = lab.title;
+  const suggest = async (text: string) => requestEditorSuggestion({
+    request: new Request("http://localhost:8080"),
+    accountId: "fixture-staff", action: "rewrite", original, cards: [lab],
+    ask: async () => ({ status: "ready", output: { text } }),
+  });
+  for (const text of [
+    lab.placementDetails,
+    original + "\n" + lab.placementDetails,
+  ]) {
+    assert.equal(checkEditorialEvidence(text, [lab]).canPublish, true);
+    assert.equal((await suggest(text)).status, "failed");
+  }
+  assert.equal((await suggest(original + "\n")).status, "failed");
+  const typographic = `«${original.toUpperCase()}».`;
+  assert.deepEqual(await suggest(typographic), {
+    status: "ready",
+    suggestion: { action: "rewrite", text: typographic },
+  });
+});
+
+test("a publication variant retains full card context even when the original is a title", async () => {
+  const source = knowledgeSeedCards.find(({ id }) => id === "lab-midis-kuka")!;
+  let input: unknown;
+  await requestEditorSuggestion({
+    request: new Request("http://localhost:8080"), accountId: "fixture-staff",
+    action: "variant", original: source.title, cards: [source], channel: "Сайт вуза",
+    ask: async (_request, _account, _instruction, data) => {
+      input = JSON.parse(data);
+      return { status: "unavailable" };
+    },
+  });
+  assert.deepEqual(input, { original: source.title, channel: "Сайт вуза", sources: [serializeCardForPrompt(source)] });
 });
 
 test("live editor help uses the approved version and reports a stale pin without changing it", async (context) => {
