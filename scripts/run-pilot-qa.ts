@@ -93,8 +93,26 @@ async function main() {
       assert.deepEqual(submitted.owners, project.owners, "Each owner name must retain its organization");
       assert.deepEqual(submitted.ownerIds, [designatedOwner.id]);
       assert.deepEqual((await update.json()).ownerIds, [designatedOwner.id]);
+      const longSource = await ownerFormPage.request.post(base + "/api/knowledge/cards", { data: {
+        type: "laboratory", title: "QA длинный источник исторической версии", folderId: "01_universities/midis/infrastructure",
+        owners: ["QA"], ownerIds: [], referenceDescription: "Официальный источник: https://example.org/" + "source".repeat(30),
+        stopFormula: "Синтетический материал", affiliation: "МИДиС", partner: "QA", head: "QA",
+        placementStatus: "active", placementDetails: "Учебный корпус", workDirections: [], equipment: [], confirmedIndicators: [],
+      } });
+      assert.equal(longSource.status(), 201);
+      const longCard = await longSource.json();
+      const longHistory = await (await ownerFormPage.request.get(base + "/api/knowledge/cards/" + longCard.id + "/versions")).json();
+      const historicalPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+      try {
+        await historicalPage.goto(base + "/knowledge?card=" + longCard.id + "&version=" + longHistory.currentVersionId);
+        await historicalPage.getByText("Утверждённая версия", { exact: true }).waitFor();
+        await historicalPage.waitForLoadState("networkidle");
+        assert.equal(await historicalPage.evaluate(() => document.documentElement.scrollWidth), 390,
+          "A long source in an immutable historical card must wrap within the mobile screen");
+      } finally { await historicalPage.close(); }
       await ownerFormPage.close();
       console.log("PASS card edit preserves existing owner labels and assigns a personal account");
+      console.log("PASS historical mobile card wraps long source URLs");
 
       const page = await browser.newPage();
       await page.goto(base + "/login#" + marker);

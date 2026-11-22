@@ -581,7 +581,7 @@ export function HistoricalKnowledgeVersion({
       )
     : [];
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-4 [overflow-wrap:anywhere]">
       <Card>
         <CardHeader>
           <CardTitle>Утверждённая версия</CardTitle>
