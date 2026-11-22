@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { version as appVersion } from "../package.json";
 import { randomUUID } from "node:crypto";
 import type { CardUsage } from "../lib/card-usage";
 import type { EditorialDocument } from "../lib/editorial";
@@ -427,7 +428,7 @@ export async function runCanonRoutes(credentials: Credentials) {
   assert.equal(system.storageMode, "dynamodb");
   assert.deepEqual([system.yandexAi.configured, system.alibabaAi.configured, system.yandexDisk.configured], [false, false, false], "External integrations must be off before mutating fixture data");
   const version = await json<{ version: string }>(publicGet("/api/version"), 200, "Read the installed application version");
-  assert.equal(version.version, "0.9.6");
+  assert.equal(version.version, appVersion);
   const [owner, participant, outsider, admin, guest, midisOwner, susuOwner, rio] = await Promise.all(
     ["demo-pr-midis", "demo-pr-susu", "demo-pr-csu", "demo-admin", "demo-guest", "demo-owner-midis", "demo-owner-susu", "demo-rio"]
       .map(profile => login(base, credentials, profile)),

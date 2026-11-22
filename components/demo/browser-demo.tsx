@@ -88,11 +88,11 @@ function ExitDemo({
 }) {
   return (
     <a
-      className={buttonVariants({ variant: "outline", size: "sm" })}
+      className={buttonVariants({ variant: "outline", size: "sm", className: "atlas-account atlas-login" })}
       href={href}
       aria-label="Выйти из демо"
     >
-      {compact ? "Выйти" : "Выйти из демо"}
+      {compact ? <>Выйти<span className="hidden sm:inline"> из демо</span></> : "Выйти из демо"}
     </a>
   );
 }
