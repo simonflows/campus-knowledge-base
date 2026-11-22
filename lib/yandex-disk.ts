@@ -750,6 +750,42 @@ export function uploadDiskRegistryReceipt(registry: DiskRegistry, signal: AbortS
   return uploadFile(signal, getToken(), segments, fileName, content, "text/markdown; charset=utf-8");
 }
 
+const diskDownloadRedirects = new Set([301, 302, 303, 307, 308]);
+const diskDownloadHosts = ["disk.yandex.net", "disk.yandex.ru"];
+const storageDownloadHost = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+storage\.yandex\.net$/u;
+
+function signedDiskDownloadUrl(value: string, base?: URL): URL {
+  const invalid = () => new YandexDiskError("Адрес проверки сводки не принадлежит Диску.");
+  let url: URL;
+  try {
+    url = new URL(value, base);
+  } catch {
+    throw invalid();
+  }
+  const trustedHost = diskDownloadHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ||
+    storageDownloadHost.test(url.hostname);
+  if (!trustedHost || url.protocol !== "https:" || url.port || url.username || url.password || url.href.includes("#")) {
+    throw invalid();
+  }
+  return url;
+}
+
+async function readSignedDiskFile(href: string, signal: AbortSignal): Promise<Response> {
+  let url = signedDiskDownloadUrl(href);
+  for (let redirects = 0; ; redirects++) {
+    signal.throwIfAborted();
+    // OAuth is used only for the metadata request. Signed file requests, including
+    // redirects, are made independently without its headers.
+    const file = await fetch(url, { signal, redirect: "manual", cache: "no-store" });
+    if (!diskDownloadRedirects.has(file.status)) return file;
+    const location = file.headers.get("location");
+    await file.body?.cancel();
+    if (redirects >= 2) throw new YandexDiskError("Слишком много перенаправлений при чтении сводки.", file.status);
+    if (!location) throw new YandexDiskError("Диск не вернул адрес перенаправления.", file.status);
+    url = signedDiskDownloadUrl(location, url);
+  }
+}
+
 export async function verifyLegacyDiskSummary(registry: DiskRegistry, signal: AbortSignal): Promise<boolean> {
   const folder = diskRegistryFolder(registry);
   const hash = folder?.summaryName.match(/--([0-9a-f]{20})\.csv$/)?.[1];
@@ -759,15 +795,9 @@ export async function verifyLegacyDiskSummary(registry: DiskRegistry, signal: Ab
     `${DISK_API_BASE}/resources/download?path=${encodeURIComponent(path)}`, { redirect: "error" });
   if (response.status === 404) return false;
   if (!response.ok) throw new YandexDiskError("Не удалось проверить файл сводки.", response.status);
-  const payload = await response.json() as { href?: unknown };
-  if (typeof payload.href !== "string") throw new YandexDiskError("Диск не вернул ссылку для проверки сводки.");
-  const url = new URL(payload.href);
-  const hosts = ["disk.yandex.net", "disk.yandex.ru"];
-  if (url.protocol !== "https:" || url.port || url.username || url.password ||
-      !hosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
-    throw new YandexDiskError("Адрес проверки сводки не принадлежит Диску.");
-  }
-  const file = await fetch(url, { signal, redirect: "error", cache: "no-store" });
+  const payload = await response.json() as { href?: unknown } | null;
+  if (typeof payload?.href !== "string") throw new YandexDiskError("Диск не вернул ссылку для проверки сводки.");
+  const file = await readSignedDiskFile(payload.href, signal);
   if (file.status === 404) return false;
   if (!file.ok || !file.body) throw new YandexDiskError("Файл сводки недоступен для проверки.", file.status);
   const digest = createHash("sha256");
