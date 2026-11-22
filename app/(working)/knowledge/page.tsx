@@ -1,4 +1,4 @@
-import "../data-workspaces.css";
+import "@/app/data-workspaces.css";
 
 import { BookOpenCheck } from "lucide-react";
 import Link from "next/link";

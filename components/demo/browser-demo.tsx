@@ -1,9 +1,15 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
-import Link from "next/link";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { FlaskConical, RotateCcw } from "lucide-react";
-
+import { CampusChrome } from "@/components/navigation/campus-chrome";
+import { DemoNavigationContext } from "@/components/navigation/workspace-navigation";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import {
@@ -16,240 +22,287 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { WorkspaceMasthead } from "@/components/workspace-masthead";
 import { demoAccounts, roleShortLabels } from "@/lib/auth";
 import {
-  approvedDemoCards,
   BROWSER_DEMO_KEY,
-  type BrowserDemoState,
+  demoUser,
   getDemoError,
   readBrowserDemo,
   resetBrowserDemo,
   selectDemoProfile,
   writeBrowserDemo,
 } from "@/lib/browser-demo";
+import {
+  demoIncomingRequestCount,
+  handleDemoCollaboration,
+} from "@/lib/browser-demo-collaboration";
+import { handleDemoEditor } from "@/lib/browser-demo-editor";
+import {
+  createBrowserDemoRequest,
+  demoError,
+  queueDemoWrite,
+} from "@/lib/browser-demo-http";
+import { handleDemoKnowledge } from "@/lib/browser-demo-knowledge";
+import { handleDemoTools } from "@/lib/browser-demo-tools";
+import { useDemoLocation } from "./demo-location";
+import { DemoPageContent } from "./demo-page-content";
+import { DemoRequestContext } from "./workspace-transport";
 
-import { DemoCards } from "./demo-cards";
-import { DemoEditor, DemoLibrary } from "./demo-editor";
-import { DemoAnalytics, DemoChat, DemoFactCheck } from "./demo-tools";
+const handlers = [
+  handleDemoKnowledge,
+  handleDemoEditor,
+  handleDemoTools,
+  handleDemoCollaboration,
+];
+const localStatus = {
+  storageMode: "browser",
+  yandexAi: { configured: false },
+  yandexDisk: { configured: false },
+  alibabaAi: { configured: false },
+};
+const demoStorage = {
+  getItem: (key: string) => window.localStorage.getItem(key),
+  setItem: (key: string, value: string) =>
+    window.localStorage.setItem(key, value),
+};
+const hydratedSubscribe = () => () => {};
+const hydratedSnapshot = () => true;
+const serverSnapshot = () => false;
+const unavailableRequest = async () =>
+  demoError("Не удалось открыть данные демо в браузере.", 409);
 
-const sections = {
-  cards: "Карточки",
-  editor: "Редактор",
-  library: "Библиотека",
-  check: "Проверка",
-  analytics: "Аналитика",
-} as const;
-
-export type DemoSection = keyof typeof sections;
-export type UpdateDemo = (
-  update: (state: BrowserDemoState) => BrowserDemoState
-) => void;
-
-function subscribeHydration() {
-  return () => {};
-}
 function readLocalState() {
   try {
-    return { state: readBrowserDemo(window.localStorage), error: null };
+    return { state: readBrowserDemo(demoStorage), error: null };
   } catch (error) {
     return { state: null, error: getDemoError(error) };
   }
 }
 
-export function BrowserDemo() {
-  const hydrated = useSyncExternalStore(
-    subscribeHydration,
-    () => true,
-    () => false
-  );
-
+function ExitDemo({
+  href,
+  compact = false,
+}: {
+  href: string;
+  compact?: boolean;
+}) {
   return (
-    <section className="atlas-wrap mx-auto w-full min-w-0 max-w-[72rem] space-y-6 px-4 py-6 pb-24 sm:px-6">
-      <WorkspaceMasthead
-        id="browser-demo-title"
-        icon={FlaskConical}
-        title="Демо-режим Канона"
-        description="Попробуйте карточки, согласование и редактор на учебных примерах. Изменения сохраняются в этом браузере."
-      >
-        <Link href="/login" className={buttonVariants({ variant: "outline" })}>
-          Выйти из демо
-        </Link>
-      </WorkspaceMasthead>
-      {hydrated ? (
-        <DemoSession />
-      ) : (
-        <p role="status">Открываем учебные примеры…</p>
-      )}
-    </section>
+    <a
+      className={buttonVariants({ variant: "outline", size: "sm" })}
+      href={href}
+      aria-label="Выйти из демо"
+    >
+      {compact ? "Выйти" : "Выйти из демо"}
+    </a>
   );
 }
 
-function DemoSession() {
+export function BrowserDemo({ exitHref }: { exitHref: string }) {
+  const hydrated = useSyncExternalStore(
+    hydratedSubscribe,
+    hydratedSnapshot,
+    serverSnapshot
+  );
+  if (hydrated) return <DemoSession exitHref={exitHref} />;
+  return (
+    <main id="main-content" className="atlas-wrap my-8 space-y-4">
+      <h1 className="text-2xl font-semibold">Демо-режим</h1>
+      <p role="status">Открываем учебные данные в браузере…</p>
+      <ExitDemo href={exitHref} />
+    </main>
+  );
+}
+
+function DemoSession({ exitHref }: { exitHref: string }) {
+  const navigation = useDemoLocation();
   const [stored, setStored] = useState(readLocalState);
   const [resetOpen, setResetOpen] = useState(false);
-  const [generation, setGeneration] = useState(0);
   const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const { profile, epoch } = stored.state ?? {};
+  const request = useMemo(
+    () =>
+      profile && epoch
+        ? createBrowserDemoRequest(
+            demoStorage,
+            { profile, epoch },
+            handlers,
+            (state) => setStored({ state, error: null })
+          )
+        : unavailableRequest,
+    [profile, epoch]
+  );
 
   useEffect(() => {
     function sync(event: StorageEvent) {
-      if (event.key === BROWSER_DEMO_KEY || event.key === null) {
+      if (event.key === BROWSER_DEMO_KEY || event.key === null)
         setStored(readLocalState());
-      }
     }
     window.addEventListener("storage", sync);
     return () => window.removeEventListener("storage", sync);
   }, []);
 
-  const update: UpdateDemo = (operation) => {
-    const storage = window.localStorage;
-    const next = operation(readBrowserDemo(storage));
-    writeBrowserDemo(storage, next);
-    setStored({ state: next, error: null });
-  };
-  const reset = () => {
+  async function changeProfile(profile: string) {
+    setBusy(true);
     try {
-      const state = resetBrowserDemo(window.localStorage);
+      const state = await queueDemoWrite(demoStorage, () => {
+        const next = selectDemoProfile(readBrowserDemo(demoStorage), profile);
+        writeBrowserDemo(demoStorage, next);
+        return next;
+      });
       setStored({ state, error: null });
-      setGeneration((previous) => previous + 1);
-      setResetOpen(false);
-      setNotice("Учебные примеры восстановлены.");
+      setNotice("");
     } catch (error) {
       setNotice(getDemoError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reset() {
+    setBusy(true);
+    try {
+      const state = await queueDemoWrite(demoStorage, () =>
+        resetBrowserDemo(demoStorage)
+      );
+      setStored({ state, error: null });
+      setNotice("Учебные примеры восстановлены.");
+      navigation.navigate("/", { replace: true });
+    } catch (error) {
+      setNotice(getDemoError(error));
+    } finally {
+      setBusy(false);
       setResetOpen(false);
     }
-  };
+  }
 
-  return (
-    <>
-      <div className="flex flex-wrap items-end justify-between gap-3 rounded-xl border bg-card p-4 text-card-foreground">
-        {stored.state ? (
-          <div className="min-w-0 max-w-full">
-            <label
-              htmlFor="browser-demo-profile"
-              className="mb-1 block text-sm font-medium"
+  const state = stored.state;
+  const user = state ? demoUser(state) : null;
+  const account = state && (
+    <DemoProfile profile={state.profile} busy={busy} change={changeProfile} />
+  );
+  const banner = (
+    <div className="atlas-mode border-b-2! border-amber-500! bg-amber-100! text-slate-950!">
+      <div className="wrap atlas-wrap flex flex-wrap items-center justify-between gap-x-5 gap-y-2 py-2">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <FlaskConical size={16} aria-hidden="true" />
+          <strong>Демо-режим</strong>
+          <span>
+            Учебные данные. Изменения сохраняются в этом браузере. ИИ
+            имитируется, выгрузка на Диск отключена.
+          </span>
+        </div>
+        <div className="flex max-w-full flex-wrap items-center gap-2">
+          {account}
+          <Dialog open={resetOpen} onOpenChange={setResetOpen}>
+            <DialogTrigger
+              render={<Button variant="outline" size="sm" type="button" />}
             >
-              Учебная роль
-            </label>
-            <select
-              id="browser-demo-profile"
-              value={stored.state.profile}
-              className="min-h-10 w-full min-w-0 max-w-full rounded-md border bg-background px-3 text-sm"
-              onChange={(event) => {
-                try {
-                  const profile = event.target.value;
-                  update((state) => selectDemoProfile(state, profile));
-                  setNotice("");
-                } catch (error) {
-                  setNotice(getDemoError(error));
-                }
-              }}
-            >
-              {demoAccounts.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {roleShortLabels[profile.role]} · {profile.organization}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <p className="max-w-xl text-sm text-destructive" role="alert">
-            {stored.error}
+              <RotateCcw aria-hidden="true" />
+              Сбросить демо
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Восстановить учебные примеры?</DialogTitle>
+                <DialogDescription>
+                  Все изменения демо, сделанные в этом браузере, будут удалены.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <DialogClose
+                  render={<Button variant="outline" type="button" />}
+                  disabled={busy}
+                >
+                  Отмена
+                </DialogClose>
+                <Button
+                  type="button"
+                  onClick={() => void reset()}
+                  disabled={busy}
+                >
+                  Сбросить изменения
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+        {notice && (
+          <p className="basis-full font-medium" role="status">
+            {notice}
           </p>
         )}
-        <Dialog open={resetOpen} onOpenChange={setResetOpen}>
-          <DialogTrigger render={<Button variant="outline" type="button" />}>
-            <RotateCcw aria-hidden="true" />
-            Сбросить демо
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Восстановить учебные примеры?</DialogTitle>
-              <DialogDescription>
-                Изменённые карточки и сохранённые демоматериалы в этом браузере
-                будут удалены.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <DialogClose render={<Button variant="outline" type="button" />}>
-                Отмена
-              </DialogClose>
-              <Button type="button" onClick={reset}>
-                Сбросить изменения
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       </div>
-      {notice && (
-        <p role="status" className="text-sm">
-          {notice}
-        </p>
-      )}
-      {stored.state && (
-        <DemoWorkspace key={generation} state={stored.state} update={update} />
-      )}
-    </>
+    </div>
+  );
+  return (
+    <DemoNavigationContext.Provider value={navigation}>
+      <DemoRequestContext.Provider value={request}>
+        <CampusChrome
+          key={`${profile ?? "unavailable"}:${epoch ?? ""}`}
+          staff={Boolean(user && user.role !== "guest")}
+          status={{
+            ...localStatus,
+            incomingRequests: state ? demoIncomingRequestCount(state) : 0,
+          }}
+          demo
+          account={
+            <div className="flex items-center gap-1.5">
+              <span
+                className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-slate-950"
+                aria-label="Демо-режим"
+              >
+                Демо
+              </span>
+              <ExitDemo href={exitHref} compact />
+            </div>
+          }
+          banner={banner}
+        >
+          {state ? (
+            <DemoPageContent
+              state={state}
+              location={navigation.location}
+              account={account}
+            />
+          ) : (
+            <p className="atlas-wrap py-8 text-destructive" role="alert">
+              {stored.error}
+            </p>
+          )}
+        </CampusChrome>
+      </DemoRequestContext.Provider>
+    </DemoNavigationContext.Provider>
   );
 }
 
-function DemoWorkspace({
-  state,
-  update,
+function DemoProfile({
+  profile,
+  change,
+  busy,
 }: {
-  state: BrowserDemoState;
-  update: UpdateDemo;
+  profile: string;
+  change(profile: string): Promise<void>;
+  busy: boolean;
 }) {
-  const [section, setSection] = useState<DemoSection>("cards");
-  const [selectedCard, selectCard] = useState<{
-    id: string;
-    approved: boolean;
-  } | null>(null);
-  const cards = approvedDemoCards(state);
-
-  function openCard(id: string) {
-    selectCard({ id, approved: true });
-    setSection("cards");
-  }
-
+  const id = useId();
   return (
-    <>
-      <nav aria-label="Учебные разделы" className="flex flex-wrap gap-2">
-        {(Object.entries(sections) as Array<[DemoSection, string]>).map(
-          ([id, label]) => (
-            <Button
-              key={id}
-              type="button"
-              variant={id === section ? "default" : "outline"}
-              aria-current={id === section ? "page" : undefined}
-              onClick={() => setSection(id)}
-            >
-              {label}
-            </Button>
-          )
-        )}
-      </nav>
-      {section === "cards" && (
-        <DemoCards
-          state={state}
-          update={update}
-          selected={selectedCard}
-          onSelect={(id) => selectCard({ id, approved: false })}
-        />
-      )}
-      {section === "editor" && (
-        <DemoEditor key={state.profile} state={state} update={update} />
-      )}
-      {section === "library" && (
-        <DemoLibrary state={state} openCard={openCard} />
-      )}
-      {section === "check" && (
-        <DemoFactCheck cards={cards} openCard={openCard} />
-      )}
-      {section === "analytics" && (
-        <DemoAnalytics cards={cards} openCard={openCard} />
-      )}
-      <DemoChat cards={cards} openCard={openCard} navigate={setSection} />
-    </>
+    <div className="min-w-0 max-w-full">
+      <label className="sr-only" htmlFor={id}>
+        Учебная роль
+      </label>
+      <select
+        className="h-9 max-w-full rounded-md border bg-background px-2 text-xs"
+        id={id}
+        value={profile}
+        disabled={busy}
+        onChange={(event) => void change(event.target.value)}
+      >
+        {demoAccounts.map((account) => (
+          <option key={account.id} value={account.id}>
+            {roleShortLabels[account.role]} · {account.organization}
+          </option>
+        ))}
+      </select>
+    </div>
   );
 }

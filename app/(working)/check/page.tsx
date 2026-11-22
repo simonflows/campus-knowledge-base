@@ -1,4 +1,4 @@
-import "../data-workspaces.css";
+import "@/app/data-workspaces.css";
 
 import { FactCheckWorkspace } from "@/components/fact-check/fact-check-workspace";
 import { StorageUnavailable } from "@/components/storage-unavailable";

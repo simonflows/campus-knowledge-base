@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useMemo, useState } from "react";
 import {
   BookOpenCheck,
@@ -113,6 +115,7 @@ export function ArticleLibrary({
   onArticleDeleted,
   onDemoArticlesCleared,
 }: ArticleLibraryProps) {
+  const workspaceRequest = useWorkspaceRequest();
   const [universityId, setUniversityId] = useState("all");
   const [project, setProject] = useState("all");
   const [topic, setTopic] = useState("all");
@@ -264,7 +267,7 @@ export function ArticleLibrary({
     setIsSavingEdit(true);
 
     try {
-      const response = await fetch(`/api/articles/${article.id}`, {
+      const response = await workspaceRequest(`/api/articles/${article.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -303,7 +306,7 @@ export function ArticleLibrary({
     setDeletingId(articleId);
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/articles?id=${encodeURIComponent(articleId)}`,
         { method: "DELETE" }
       );
@@ -332,7 +335,7 @@ export function ArticleLibrary({
     setIsClearingDemo(true);
 
     try {
-      const response = await fetch("/api/articles?scope=demo", {
+      const response = await workspaceRequest("/api/articles?scope=demo", {
         method: "DELETE",
       });
       const data = (await response.json().catch(() => null)) as {

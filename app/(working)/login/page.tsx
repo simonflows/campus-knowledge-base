@@ -8,5 +8,5 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const [user, query] = await Promise.all([getSessionUser(), searchParams]);
   const returnTo = ["/analytics", "/editor", "/work", "/requests", "/check"].includes(query.next ?? "") ? query.next! : "/knowledge";
 
-  return <LoginScreen currentUser={user} demo={demoLoginEnabled()} returnTo={returnTo} staffRequired={query.reason === "staff"} />;
+  return <LoginScreen currentUser={user} demo={demoLoginEnabled()} returnTo={returnTo} staffRequired={query.reason === "staff"} demoHref={`${process.env.BASE_PATH || ""}/demo`} />;
 }

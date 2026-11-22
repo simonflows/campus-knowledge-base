@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useEffect, useId, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,11 +16,19 @@ type State =
   | FlashFactAssist
   | FlashAnalyticsAssist;
 
-export function isCurrentFlashRequest(request: AbortController, current: AbortController | null) {
+export function isCurrentFlashRequest(
+  request: AbortController,
+  current: AbortController | null
+) {
   return current === request && !request.signal.aborted;
 }
 
-export function FlashAssistOption({ kind, checked, disabled, onChange }: {
+export function FlashAssistOption({
+  kind,
+  checked,
+  disabled,
+  onChange,
+}: {
   kind: "analytics" | "fact";
   checked: boolean;
   disabled: boolean;
@@ -36,7 +46,9 @@ export function FlashAssistOption({ kind, checked, disabled, onChange }: {
           onChange={(event) => onChange(event.target.checked)}
           className="size-4 shrink-0 accent-[var(--primary)]"
         />
-        {kind === "analytics" ? "Помочь уточнить запрос с Flash" : "Найти фрагменты для сверки с Flash"}
+        {kind === "analytics"
+          ? "Помочь уточнить запрос с Flash"
+          : "Найти фрагменты для сверки с Flash"}
       </label>
       <p id={id} className="text-xs leading-relaxed text-muted-foreground">
         {kind === "analytics"
@@ -75,31 +87,62 @@ function statusMessage(state: State) {
   }
 }
 
-export function FlashAssistResult({ state, onApply }: { state: State; onApply?: (query: string) => void }) {
-  const fragments = state.status === "ready" && "fragments" in state ? state.fragments : [];
-  const suggestion = state.status === "ready" && "suggestion" in state ? state.suggestion : null;
+export function FlashAssistResult({
+  state,
+  onApply,
+}: {
+  state: State;
+  onApply?: (query: string) => void;
+}) {
+  const fragments =
+    state.status === "ready" && "fragments" in state ? state.fragments : [];
+  const suggestion =
+    state.status === "ready" && "suggestion" in state ? state.suggestion : null;
   return (
     <div className="flex w-full min-w-0 flex-col items-start gap-2">
-      <p role="status" className="text-xs leading-relaxed text-muted-foreground">{statusMessage(state)}</p>
+      <p
+        role="status"
+        className="text-xs leading-relaxed text-muted-foreground"
+      >
+        {statusMessage(state)}
+      </p>
       {fragments.length > 0 && (
         <ul className="flex w-full list-disc flex-col gap-1 pl-5 text-sm [overflow-wrap:anywhere]">
-          {fragments.map((fragment) => <li key={fragment}>«{fragment}»</li>)}
+          {fragments.map((fragment) => (
+            <li key={fragment}>«{fragment}»</li>
+          ))}
         </ul>
       )}
       {suggestion && onApply && (
         <>
-          <p className="text-sm [overflow-wrap:anywhere]">«{suggestion.query}»</p>
-          <ul className="flex max-w-full flex-wrap gap-2" aria-label="Предложенные критерии">
+          <p className="text-sm [overflow-wrap:anywhere]">
+            «{suggestion.query}»
+          </p>
+          <ul
+            className="flex max-w-full flex-wrap gap-2"
+            aria-label="Предложенные критерии"
+          >
             {suggestion.filters.map((filter) => (
-              <li key={`${filter.key}-${filter.value}`} className="min-w-0 max-w-full">
-                <Badge variant="secondary" className="h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]">
+              <li
+                key={`${filter.key}-${filter.value}`}
+                className="min-w-0 max-w-full"
+              >
+                <Badge
+                  variant="secondary"
+                  className="h-auto max-w-full whitespace-normal [overflow-wrap:anywhere]"
+                >
                   {filter.label}: {filter.value}
                 </Badge>
               </li>
             ))}
           </ul>
-          <Button type="button" size="sm" variant="secondary" className="min-h-11 sm:min-h-9"
-            onClick={() => onApply(suggestion.query)}>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="min-h-11 sm:min-h-9"
+            onClick={() => onApply(suggestion.query)}
+          >
             Применить уточнение
           </Button>
         </>
@@ -109,6 +152,7 @@ export function FlashAssistResult({ state, onApply }: { state: State; onApply?: 
 }
 
 export function FlashAssistHint(props: Props) {
+  const workspaceRequest = useWorkspaceRequest();
   const id = useId();
   const [state, setState] = useState<State>({ status: "idle" });
   const pending = useRef<AbortController | null>(null);
@@ -126,7 +170,7 @@ export function FlashAssistHint(props: Props) {
       : { query: props.query, flashAssist: true };
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         fact ? "/api/fact-check" : "/api/analytics",
         {
           method: "POST",
@@ -149,7 +193,8 @@ export function FlashAssistHint(props: Props) {
         setState(data?.flashAssist ?? { status: "unavailable" });
       }
     } catch {
-      if (isCurrentFlashRequest(controller, pending.current)) setState({ status: "failed" });
+      if (isCurrentFlashRequest(controller, pending.current))
+        setState({ status: "failed" });
     } finally {
       if (pending.current === controller) pending.current = null;
     }
@@ -183,7 +228,10 @@ export function FlashAssistHint(props: Props) {
         Получить подсказки Flash
       </Button>
       {state.status !== "idle" && (
-        <FlashAssistResult state={state} onApply={props.kind === "analytics" ? props.onApply : undefined} />
+        <FlashAssistResult
+          state={state}
+          onApply={props.kind === "analytics" ? props.onApply : undefined}
+        />
       )}
     </section>
   );

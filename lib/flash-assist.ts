@@ -44,8 +44,10 @@ function hasUnrecognizedWords(query: string, proposed: string, filters: Analytic
 
 const runtime = globalThis as typeof globalThis & {
   campusFlashAssist?: { active: number; cooldowns: Map<string, number> };
+  campusFlashAssistAccounts?: Set<string>;
 };
 const usage = (runtime.campusFlashAssist ??= { active: 0, cooldowns: new Map() });
+const activeAccounts = (runtime.campusFlashAssistAccounts ??= new Set<string>());
 
 function configured() {
   return isYandexAiConfigured() && getYandexModelLabel() === "aliceai-llm-flash";
@@ -100,13 +102,14 @@ export async function runLimitedAi<T>(
 ): Promise<Unavailable | { status: "ready"; value: T }> {
   if (request.signal.aborted) return { status: "failed" };
   const now = Date.now();
-  if (usage.active >= 2 || (usage.cooldowns.get(accountId) ?? 0) > now) {
+  if (usage.active >= 2 || activeAccounts.has(accountId) || (usage.cooldowns.get(accountId) ?? 0) > now) {
     return { status: "busy" };
   }
   for (const [id, until] of usage.cooldowns) {
     if (until <= now) usage.cooldowns.delete(id);
   }
   usage.cooldowns.set(accountId, now + 10_000);
+  activeAccounts.add(accountId);
   usage.active++;
   try {
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(20_000)]);
@@ -116,6 +119,7 @@ export async function runLimitedAi<T>(
     return { status: "failed" };
   } finally {
     usage.active--;
+    activeAccounts.delete(accountId);
   }
 }
 

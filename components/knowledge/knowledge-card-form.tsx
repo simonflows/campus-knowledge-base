@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useState } from "react";
 import { FlaskConical, Handshake, Plus, Settings2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -122,6 +124,7 @@ export function KnowledgeCardForm({
   onCancel,
   saveCard,
 }: KnowledgeCardFormProps) {
+  const workspaceRequest = useWorkspaceRequest();
   const projectCard = initialCard?.type === "project" ? initialCard : null;
   const laboratoryCard =
     initialCard?.type === "laboratory" ? initialCard : null;
@@ -639,7 +642,7 @@ export function KnowledgeCardForm({
         isEdit && initialCard
           ? `/api/knowledge/cards/${initialCard.id}`
           : "/api/knowledge/cards";
-      const response = await fetch(endpoint, {
+      const response = await workspaceRequest(endpoint, {
         method: isEdit ? "PUT" : "POST",
         headers: {
           "Content-Type": "application/json",

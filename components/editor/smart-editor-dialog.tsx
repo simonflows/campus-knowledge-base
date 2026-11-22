@@ -1,6 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BadgeCheck,
@@ -185,6 +187,7 @@ function SmartEditorForm({
   provider: AiProviderChoice;
   setProvider: (provider: AiProviderChoice) => void;
 }) {
+  const workspaceRequest = useWorkspaceRequest();
   const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
   const [providerMeta, setProviderMeta] = useState<ProviderMeta | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -238,7 +241,7 @@ function SmartEditorForm({
     setSavedArticleId(null);
 
     try {
-      const response = await fetch("/api/editor/generate", {
+      const response = await workspaceRequest("/api/editor/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -344,7 +347,7 @@ function SmartEditorForm({
     setIsSaving(true);
 
     try {
-      const response = await fetch("/api/articles", {
+      const response = await workspaceRequest("/api/articles", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

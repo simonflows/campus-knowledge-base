@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import {
   Archive,
   ArrowUpRight,
@@ -60,8 +60,16 @@ function Publication({
     if (focused) heading.current?.focus({ preventScroll: true });
   }, [focused]);
   const approved = isApprovedArticle(article);
-  const approvedTime = approved && article.approval ? Date.parse(article.approval.approvedAt) : NaN;
-  const blocks = new Map(flattenArticleChunks(article).map((block) => [block.chunkId, articleBasisReference(block)]));
+  const approvedTime =
+    approved && article.approval
+      ? Date.parse(article.approval.approvedAt)
+      : NaN;
+  const blocks = new Map(
+    flattenArticleChunks(article).map((block) => [
+      block.chunkId,
+      articleBasisReference(block),
+    ])
+  );
   return (
     <details className="desk-disclosure desk-publication" open={focused}>
       <summary ref={heading}>
@@ -72,7 +80,13 @@ function Publication({
           <strong>{article.title}</strong>
           <span className="desk-footnote">
             {approved
-              ? [article.channel || "Оригинал", Number.isFinite(approvedTime) && articleDate.format(approvedTime)].filter(Boolean).join(" · ")
+              ? [
+                  article.channel || "Оригинал",
+                  Number.isFinite(approvedTime) &&
+                    articleDate.format(approvedTime),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
               : "Исторический материал · редакция не зафиксирована"}
           </span>
         </span>
@@ -89,8 +103,13 @@ function Publication({
                 <div key={chunk.id} className="min-w-0 space-y-1">
                   <p>{chunk.content}</p>
                   {reference && chunk.content.trim() && onUseBlock && (
-                    <Button type="button" variant="outline" size="sm" disabled={busy}
-                      onClick={() => onUseBlock(reference)}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => onUseBlock(reference)}
+                    >
                       Использовать блок как опору
                     </Button>
                   )}
@@ -105,7 +124,9 @@ function Publication({
             <ul>
               {article.sourceCardTitles.map((title, index) => {
                 const cardId = article.sourceCardIds[index];
-                const pinned = article.sourceVersions?.find((source) => source.cardId === cardId);
+                const pinned = article.sourceVersions?.find(
+                  (source) => source.cardId === cardId
+                );
                 return (
                   <li key={`${index}-${title}`}>
                     {approved && cardId ? (
@@ -113,7 +134,8 @@ function Publication({
                         href={`/knowledge?card=${encodeURIComponent(cardId)}${pinned ? `&version=${encodeURIComponent(pinned.versionId)}` : ""}`}
                         className="desk-text-link"
                       >
-                        {title}{!pinned && " · версия не зафиксирована"}
+                        {title}
+                        {!pinned && " · версия не зафиксирована"}
                         <ArrowUpRight size={15} className="shrink-0" />
                       </Link>
                     ) : (
@@ -130,19 +152,38 @@ function Publication({
             <h3>Опорные блоки из библиотеки</h3>
             <ul>
               {article.articleBasis.map((reference) => {
-                const current = articles.some((item) => hasCurrentArticleBasis(item, reference));
+                const current = articles.some((item) =>
+                  hasCurrentArticleBasis(item, reference)
+                );
                 return (
-                  <li key={JSON.stringify([reference.articleId, reference.revisionId, reference.chunkId])}>
+                  <li
+                    key={JSON.stringify([
+                      reference.articleId,
+                      reference.revisionId,
+                      reference.chunkId,
+                    ])}
+                  >
                     {current ? (
-                      <Link href={`/editor?article=${encodeURIComponent(reference.articleId)}`} className="desk-text-link">
+                      <Link
+                        href={`/editor?article=${encodeURIComponent(reference.articleId)}`}
+                        className="desk-text-link"
+                      >
                         {reference.articleTitle}
-                        <ArrowUpRight size={15} className="shrink-0" aria-hidden="true" />
+                        <ArrowUpRight
+                          size={15}
+                          className="shrink-0"
+                          aria-hidden="true"
+                        />
                       </Link>
                     ) : (
                       <p>{reference.articleTitle} · историческая опора</p>
                     )}
-                    {reference.sectionHeading && <p>{reference.sectionHeading}</p>}
-                    <p className="desk-footnote">{articleBasisLocation(reference)}</p>
+                    {reference.sectionHeading && (
+                      <p>{reference.sectionHeading}</p>
+                    )}
+                    <p className="desk-footnote">
+                      {articleBasisLocation(reference)}
+                    </p>
                   </li>
                 );
               })}
@@ -160,7 +201,14 @@ function Publication({
   );
 }
 
-export function EditorialLibrary({ articles, legacy, busy, onImport, onUseBlock, focusedArticleId }: Props) {
+export function EditorialLibrary({
+  articles,
+  legacy,
+  busy,
+  onImport,
+  onUseBlock,
+  focusedArticleId,
+}: Props) {
   const [query, setQuery] = useState("");
   const keyword = query.trim().toLocaleLowerCase("ru");
   const matches = (article: ReadyArticle) =>
@@ -171,10 +219,17 @@ export function EditorialLibrary({ articles, legacy, busy, onImport, onUseBlock,
       ...article.sourceCardTitles,
     ].some((value) => value.toLocaleLowerCase("ru").includes(keyword));
   const focusedArticle = focusedArticleId
-    ? articles.find((article) => article.id === focusedArticleId && isApprovedArticle(article))
+    ? articles.find(
+        (article) =>
+          article.id === focusedArticleId && isApprovedArticle(article)
+      )
     : undefined;
-  const matchesSearch = articles.filter((article) => article.id !== focusedArticle?.id && matches(article));
-  const published = focusedArticle ? [focusedArticle, ...matchesSearch] : matchesSearch;
+  const matchesSearch = articles.filter(
+    (article) => article.id !== focusedArticle?.id && matches(article)
+  );
+  const published = focusedArticle
+    ? [focusedArticle, ...matchesSearch]
+    : matchesSearch;
   const archive = legacy.filter(matches);
 
   return (
@@ -206,12 +261,21 @@ export function EditorialLibrary({ articles, legacy, busy, onImport, onUseBlock,
         {focusedArticleId && !focusedArticle && (
           <Alert className="m-3">
             <AlertTitle>Публикация недоступна</AlertTitle>
-            <AlertDescription>Проверьте ссылку или выберите другую статью в списке.</AlertDescription>
+            <AlertDescription>
+              Проверьте ссылку или выберите другую статью в списке.
+            </AlertDescription>
           </Alert>
         )}
         {published.length ? (
           published.map((article) => (
-            <Publication article={article} articles={articles} key={article.id} focused={article.id === focusedArticle?.id} busy={busy} onUseBlock={onUseBlock} />
+            <Publication
+              article={article}
+              articles={articles}
+              key={article.id}
+              focused={article.id === focusedArticle?.id}
+              busy={busy}
+              onUseBlock={onUseBlock}
+            />
           ))
         ) : (
           <div className="desk-workspace-empty">

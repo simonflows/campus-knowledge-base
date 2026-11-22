@@ -5,7 +5,7 @@ import { canAnswerInformationRequest, canSeeInformationRequest, type Information
 import { getApprovedVersion, getCardStatus, type KnowledgeCard } from "./knowledge";
 import { canVerifyCardFreshness, isReviewOverdue } from "./knowledge-freshness";
 import type { WorkflowRecord } from "./workflow";
-import { WorkflowError } from "./workflow";
+import { WorkflowError } from "./workflow-policy";
 
 export type WorkItem = { id: string; kind: string; title: string; reason: string; href: string; responsibleId: string | null; responsibleName: string; dueDate: string | null; state: "action" | "waiting" };
 export type QueueReadiness = { changedSources: { cardId: string; usedVersionId: string | null; currentVersionId: string }[]; unknownSources: string[] };

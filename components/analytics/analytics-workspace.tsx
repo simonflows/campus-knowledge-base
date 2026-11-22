@@ -1,11 +1,14 @@
 "use client";
+
+import { demoHref } from "@/lib/browser-demo-navigation";
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
 import {
   MastheadCount,
   WorkspaceMasthead,
 } from "@/components/workspace-masthead";
 import { AnimatedNumber } from "@/components/motion/animated-number";
 
-import Link from "next/link";
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowUpRight,
@@ -452,7 +455,7 @@ function ListView({ cards }: { cards: AnalyticsCardRow[] }) {
   );
 }
 
-function buildReportText(report: AnalyticsResponse, origin: string): string {
+function buildReportText(report: AnalyticsResponse, sourceLink: (href: string) => string): string {
   const lines: string[] = [
     "Аналитическая справка по базе",
     ...(report.ai?.appliedQuery
@@ -500,7 +503,7 @@ function buildReportText(report: AnalyticsResponse, origin: string): string {
       lines.push("Цифры и факты: подтверждённых данных нет");
     }
 
-    lines.push(`Источник: ${origin}${card.sourceHref}`);
+    lines.push(`Источник: ${sourceLink(card.sourceHref)}`);
   });
 
   lines.push(
@@ -517,6 +520,8 @@ export function AnalyticsWorkspace({
   flashAssistAvailable = false,
   dynamicExamples = [],
 }: AnalyticsWorkspaceProps) {
+  const workspaceRequest = useWorkspaceRequest();
+  const demo = useWorkspaceMode() === "demo";
   const [query, setQuery] = useState("");
   const [report, setReport] = useState<AnalyticsResponse | null>(null);
   const [view, setView] = useState<ViewMode>("table");
@@ -552,7 +557,7 @@ export function AnalyticsWorkspace({
     setError(null);
 
     try {
-      const response = await fetch("/api/analytics", {
+      const response = await workspaceRequest("/api/analytics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(parsed.data),
@@ -612,7 +617,10 @@ export function AnalyticsWorkspace({
         throw new Error("clipboard unavailable");
       }
       const origin = window.location.origin;
-      await navigator.clipboard.writeText(buildReportText(report, origin));
+      const sourceLink = (href: string) => demo
+        ? origin + window.location.pathname + (demoHref(href) ?? "")
+        : origin + href;
+      await navigator.clipboard.writeText(buildReportText(report, sourceLink));
       toast.success("Отчёт скопирован", {
         description:
           "В буфер обмена попали справка, таблица и ссылки на карточки-источники.",

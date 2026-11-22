@@ -11,19 +11,32 @@ const nextConfig: NextConfig = {
     distDir: ".next-campus-demo",
   }),
 
-  ...(isDevelopment && {
+  ...(process.env.OUTPUT_MODE !== "export" && {
     async headers() {
       return [
         {
-          source: "/:path*",
-          basePath: false,
+          source: "/demo",
           headers: [
             {
-              key: "X-Robots-Tag",
-              value: "noindex, nofollow",
+              key: "Content-Security-Policy",
+              value: "connect-src 'none'; form-action 'none'; base-uri 'none'",
             },
           ],
         },
+        ...(isDevelopment
+          ? [
+              {
+                source: "/:path*",
+                basePath: false as const,
+                headers: [
+                  {
+                    key: "X-Robots-Tag",
+                    value: "noindex, nofollow",
+                  },
+                ],
+              },
+            ]
+          : []),
         ...(isFullLocalDemo
           ? [
               {
@@ -51,10 +64,14 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   poweredByHeader: false,
   reactStrictMode: true,
-  ...(isFullLocalDemo && { typescript: { tsconfigPath: "tsconfig.demo.json" } }),
+  ...(isFullLocalDemo && {
+    typescript: { tsconfigPath: "tsconfig.demo.json" },
+  }),
   experimental: {
     serverSourceMaps: false,
     turbopackSourceMaps: false,
+    // Keep rendered data in the development document so /demo can hydrate without a socket.
+    ...(isDevelopment && { reactDebugChannel: false }),
   },
 };
 

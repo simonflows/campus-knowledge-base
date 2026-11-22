@@ -70,7 +70,8 @@ export type EditorialEvent = {
     | "submitted"
     | "returned"
     | "approved"
-    | "commented";
+    | "commented"
+    | "deleted";
   revisionId: string;
   actorId: string;
   actorName: string;
@@ -96,6 +97,7 @@ export type EditorialDocument = {
   submittedOnce?: boolean;
   reviewerId?: string;
   reviewerName?: string;
+  deletedAt?: string;
 };
 export type EditorialRevision = {
   id: string;
@@ -135,6 +137,7 @@ export const editorialMutationSchema = z.discriminatedUnion("action", [
   }),
 ]);
 export type EditorialMutation = z.infer<typeof editorialMutationSchema>;
+export const deleteEditorialSchema = z.object({ version: z.number().int().positive() });
 export const editorialStatusLabels = {
   draft: "Черновик",
   submitted: "На согласовании",
@@ -149,9 +152,10 @@ export const editorialEventLabels: Record<EditorialEvent["action"], string> = {
   returned: "Возвращено на доработку",
   approved: "Согласовано",
   commented: "Добавлен комментарий",
+  deleted: "Удалён черновик",
 };
 export function canReadEditorial(user: SessionUser, doc: EditorialDocument) {
-  if (user.role === "guest") return false;
+  if (user.role === "guest" || doc.deletedAt) return false;
   if (doc.ownerId === user.id) return true;
   if (doc.status === "draft") return false;
   if (!doc.reviewerId) return user.role === "admin";
@@ -161,7 +165,12 @@ export function canReadEditorial(user: SessionUser, doc: EditorialDocument) {
   );
 }
 export function canWriteEditorial(user: SessionUser, doc: EditorialDocument) {
-  return user.role !== "guest" && doc.ownerId === user.id;
+  return user.role !== "guest" && !doc.deletedAt && doc.ownerId === user.id;
+}
+export function canDeleteEditorial(user: SessionUser, doc: EditorialDocument) {
+  return canWriteEditorial(user, doc) &&
+    (doc.status === "draft" || doc.status === "returned") &&
+    !doc.approvedRevisionId;
 }
 export function editorialText(content: EditorialContent) {
   return [

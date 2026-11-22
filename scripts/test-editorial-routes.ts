@@ -116,6 +116,22 @@ export async function runEditorialRoutes(credentials: (profile: string) => { acc
   );
   assert.equal((await call("/api/articles", owner, "POST", {})).status, 409);
   assert.equal((await call("/api/articles/any", owner, "PUT", {})).status, 409);
+  const draftPath = `/api/editor/drafts/${doc.id}`;
+  assert.equal((await call(draftPath, "", "DELETE", { version: doc.version })).status, 401);
+  assert.equal((await call(draftPath, other, "DELETE", { version: doc.version })).status, 404);
+  assert.equal((await call(draftPath, admin, "DELETE", { version: doc.version })).status, 404);
+  assert.equal((await call(draftPath, owner, "DELETE", {})).status, 400);
+  assert.equal((await call(draftPath, owner, "DELETE", { version: doc.version + 1 })).status, 409);
+  const crossOriginDelete = await fetch(base + draftPath, {
+    method: "DELETE", headers: { Cookie: owner, "Content-Type": "application/json", Origin: "https://other.invalid" },
+    body: JSON.stringify({ version: doc.version }),
+  });
+  assert.equal(crossOriginDelete.status, 403);
+  assert.equal((await call(draftPath, owner, "DELETE", { version: doc.version })).status, 200);
+  assert.equal((await call(draftPath, owner)).status, 404);
+  assert.equal((await call(draftPath + "/docx", owner)).status, 404);
+  assert.equal((await call(draftPath, owner, "DELETE", { version: doc.version })).status, 404);
+  console.log("PASS: real HTTP own-draft deletion, anonymous/foreign/admin/cross-origin denied, stale409 and deleted404");
   console.log(
     "PASS: real routes authentication, ownership, private draft hiding, stale save409, DOCX XML title/body/source hyperlink, foreign DOCX denied, legacy archive detail/import scopes, old publication create/edit bypass blocked"
   );

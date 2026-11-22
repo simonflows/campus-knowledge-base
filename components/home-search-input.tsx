@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useEffect, useRef, useState } from "react";
 import { Autocomplete } from "@base-ui/react/autocomplete";
 import {
@@ -9,8 +11,7 @@ import {
   Search,
   SquareArrowOutUpRight,
 } from "lucide-react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -36,7 +37,9 @@ export function HomeSearchInput({
   basePath: string;
   examples: string[];
 }) {
-  const router = useRouter();
+  const workspaceRequest = useWorkspaceRequest();
+  const router = useWorkspaceNavigation();
+  const demo = useWorkspaceMode() === "demo";
   const form = useRef<HTMLFormElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [value, setValue] = useState("");
@@ -63,8 +66,8 @@ export function HomeSearchInput({
     const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
-        const response = await fetch(
-          `${basePath}/api/search?q=${encodeURIComponent(query)}`,
+        const response = await workspaceRequest(
+          `${demo ? "" : basePath}/api/search?q=${encodeURIComponent(query)}`,
           {
             cache: "no-store",
             signal: controller.signal,
@@ -83,7 +86,7 @@ export function HomeSearchInput({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [basePath, open, query]);
+  }, [basePath, demo, open, query, workspaceRequest]);
 
   const status = !query
     ? ""
@@ -116,8 +119,8 @@ export function HomeSearchInput({
         itemToStringValue={(item: CampusSearchResult) => item.title}
       >
         <form
-          action={`${basePath}/knowledge`}
-          method="get"
+          action={demo ? undefined : `${basePath}/knowledge`}
+          method={demo ? undefined : "get"}
           role="search"
           className="atlas-search"
           ref={form}

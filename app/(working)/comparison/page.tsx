@@ -1,4 +1,4 @@
-import "../data-workspaces.css";
+import "@/app/data-workspaces.css";
 
 import { ComparisonWorkspace } from "@/components/comparison/comparison-workspace";
 import { isAlibabaAiConfigured } from "@/lib/alibaba-ai";

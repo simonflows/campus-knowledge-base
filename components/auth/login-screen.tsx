@@ -36,9 +36,10 @@ type LoginScreenProps = {
   demo: boolean;
   returnTo?: string;
   staffRequired?: boolean;
+  demoHref: string;
 };
 
-export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffRequired = false }: LoginScreenProps) {
+export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffRequired = false, demoHref }: LoginScreenProps) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pinForAdmin, setPinForAdmin] = useState("");
@@ -211,7 +212,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
           ) : null}
           {!demo && (
             <div className="flex flex-wrap items-center gap-4">
-              <Link href="/demo" className="desk-text-link">Попробовать в демо-режиме</Link>
+              <a href={demoHref} className="desk-text-link">Попробовать в демо-режиме</a>
               {currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
                 <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
               )}

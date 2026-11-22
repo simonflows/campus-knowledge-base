@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { AppLink as Link, useWorkspacePathname } from "@/components/navigation/workspace-navigation";
+import { useWorkspaceMode } from "@/components/demo/workspace-transport";
 import { useLayoutEffect, useRef } from "react";
 import {
   BarChart3,
@@ -16,10 +16,10 @@ import {
 } from "lucide-react";
 import { campusServices } from "@/lib/campus-services";
 
-function navSections(staff: boolean) {
+function navSections(staff: boolean, demo: boolean) {
   return [
     { href: "/", title: "Главная", navTitle: "Главная" },
-    ...campusServices(undefined, staff).filter(({ href }) => !staff || href !== "/requests"),
+    ...campusServices(demo ? false : undefined, staff).filter(({ href }) => !staff || href !== "/requests"),
   ];
 }
 
@@ -70,7 +70,8 @@ function RequestCount({ count }: { count: number }) {
 }
 
 export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?: number; staff?: boolean }) {
-  const pathname = usePathname();
+  const pathname = useWorkspacePathname();
+  const demo = useWorkspaceMode() === "demo";
   const navRef = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
@@ -95,7 +96,7 @@ export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?
   return (
     <nav ref={navRef} aria-label="Основная навигация" className="atlas-nav">
       <span aria-hidden="true" className="atlas-nav-indicator" />
-      {navSections(staff).map(({ href, navTitle }) =>
+      {navSections(staff, demo).map(({ href, navTitle }) =>
         href === "/login" ? null : (
           <Link
             key={href}
@@ -122,11 +123,12 @@ export function MobileNav({
   staff?: boolean;
   onNavigate: () => void;
 }) {
-  const pathname = usePathname();
+  const pathname = useWorkspacePathname();
+  const demo = useWorkspaceMode() === "demo";
 
   return (
     <nav aria-label="Основная навигация" className="atlas-mobile-nav">
-      {navSections(staff).map(({ href, title }) => {
+      {navSections(staff, demo).map(({ href, title }) => {
         const Icon = sectionIcons[href];
         return (
           <Link

@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useState } from "react";
 import {
   Check,
@@ -13,8 +15,7 @@ import {
   UserCheck,
   XCircle,
 } from "lucide-react";
-import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import { z } from "zod";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
@@ -72,7 +73,8 @@ export function KnowledgeCardAccessPanel({
   onCardUpdated,
   onEdit,
 }: KnowledgeCardAccessPanelProps) {
-  const params = useSearchParams();
+  const workspaceRequest = useWorkspaceRequest();
+  const { searchParams: params } = useWorkspaceNavigation();
   const context =
     params.get("action") === "request" && params.get("card") === card.id;
   const [message, setMessage] = useState(() =>
@@ -125,7 +127,7 @@ export function KnowledgeCardAccessPanel({
     setBusyAction("request");
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/knowledge/cards/${card.id}/edit-requests`,
         {
           method: "POST",
@@ -173,7 +175,7 @@ export function KnowledgeCardAccessPanel({
     setBusyAction(action);
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/knowledge/cards/${card.id}/moderation`,
         {
           method: "POST",
@@ -229,7 +231,7 @@ export function KnowledgeCardAccessPanel({
     setBusyAction(`${action}-${requestId}`);
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/knowledge/cards/${card.id}/edit-requests`,
         {
           method: "PATCH",

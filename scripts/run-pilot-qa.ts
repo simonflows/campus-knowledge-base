@@ -13,6 +13,7 @@ import { runEditorialRoutes } from "./test-editorial-routes";
 import { runCanonRoutes } from "./test-canon-routes";
 import { measurePilotLoad } from "./measure-pilot-load";
 import runRequestBrowserChecks from "./requests-browser-check";
+import { runFollowupBrowserChecks } from "./followup-browser-check";
 
 async function main() {
   const marker = await requireFixtureDatabase();
@@ -179,6 +180,7 @@ async function main() {
       await page.waitForURL("**/knowledge");
       const auth = await page.request.get(base + "/api/auth/session");
       assert.equal((await auth.json()).user.id, "pilot-" + person.accountId);
+      await runFollowupBrowserChecks(page, base);
       await page.goto(base + "/requests#" + marker);
       const results = await runRequestBrowserChecks(page, credentials);
       assert.equal(JSON.parse(results).passed, true);

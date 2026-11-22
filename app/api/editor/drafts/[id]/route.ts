@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
-import { editorialMutationSchema } from "@/lib/editorial";
+import { deleteEditorialSchema, editorialMutationSchema } from "@/lib/editorial";
 import {
+  deleteEditorial,
   getEditorialWithRevisions,
   mutateEditorial,
   getEditorialReviewers,
@@ -27,6 +28,25 @@ export async function GET(_request: NextRequest, context: Context) {
       },
       { headers: privateHeaders }
     );
+  } catch (error) {
+    return editorialErrorResponse(error);
+  }
+}
+export async function DELETE(request: NextRequest, context: Context) {
+  if (!verifySameOrigin(request))
+    return NextResponse.json(
+      { error: "Запрещён кросс-доменный запрос" },
+      { status: 403 }
+    );
+  const user = await getSessionUser();
+  if (!user)
+    return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
+  const parsed = deleteEditorialSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success)
+    return NextResponse.json({ error: "Укажите версию черновика" }, { status: 400 });
+  try {
+    await deleteEditorial((await context.params).id, user, parsed.data.version);
+    return NextResponse.json({ success: true }, { headers: privateHeaders });
   } catch (error) {
     return editorialErrorResponse(error);
   }

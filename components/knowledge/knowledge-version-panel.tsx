@@ -1,6 +1,12 @@
 "use client";
 
-import Link from "next/link";
+import { demoHref } from "@/lib/browser-demo-navigation";
+
+import { WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
+
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -77,6 +83,7 @@ function versionsApi(cardId: string, versionId?: string) {
 }
 
 function useVersionResource<T>(url: string | null, refresh = 0): Load<T> {
+  const workspaceRequest = useWorkspaceRequest();
   const key = url && `${refresh}:${url}`;
   const [loaded, setLoaded] = useState<{ key: string; result: Load<T> } | null>(
     null
@@ -84,7 +91,7 @@ function useVersionResource<T>(url: string | null, refresh = 0): Load<T> {
   useEffect(() => {
     if (!url || !key) return;
     const request = new AbortController();
-    fetch(url, { signal: request.signal })
+    workspaceRequest(url, { signal: request.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error();
         return (await response.json()) as T;
@@ -98,7 +105,7 @@ function useVersionResource<T>(url: string | null, refresh = 0): Load<T> {
           setLoaded({ key, result: { status: "error" } });
       });
     return () => request.abort();
-  }, [key, url]);
+  }, [key, url, workspaceRequest]);
   return loaded && loaded.key === key ? loaded.result : { status: "loading" };
 }
 
@@ -144,6 +151,7 @@ export function KnowledgeVersionPanel({
   dbAvailable: boolean;
   onUpdated: (card: KnowledgeCard) => void;
 }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [refresh, setRefresh] = useState(0);
   const loaded = useVersionResource<VersionHistory>(
     versionsApi(card.id),
@@ -183,7 +191,7 @@ export function KnowledgeVersionPanel({
     }
     setSaving(true);
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         "/api/knowledge/cards/" + encodeURIComponent(card.id) + "/freshness",
         {
           method: "PATCH",
@@ -405,6 +413,7 @@ export function KnowledgeEvidencePanel({
   card: KnowledgeCard;
   versionId?: string;
 }) {
+  const demo = useWorkspaceMode() === "demo";
   const sources = (card.sources ?? []).flatMap((source) => {
     const parsed = knowledgeSourceSchema.safeParse(source);
     return parsed.success ? [parsed.data] : [];
@@ -424,14 +433,14 @@ export function KnowledgeEvidencePanel({
                 key={`${source.url}-${index}`}
                 className="min-w-0 break-words"
               >
-                <a
+                <WorkspaceExternalLink
                   href={source.url}
                   target="_blank"
                   rel="noreferrer"
                   className="font-medium underline underline-offset-4"
                 >
                   {source.title}
-                </a>
+                </WorkspaceExternalLink>
                 {source.scope ? ` · ${source.scope}` : ""}
                 {source.publishedAt
                   ? ` · ${formatDate(source.publishedAt)}`
@@ -454,14 +463,14 @@ export function KnowledgeEvidencePanel({
                     {fact.kind === "plan" ? "План" : "Факт"} · {fact.scope}
                   </p>
                   <div className="flex flex-wrap items-center gap-2">
-                    <a
+                    <WorkspaceExternalLink
                       href={fact.evidenceUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="underline underline-offset-4"
                     >
                       Источник
-                    </a>
+                    </WorkspaceExternalLink>
                     <Button
                       type="button"
                       size="sm"
@@ -469,8 +478,8 @@ export function KnowledgeEvidencePanel({
                       onClick={async () => {
                         try {
                           const versionLink = new URL(
-                            knowledgeVersionHref(card.id, versionId!),
-                            location.origin
+                            demo ? demoHref(knowledgeVersionHref(card.id, versionId!))! : knowledgeVersionHref(card.id, versionId!),
+                            location.href
                           );
                           await navigator.clipboard.writeText(
                             citation + "\nВерсия карточки: " + versionLink.href

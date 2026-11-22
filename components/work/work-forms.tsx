@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useId, useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
@@ -113,6 +115,7 @@ export function sourceKey(source: { cardId: string; versionId: string }) {
 export function CreateWorkflowForm({ kind, data, onCreated, onCancel }: {
   kind: WorkflowRecord["kind"]; data: WorkData; onCreated: (record: WorkflowPresentation) => void; onCancel: () => void;
 }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [meta, setMeta] = useState<Metadata>({
     title: "", description: "", responsibleId: data.user.id, participantIds: [], dueDate: null,
   });
@@ -158,7 +161,7 @@ export function CreateWorkflowForm({ kind, data, onCreated, onCancel }: {
     setError("");
     inFlight.current = true;
     try {
-      const record = await requestWork<WorkflowPresentation>("/api/workflows", {
+      const record = await requestWork<WorkflowPresentation>(workspaceRequest, "/api/workflows", {
         method: "POST", body: JSON.stringify(parsed.data),
       });
       toast.success(kind === "package" ? "Инфоповод создан" : "Разбор открыт");

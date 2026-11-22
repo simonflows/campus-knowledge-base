@@ -25,8 +25,7 @@ import {
   X,
 } from "lucide-react";
 
-import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import {
   searchKnowledgeCards,
   getSearchFragment,
@@ -43,6 +42,7 @@ import {
 import { getFolderDisplayName, getFolderDisplayPath } from "./folder-labels";
 import { KnowledgeCardDetail } from "@/components/knowledge/knowledge-card-detail";
 import { KnowledgeCardForm } from "@/components/knowledge/knowledge-card-form";
+import { ImportedDraftNotice } from "@/components/knowledge/imported-draft-notice";
 import { KnowledgeModerationPanel } from "@/components/knowledge/knowledge-moderation-panel";
 import { KnowledgeTree } from "@/components/knowledge/knowledge-tree";
 import { KnowledgeTypeConstructor } from "@/components/knowledge/knowledge-type-constructor";
@@ -110,8 +110,8 @@ export function KnowledgeBase({
   currentUser,
   ownerCandidates,
 }: KnowledgeBaseProps) {
-  const router = useRouter();
-  const params = useSearchParams();
+  const router = useWorkspaceNavigation();
+  const params = router.searchParams;
   const requestedVersion = params.get("version");
   const historicalVersion = requestedVersion === "approved" ? null : requestedVersion;
   const requestedVersionCard = params.get("card");
@@ -229,7 +229,7 @@ export function KnowledgeBase({
     previous.delete("card");
     previous.delete("version");
     if (searchQuery) previous.set("q", searchQuery);
-    window.history.replaceState(null, "", `/knowledge?${previous.toString()}`);
+    router.replaceHistory(`/knowledge?${previous.toString()}`);
     const next = new URLSearchParams(previous.toString());
     next.set("card", cardId);
     if (searchQuery) next.set("q", searchQuery);
@@ -382,6 +382,7 @@ export function KnowledgeBase({
         </aside>
 
         <section className="data-index-results min-w-0 space-y-5">
+          {canModerateCards && <ImportedDraftNotice cards={pendingCards} />}
           {canModerateCards ? (
             <KnowledgeModerationPanel
               cards={pendingCards}

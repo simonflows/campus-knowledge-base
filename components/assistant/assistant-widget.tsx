@@ -1,8 +1,9 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { AppLink as Link, useWorkspacePathname } from "@/components/navigation/workspace-navigation";
 import { MessageCircle, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -39,12 +40,13 @@ const statusLabels = {
 } satisfies Record<CanonChatAnswer["status"], string>;
 
 export function AssistantWidget({ staff }: { staff: boolean }) {
-  const pathname = usePathname();
+  const pathname = useWorkspacePathname();
   if (pathname === "/demo" || pathname?.startsWith("/demo/")) return null;
   return <AssistantSession key={`${pathname}:${staff}`} staff={staff} />;
 }
 
 function AssistantSession({ staff }: { staff: boolean }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -103,7 +105,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
     );
     if (!retryId) setInput("");
     try {
-      const response = await fetch("/api/assistant", {
+      const response = await workspaceRequest("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: normalized, history }),
@@ -294,7 +296,7 @@ function AssistantReply({
           <Link
             href={citation.href}
             prefetch={false}
-            onClick={onNavigate}
+            onNavigate={onNavigate}
             className="mt-1 inline-block text-xs font-medium text-primary underline underline-offset-2"
           >
             {citation.title} · версия источника
@@ -308,7 +310,7 @@ function AssistantReply({
               <Link
                 href={action.href}
                 prefetch={false}
-                onClick={onNavigate}
+                onNavigate={onNavigate}
                 className="block rounded-md border px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-muted"
               >
                 {action.label}
