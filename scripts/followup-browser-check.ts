@@ -4,26 +4,27 @@ import type { Page } from "playwright-core";
 
 async function assertReadableDemoExit(page: Page) {
   const exit = page.getByRole("link", { name: "Выйти из демо", exact: true });
-  const contrast = () => exit.evaluate(element => {
-    const style = getComputedStyle(element);
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 1;
-    const context = canvas.getContext("2d")!;
-    const rgb = (color: string) => {
-      context.clearRect(0, 0, 1, 1);
-      context.fillStyle = color;
-      context.fillRect(0, 0, 1, 1);
-      return [...context.getImageData(0, 0, 1, 1).data];
-    };
+  const contrast = async () => {
+    const [foreground, background] = await exit.evaluate(element => {
+      const style = getComputedStyle(element);
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      return [style.color, style.backgroundColor].map(color => {
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = color;
+        context.fillRect(0, 0, 1, 1);
+        return [...context.getImageData(0, 0, 1, 1).data];
+      });
+    });
+    assert.equal(background[3], 255, "Demo exit needs an opaque, readable background");
     const luminance = (color: number[]) => color.slice(0, 3).map(channel => {
       const c = channel / 255;
       return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
     }).reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
-    const foreground = rgb(style.color), background = rgb(style.backgroundColor);
-    if (background[3] !== 255) throw new Error("Demo exit needs an opaque, readable background");
     const a = luminance(foreground), b = luminance(background);
     return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
-  });
+  };
   assert.ok(await contrast() >= 4.5, "Demo exit text is readable normally");
   await exit.hover();
   assert.ok(await contrast() >= 4.5, "Demo exit text is readable on hover");
