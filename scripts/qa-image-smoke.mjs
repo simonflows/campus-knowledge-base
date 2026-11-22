@@ -61,7 +61,8 @@ async function verify(directory) {
     assert.match(process.env.CAMPUS_QA_EXPECT_REVISION, /^[0-9a-f]{40}$/);
     const release = await call("/api/version");
     assert.equal(release.status, 200);
-    assert.deepEqual(await release.json(), { version: "0.9.5", revision: process.env.CAMPUS_QA_EXPECT_REVISION });
+    const packageVersion = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+    assert.deepEqual(await release.json(), { version: packageVersion, revision: process.env.CAMPUS_QA_EXPECT_REVISION });
   }
   const published = await call("/api/articles/" + marker);
   assert.equal(published.status, 200);

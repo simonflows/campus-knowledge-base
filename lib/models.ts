@@ -23,6 +23,7 @@ import { createPendingDiskSync, diskAttemptCondition, diskAttemptMatches, observ
 import {
   folderIds,
   getApprovedVersion,
+  getLegacyCustomDraftUniversityId,
   getPublicApprovedCard,
   isCardApproved,
   isCardReadyForPublication,
@@ -112,6 +113,7 @@ export type KnowledgeCardCreateMeta = {
   submittedBy?: string;
   submittedByName?: string;
   participantApprovals?: string[];
+  requiredApprovalStakeholderRoles?: KnowledgeCard["requiredApprovalStakeholderRoles"];
 };
 
 type CardTransaction = NonNullable<TransactWriteCommandInput["TransactItems"]>[number];
@@ -144,7 +146,15 @@ function prepareCustomCard(card: KnowledgeCard, definition: CardTypeDefinition |
   if (!definition) throw conditionalConflict("Тип карточки удалён");
   const fields = buildCustomFieldValuesSchema(definition).strict().safeParse(card.customFields);
   if (!fields.success) throw conditionalConflict("Поля пользовательского типа изменились");
-  return { ...card, folderId: folderIds.customType(definition.id), customFields: canonicalCustomFieldValues(fields.data) };
+  if ((card.organizationScope === "chkk") !== (definition.organizationScope === "chkk")) {
+    throw conditionalConflict("Зона доступа карточки расходится с определением её типа");
+  }
+  return {
+    ...card,
+    folderId: definition.organizationScope === "chkk" ? folderIds.chkkParameters
+      : getLegacyCustomDraftUniversityId(card) ? card.folderId : folderIds.customType(definition.id),
+    customFields: canonicalCustomFieldValues(fields.data),
+  };
 }
 
 async function writeKnowledgeCard(
@@ -260,6 +270,8 @@ export type KnowledgeCardModerationPatch = {
   reviewedAt?: string;
   reviewComment?: string;
   participantApprovals?: string[];
+  participantApprovalRecords?: KnowledgeCard["participantApprovalRecords"];
+  stakeholderApprovals?: KnowledgeCard["stakeholderApprovals"];
   editRequests?: CardEditRequest[];
 };
 
@@ -281,13 +293,21 @@ function applyModerationPatch(current: KnowledgeCard, patch: KnowledgeCardModera
   const sync = current.diskSync;
   const onlyRequests = patch.editRequests !== undefined && Object.keys(patch).length === 1;
   const keepExport = onlyRequests && sync?.status === "synced" && sync.sourceUpdatedAt === current.updatedAt;
-  return {
+  const next = {
     ...current,
     ...patch,
     updatedAt,
     ...(keepExport && { diskSync: { ...sync, sourceUpdatedAt: updatedAt } }),
     ...(!onlyRequests && sync?.status === "pending" && sync.attemptId && { diskSync: createPendingDiskSync(sync) }),
   };
+  if (patch.status === "approved") {
+    if (next.type === "project" || !next.requiredApprovalUniversityIds?.length) {
+      delete next.requiredApprovalUniversityIds;
+    }
+    delete next.requiredApprovalStakeholderRoles;
+    delete next.approvedSnapshot;
+  }
+  return next;
 }
 
 export async function setKnowledgeCardModeration(
@@ -443,30 +463,119 @@ export async function getDiskRegistry(id: string, signal: AbortSignal): Promise<
   return Item?.kind === "disk-registry" ? Item as DiskRegistry : null;
 }
 
+export async function getAllDiskRegistries(signal: AbortSignal): Promise<DiskRegistry[]> {
+  if (await getWritableStorageMode() !== "dynamodb") return [];
+  const registries: DiskRegistry[] = [];
+  let cursor: ScanCommandOutput["LastEvaluatedKey"];
+  do {
+    const page: ScanCommandOutput = await docClient.send(new ScanCommand({
+      TableName: TableName.WORKFLOW_RECORDS, ConsistentRead: true, ExclusiveStartKey: cursor,
+      FilterExpression: "#kind = :kind", ExpressionAttributeNames: { "#kind": "kind" },
+      ExpressionAttributeValues: { ":kind": "disk-registry" },
+    }), { abortSignal: signal });
+    registries.push(...(page.Items ?? []).filter(item => item.kind === "disk-registry") as DiskRegistry[]);
+    cursor = page.LastEvaluatedKey;
+  } while (cursor);
+  return registries;
+}
+
+function diskRegistryWrite({ next, expectedVersionId }: DiskRegistryCommit): NonNullable<CardTransaction["Put"]> {
+  return {
+    TableName: TableName.WORKFLOW_RECORDS,
+    Item: next,
+    ConditionExpression: expectedVersionId === undefined ? "attribute_not_exists(id)" : "versionId = :expected",
+    ...(expectedVersionId !== undefined && { ExpressionAttributeValues: { ":expected": expectedVersionId } }),
+  };
+}
+
+export async function replaceDiskRegistry(commit: DiskRegistryCommit, signal: AbortSignal) {
+  await docClient.send(new PutCommand(diskRegistryWrite(commit)), { abortSignal: signal });
+}
+
+export async function noteDiskRegistryRebuildError(registry: DiskRegistry, error: string, signal: AbortSignal) {
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "SET rebuildLastAttemptAt = :attempt, rebuildError = :error",
+    ConditionExpression: "versionId = :version",
+    ExpressionAttributeValues: { ":version": registry.versionId, ":attempt": new Date().toISOString(), ":error": error },
+  }), { abortSignal: signal });
+}
+
+export async function claimDiskRegistryReceipt(registry: DiskRegistry, attemptedAt: string, signal: AbortSignal) {
+  if (await getWritableStorageMode() !== "dynamodb") return false;
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "SET receiptLastAttemptAt = :attempt",
+    ConditionExpression: "versionId = :version AND attribute_not_exists(receiptPath) AND " +
+      (registry.receiptLastAttemptAt ? "receiptLastAttemptAt = :previous" : "attribute_not_exists(receiptLastAttemptAt)"),
+    ExpressionAttributeValues: {
+      ":version": registry.versionId, ":attempt": attemptedAt,
+      ...(registry.receiptLastAttemptAt && { ":previous": registry.receiptLastAttemptAt }),
+    },
+  }), { abortSignal: signal });
+  return true;
+}
+
+export async function finishDiskRegistryReceipt(
+  registry: DiskRegistry, attemptedAt: string, result: { path: string } | { error: string; summaryInvalid?: true }, signal: AbortSignal,
+) {
+  const invalid = "error" in result && result.summaryInvalid;
+  await docClient.send(new UpdateCommand({
+    TableName: TableName.WORKFLOW_RECORDS, Key: { id: registry.id },
+    UpdateExpression: "path" in result ? "SET receiptPath = :result REMOVE receiptError" :
+      "SET receiptError = :result" + (invalid ? ", summaryInvalid = :invalid" : ""),
+    ConditionExpression: "versionId = :version AND receiptLastAttemptAt = :attempt AND attribute_not_exists(receiptPath)",
+    ExpressionAttributeValues: {
+      ":version": registry.versionId, ":attempt": attemptedAt, ":result": "path" in result ? result.path : result.error,
+      ...(invalid ? { ":invalid": true } : {}),
+    },
+  }), { abortSignal: signal });
+}
+
 async function commitDiskRegistry(
   update: NonNullable<CardTransaction["Update"]>,
   commit: DiskRegistryCommit,
   signal?: AbortSignal
 ) {
-  const { next, expectedVersionId } = commit;
   try {
     await docClient.send(new TransactWriteCommand({
       TransactItems: [
         { Update: update },
-        { Put: {
-          TableName: TableName.WORKFLOW_RECORDS,
-          Item: next,
-          ConditionExpression: expectedVersionId === undefined
-            ? "attribute_not_exists(id)"
-            : "versionId = :expected",
-          ...(expectedVersionId !== undefined && { ExpressionAttributeValues: { ":expected": expectedVersionId } }),
-        } },
+        { Put: diskRegistryWrite(commit) },
       ],
     }), { abortSignal: signal });
   } catch (error) {
     if (!isTransactionConflict(error)) throw error;
     throw conditionalConflict("Редакция или подтверждённая сводка изменились", error);
   }
+}
+
+export async function setKnowledgeSnapshotDiskSync(
+  head: KnowledgeCard, snapshot: KnowledgeCard, diskSync: DiskSyncInfo,
+  guard: DiskAttemptGuard, signal: AbortSignal, registryCommit?: DiskRegistryCommit,
+): Promise<KnowledgeCard | undefined> {
+  const condition = diskAttemptCondition(guard, true);
+  const update = {
+    TableName: TableName.KNOWLEDGE_CARDS, Key: { id: head.id },
+    UpdateExpression: "SET approvedSnapshot.diskSync = :diskSync",
+    ConditionExpression: "updatedAt = :head AND #status <> :approved AND approvedSnapshot.updatedAt = :snapshot" +
+      " AND (attribute_not_exists(approvedSnapshot.#status) OR approvedSnapshot.#status = :approved)" +
+      condition.ConditionExpression,
+    ExpressionAttributeNames: { "#status": "status", ...condition.ExpressionAttributeNames },
+    ExpressionAttributeValues: {
+      ":head": head.updatedAt, ":snapshot": snapshot.updatedAt, ":approved": "approved", ":diskSync": diskSync,
+      ...condition.ExpressionAttributeValues,
+    },
+  };
+  if (registryCommit) {
+    await commitDiskRegistry(update, registryCommit, signal);
+    const { Item } = await docClient.send(new GetCommand({
+      TableName: TableName.KNOWLEDGE_CARDS, Key: { id: head.id }, ConsistentRead: true,
+    }), { abortSignal: signal });
+    return Item as KnowledgeCard | undefined;
+  }
+  const { Attributes } = await docClient.send(new UpdateCommand({ ...update, ReturnValues: "ALL_NEW" }), { abortSignal: signal });
+  return Attributes as KnowledgeCard | undefined;
 }
 
 export async function setKnowledgeCardDiskSync(

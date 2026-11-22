@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { runWithAiProvider } from "@/lib/ai-providers";
+import { runWithAiProvider, type AiExecutionResult } from "@/lib/ai-providers";
+import { runLimitedAi } from "@/lib/flash-assist";
+import { demoLoginEnabled } from "@/lib/pilot-auth";
+import { isYandexAiConfigured } from "@/lib/yandex-ai";
+import { JsonBodyError, readBoundedJson } from "@/lib/http-json";
 import {
   flattenArticleChunks,
   isApprovedArticle,
@@ -54,11 +58,11 @@ export async function POST(request: NextRequest) {
   let body: unknown;
 
   try {
-    body = await request.json();
-  } catch {
+    body = await readBoundedJson(request, 256 * 1024);
+  } catch (error) {
     return NextResponse.json(
       { error: "Некорректный JSON в теле запроса" },
-      { status: 400 }
+      { status: error instanceof JsonBodyError ? error.status : 400 }
     );
   }
 
@@ -154,8 +158,7 @@ export async function POST(request: NextRequest) {
     referenceChunks.some((chunk) => chunk.articleId === article.id)
   );
 
-  const execution = await runWithAiProvider(
-    buildArticleMessages({
+  const messages = buildArticleMessages({
       query: [
         query,
         audience && `Аудитория: ${audience}`,
@@ -166,9 +169,24 @@ export async function POST(request: NextRequest) {
         .join("\n"),
       cards: selectedCards,
       referenceChunks,
-    }),
-    metricCards ? "canonical" : provider
-  );
+    });
+  const selectedProvider = metricCards || demoLoginEnabled() ? "canonical" : provider;
+  let execution: AiExecutionResult;
+  if (selectedProvider !== "canonical" && selectedProvider !== "alibaba" && isYandexAiConfigured()) {
+    const limited = await runLimitedAi(request, user.id, signal => runWithAiProvider(messages, selectedProvider, { signal, temperature: 0.05, maxTokens: 4000 }));
+    execution = limited.status === "ready" ? limited.value : {
+      text: null, provider: "canonical", modelLabel: "Сборка по утверждённым карточкам",
+      latencyMs: 0, anonymized152FZ: false,
+      fallbackReason: limited.status === "busy" ? "ИИ занят или ещё действует интервал между запросами. Подготовлен черновик по карточкам." : "ИИ недоступен. Подготовлен черновик по карточкам.",
+    };
+  } else execution = await runWithAiProvider(messages, selectedProvider, { signal: request.signal });
+  if (execution.text) {
+    const latest = await getCanonicalKnowledgeCards().catch(() => null);
+    if (!latest) return unavailableStorageResponse();
+    if (selectedCards.some(source => !latest.some(card => card.id === source.id && getCardVersionId(card) === getCardVersionId(source)))) {
+      return NextResponse.json({ error: "Карточки изменились во время генерации. Повторите запрос, чтобы использовать актуальные сведения." }, { status: 409 });
+    }
+  }
 
   let articlePayload = null;
   let fallbackReason = execution.fallbackReason;

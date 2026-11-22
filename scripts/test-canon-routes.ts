@@ -61,11 +61,11 @@ async function login(base: string, credentials: Credentials, profile: string): P
   return { send: client(base, cookie), id: "pilot-" + body.accountId };
 }
 
-async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, owner: FixtureUser, participant: FixtureUser, outsider: FixtureUser) {
+async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, cardOwner: FixtureUser, owner: FixtureUser, participant: FixtureUser, outsider: FixtureUser) {
   const title = "Учебная лаборатория " + randomUUID();
   const cardInput = {
     type: "laboratory", title, folderId: "01_universities/midis/infrastructure",
-    owners: ["Тестовый сотрудник МИДиС"], ownerIds: [owner.id],
+    owners: ["Тестовый руководитель МИДиС"], ownerIds: [cardOwner.id],
     referenceDescription: "Синтетическое описание для проверки истории источников.",
     stopFormula: "Только учебный материал.", affiliation: "МИДиС",
     partner: "Тестовый партнёр", head: "Тестовый руководитель",
@@ -87,17 +87,17 @@ async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, owner: F
   assert.equal(before.snapshot.title, title);
 
   const freshness = cardPath + "/freshness";
-  const schedule = { action: "schedule", responsibleId: owner.id, nextReviewAt: "2020-01-01" };
+  const schedule = { action: "schedule", responsibleId: cardOwner.id, nextReviewAt: "2020-01-01" };
   const verify = { action: "verify", versionId: oldVersion };
   const scheduled = await json<KnowledgeCard>(admin.send(freshness, {
     method: "PATCH", ifMatch: initial.cardUpdatedAt, body: schedule,
   }), 200, "Coordinator schedules reassessment of the current source");
   assert.equal(scheduled.freshness?.nextReviewAt, schedule.nextReviewAt);
-  const ownerHistory = await json<CardHistory>(owner.send(historyPath), 200, "Owner can see their permission to verify");
+  const ownerHistory = await json<CardHistory>(cardOwner.send(historyPath), 200, "Designated owner can see their permission to verify");
   assert.equal(ownerHistory.canVerifyFreshness, true);
   assert.equal(ownerHistory.responsibleId, undefined);
   const adminHistory = await json<CardHistory>(admin.send(historyPath), 200, "Only a coordinator can see the assigned staff ID");
-  assert.equal(adminHistory.responsibleId, owner.id);
+  assert.equal(adminHistory.responsibleId, cardOwner.id);
   const publicCards = await json<KnowledgeCard[]>(publicGet("/api/knowledge/cards"), 200, "Overdue source remains public");
   const overdueCard = publicCards.find(row => row.id === card.id);
   assert.equal(overdueCard?.status, "approved");
@@ -106,9 +106,12 @@ async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, owner: F
     method: "PATCH", ifMatch: scheduled.updatedAt, body: verify,
   }), 403, "An unrelated employee cannot verify a source");
   await expectStatus(owner.send(freshness, {
+    method: "PATCH", ifMatch: scheduled.updatedAt, body: verify,
+  }), 403, "An institution's PR editor cannot verify an approved card as its designated owner");
+  await expectStatus(cardOwner.send(freshness, {
     method: "PATCH", ifMatch: initial.cardUpdatedAt, body: verify,
   }), 409, "Freshness rejects an obsolete If-Match");
-  const verified = await json<KnowledgeCard>(owner.send(freshness, {
+  const verified = await json<KnowledgeCard>(cardOwner.send(freshness, {
     method: "PATCH", ifMatch: scheduled.updatedAt, body: verify,
   }), 200, "Owner verifies the exact approved version");
   assert.equal(verified.freshness?.verifiedVersionId, oldVersion);
@@ -119,7 +122,7 @@ async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, owner: F
   assert.equal(afterVerify.currentVersionId, oldVersion);
   assert.equal(afterVerify.canVerifyFreshness, false);
   assert.equal(afterVerify.responsibleId, undefined);
-  await expectStatus(owner.send(freshness, {
+  await expectStatus(cardOwner.send(freshness, {
     method: "PATCH", ifMatch: verified.updatedAt, body: { action: "verify", versionId: "cv-" + "0".repeat(64) },
   }), 409, "Freshness verification rejects an incorrect source version");
 
@@ -261,6 +264,66 @@ async function checkCardAndPackage(publicGet: Send, admin: FixtureUser, owner: F
   console.log("PASS Canon HTTP: immutable card versions, freshness, pinned packages, private drafts, stable source tasks and exact-revision readiness");
 }
 
+async function checkJointModeration(
+  publicGet: Send,
+  admin: FixtureUser,
+  firstOwner: FixtureUser,
+  secondOwner: FixtureUser,
+  pr: FixtureUser,
+  rio: FixtureUser,
+) {
+  const body = {
+    type: "project", title: "Учебный совместный проект " + randomUUID(), folderId: "02_joint",
+    owners: ["Учебный руководитель МИДиС", "Учебный руководитель ЮУрГУ"],
+    ownerIds: [firstOwner.id, secondOwner.id],
+    referenceDescription: "Совместный учебный проект проверяет согласование одной карточки.",
+    stopFormula: "Учебный материал для проверки.",
+    sphere: "Образование", initiatorUniversityId: "midis", coExecutors: ["ЮУрГУ"],
+    industrialPartner: "Учебный партнёр", readinessStage: "Прототип", contour: "кампус",
+    confirmedFigures: [], isJoint: true, participantUniversityIds: ["midis", "susu"],
+  };
+  const created = await json<KnowledgeCard>(admin.send("/api/knowledge/cards", {
+    method: "POST", body,
+  }), 201, "Coordinator creates a joint proposal with one designated owner per institution");
+  assert.equal(created.status, "pending");
+  const cardPath = "/api/knowledge/cards/" + created.id;
+  const moderate = (user: FixtureUser, action: string, ifMatch?: string) =>
+    user.send(cardPath + "/moderation", { method: "POST", ifMatch, body: { action } });
+  const premature = await json<{ missingUniversityIds: string[]; missingStakeholderRoles: string[] }>(
+    moderate(admin, "approve", created.updatedAt), 409, "Coordinator cannot publish an unconfirmed joint proposal",
+  );
+  assert.deepEqual(premature.missingUniversityIds.toSorted(), ["midis", "susu"]);
+  assert.deepEqual(premature.missingStakeholderRoles, ["rio"]);
+  await expectStatus(publicGet(cardPath + "/versions"), 404, "The joint candidate has no public history before moderation");
+  const listBefore = await json<KnowledgeCard[]>(publicGet("/api/knowledge/cards"), 200, "Read the public catalogue before moderation");
+  assert.ok(!listBefore.some((card) => card.id === created.id), "Joint candidate must stay out of the public catalogue");
+  await expectStatus(moderate(pr, "confirm-participation", created.updatedAt), 403, "A PR editor cannot stand in for a designated owner");
+  await expectStatus(moderate(firstOwner, "confirm-participation"), 428, "The confirming owner must submit the current If-Match");
+  const first = await json<KnowledgeCard>(moderate(firstOwner, "confirm-participation", created.updatedAt), 200, "First designated owner confirms the current project");
+  assert.equal(first.status, "pending");
+  await expectStatus(moderate(secondOwner, "confirm-participation", created.updatedAt), 409, "An older If-Match cannot change decisions");
+  const second = await json<KnowledgeCard>(moderate(secondOwner, "confirm-participation", first.updatedAt), 200, "Second designated owner confirms the current project");
+  const missingRio = await json<{ missingUniversityIds: string[]; missingStakeholderRoles: string[] }>(
+    moderate(admin, "approve", second.updatedAt), 409, "Both universities cannot substitute for the stakeholder decision",
+  );
+  assert.deepEqual(missingRio.missingUniversityIds, []);
+  assert.deepEqual(missingRio.missingStakeholderRoles, ["rio"]);
+  const stakeholder = await json<KnowledgeCard>(moderate(rio, "confirm-stakeholder", second.updatedAt), 200, "Assigned stakeholder confirms independently");
+  assert.equal(stakeholder.status, "pending");
+  const published = await json<KnowledgeCard>(moderate(admin, "approve", stakeholder.updatedAt), 200, "Coordinator publishes after all decisions");
+  assert.equal(published.status, "approved");
+  const listAfter = await json<KnowledgeCard[]>(publicGet("/api/knowledge/cards"), 200, "Read the public catalogue after moderation");
+  const matching = listAfter.filter((card) => card.id === created.id);
+  assert.equal(matching.length, 1, "The same joint card becomes public exactly once");
+  const publicCard = matching[0];
+  assert.equal(publicCard.id, created.id);
+  assert.equal(publicCard.folderId, "02_joint");
+  assert.equal(publicCard.ownerIds, undefined);
+  assert.equal(publicCard.participantApprovalRecords, undefined);
+  assert.equal(publicCard.stakeholderApprovals, undefined);
+  console.log("PASS Canon HTTP: joint owner and stakeholder decisions, required If-Match, stable public card and private decision records");
+}
+
 async function checkDispute(owner: FixtureUser, responsible: FixtureUser, outsider: FixtureUser) {
   const first = { statement: "Описание завершённой работы", object: "Учебный объект", year: 2025, unit: "работа", state: "actual", url: "https://example.org/qa/actual" };
   const second = { ...first, statement: "Описание предстоящей работы", year: 2026, state: "plan", url: "https://example.org/qa/plan" };
@@ -364,9 +427,9 @@ export async function runCanonRoutes(credentials: Credentials) {
   assert.equal(system.storageMode, "dynamodb");
   assert.deepEqual([system.yandexAi.configured, system.alibabaAi.configured, system.yandexDisk.configured], [false, false, false], "External integrations must be off before mutating fixture data");
   const version = await json<{ version: string }>(publicGet("/api/version"), 200, "Read the installed application version");
-  assert.equal(version.version, "0.9.5");
-  const [owner, participant, outsider, admin, guest] = await Promise.all(
-    ["demo-pr-midis", "demo-pr-susu", "demo-pr-csu", "demo-admin", "demo-guest"]
+  assert.equal(version.version, "0.9.6");
+  const [owner, participant, outsider, admin, guest, midisOwner, susuOwner, rio] = await Promise.all(
+    ["demo-pr-midis", "demo-pr-susu", "demo-pr-csu", "demo-admin", "demo-guest", "demo-owner-midis", "demo-owner-susu", "demo-rio"]
       .map(profile => login(base, credentials, profile)),
   );
   for (const route of ["/api/work", "/api/workflows"]) {
@@ -380,7 +443,8 @@ export async function runCanonRoutes(credentials: Credentials) {
     method: "POST", rawBody: "{",
   }), 400, "Malformed workflow JSON is refused");
   console.log("PASS Canon HTTP: version, staff access and workflow request limits");
-  await checkCardAndPackage(publicGet, admin, owner, participant, outsider);
+  await checkCardAndPackage(publicGet, admin, midisOwner, owner, participant, outsider);
+  await checkJointModeration(publicGet, admin, midisOwner, susuOwner, owner, rio);
   await checkDispute(owner, participant, outsider);
   await checkSharedRequest(publicGet, admin, owner, participant, outsider);
 }

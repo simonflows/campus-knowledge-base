@@ -12,8 +12,17 @@ import {
   type CardTypeDefinition,
   type Contour,
   type KnowledgeCard,
+  type PlacementStatus,
   type ReadinessStage,
 } from "./knowledge";
+import {
+  indexKnowledgeFragment,
+  knowledgeQueryTerms,
+  matchKnowledgeTerm,
+  normalizeKnowledgeText,
+  tokenizeKnowledgeText,
+} from "./knowledge-query";
+import { knowledgeCardMatch } from "./knowledge-search";
 
 export type AnalyticsFilterKey =
   | "type"
@@ -73,6 +82,11 @@ export type AnalyticsReport = {
   cards: AnalyticsCardRow[];
   summary: AnalyticsSummary;
   notice: string | null;
+  interpretation?: {
+    status: "ready" | "needs-clarification";
+    message?: string;
+    unparsed?: string[];
+  };
 };
 
 type IndustryDefinition = {
@@ -117,7 +131,7 @@ const INDUSTRIES: IndustryDefinition[] = [
       "машиностроен",
       "спецтехник",
       "транспорт",
-      "робот",
+      "робототехн",
       "чпу",
       "микроэлектроник",
     ],
@@ -199,16 +213,24 @@ const READINESS_KEYWORDS: Array<{
 ];
 
 const CONTOUR_KEYWORDS: Array<{ contour: Contour; pattern: RegExp }> = [
-  { contour: "ПИШ", pattern: /(?<![\p{L}\p{N}_])(?:пиш(?![\p{L}\p{N}_])|передов\p{L}*)/u },
-  { contour: "УМНОЦ", pattern: /(?<![\p{L}\p{N}_])умноц(?![\p{L}\p{N}_])/u },
+  {
+    contour: "ПИШ",
+    pattern:
+      /пиш|передов[а-я]+\s+(?:инженерн[а-я]+\s+школ[а-я]+|технологи[а-я]+)/u,
+  },
+  { contour: "УМНОЦ", pattern: /умноц/u },
+  {
+    contour: "кампус",
+    pattern:
+      /контур[а-я]*\s+(?:в\s+)?кампус[а-я]*|кампус[а-я]*\s+контур[а-я]*/u,
+  },
   {
     contour: "собственный проект вуза",
-    pattern: /(?<![\p{L}\p{N}_])собственн\p{L}*/u,
+    pattern: /собственн[а-я]*\s+проект[а-я]*\s+вуз[а-я]*/u,
   },
 ];
 
-const normalize = (value: string) =>
-  value.toLowerCase().replace(/ё/g, "е").trim();
+const normalize = normalizeKnowledgeText;
 
 const includesAny = (haystack: string, keywords: string[]) =>
   keywords.some((keyword) => haystack.includes(normalize(keyword)));
@@ -222,10 +244,12 @@ function matchUniversityName(value: string, universityShortName: string) {
     return normalizedValue === normalizedShortName;
   }
 
+  const abbreviation = normalizedShortName.split(" ")[0];
   return (
     normalizedValue === normalizedShortName ||
     normalizedValue.includes(normalizedShortName) ||
-    normalizedShortName.includes(normalizedValue)
+    normalizedShortName.includes(normalizedValue) ||
+    tokenizeKnowledgeText(normalizedValue).includes(abbreviation)
   );
 }
 
@@ -249,11 +273,15 @@ function cardUniversityIds(card: KnowledgeCard): string[] {
   }
 
   if (card.type === "laboratory") {
-    const university = universities.find((item) =>
-      matchUniversityName(card.affiliation, item.shortName)
-    );
-
-    return university ? [university.id] : [];
+    return universities
+      .filter(
+        (item) =>
+          matchUniversityName(card.affiliation, item.shortName) ||
+          normalize(card.affiliation).includes(
+            normalize(item.fullName.replace(/\s*\([^)]*\)\s*$/u, ""))
+          )
+      )
+      .map((university) => university.id);
   }
 
   return [];
@@ -348,243 +376,569 @@ type ParsedQuery = {
   usesDefaultCardTypes: boolean;
   industries: IndustryDefinition[];
   universityIds: string[];
-  requirePartner: boolean;
+  universityAlternatives: boolean;
+  universityCooperation: boolean;
+  excludedUniversities: string[];
+  partner: "present" | "absent" | null;
   partnerName: string | null;
   customTypeIds: string[];
   stages: ReadinessStage[];
+  excludedStages: ReadinessStage[];
+  placements: PlacementStatus[];
+  excludedPlacements: PlacementStatus[];
   contours: Contour[];
+  excludedContours: Contour[];
   jointOnly: boolean;
-  unknownIndustry: string | null;
+  equipmentOnly: boolean;
+  terms: string[][];
+  unparsed: string[];
 };
 
-function detectCardTypes(
-  query: string,
-  hasCustomType: boolean
-): Set<AnalyticsCardType> {
-  const types = new Set<AnalyticsCardType>();
-  if (hasCustomType) {
-    types.add("custom");
-    return types;
-  }
-  if (/проект|разработ|продукт/.test(query)) types.add("project");
-  if (/лаборатор|инфраструктур|объект/.test(query)) types.add("laboratory");
-  if (/паспорт[а-я]*\s+кампус|общие параметры/.test(query)) types.add("campus");
-  if (
-    /паспорт[а-я]*\s+(?:вуз|университет)|показател[а-я]*\s+(?:вуз|университет)/.test(
-      query
-    )
+const typePhrases: Array<[AnalyticsCardType, RegExp]> = [
+  [
+    "campus",
+    /паспорт[а-я]*\s+кампус[а-я]*|общие параметры(?:\s+кампус[а-я]*)?/u,
+  ],
+  [
+    "university",
+    /(?:паспорт[а-я]*|показател[а-я]*)\s+(?:вуз[а-я]*|университет[а-я]*)/u,
+  ],
+  ["project", /проект[а-я]*|разработк[а-я]*|продукт[а-я]*/u],
+  ["laboratory", /лаборатор[а-я]*|объект[а-я]*\s+инфраструктур[а-я]*/u],
+];
+
+const placementPhrases: Array<[PlacementStatus, RegExp]> = [
+  [
+    "active",
+    /действующ[а-я]*|действует|работающ[а-я]*|работают|работает|открыт(?:а|ы|о|ый|ая|ые|ых)?|на\s+площадк[а-я]*\s+вуз[а-я]*/u,
+  ],
+  [
+    "planned",
+    /запланирован[а-я]*|планируем[а-я]*|планируется(?:\s+к\s+открытию)?|в\s+(?:новом\s+)?унк(?:\s+кампус[а-я]*)?/u,
+  ],
+];
+
+const requestLead =
+  /^(?:(?:в\s+каки[хм]\s+вуз[а-я]*(?:\s+есть)?|что\s+известно\s+о|какие\s+есть|есть\s+ли|составь|собери|найди|покажи|перечисли|расскажи|выведи|представь|сделай|напиши|опиши|запиши|дай|подготовь|пожалуйста|какие|какой|какая|сколько)(?![\p{L}\p{N}])[ ,?!]*)+/u;
+const relationWords =
+  /(?:взаимодействи[а-я]*|сотрудничеств[а-я]*|коопераци[а-я]*)/u;
+const filler = new Set(
+  "в во на по с со о об обо из у про за от среди для к ко и а также все весь вся всех нужен нужна нужно только лишь пожалуйста отчёт отчет справка список перечень со статусом стадии этапе".split(
+    " "
   )
-    types.add("university");
-  return types;
+);
+const clarificationWord =
+  /^(?:не|без|кроме|исключая|исключением|либо|или|более|меньше|менее|старше|ранее|позднее|после|до|между|свыше|необходим[а-я]*)$/u;
+const industryScope =
+  /(?:в\s+сфер[а-я]*|в\s+област[а-я]*|по\s+отрасл[а-я]*|в\s+отрасл[а-я]*|по\s+тем[а-я]*|в\s+тематик[а-я]*)/u;
+
+function escapePattern(text: string) {
+  return text.replace(/[.*+?^\${}()|[\]\\]/gu, "\\$&");
 }
+
+function bounded(pattern: RegExp) {
+  return new RegExp(
+    "(?<![\\p{L}\\p{N}-])(?:" + pattern.source + ")(?![\\p{L}\\p{N}-])",
+    "gu"
+  );
+}
+
+function polarity(pattern: RegExp) {
+  return new RegExp(
+    "(?:(не|кроме|исключая)\\s+)?(?:" + pattern.source + ")",
+    "u"
+  );
+}
+
+function consumePolarity<T>(
+  query: string,
+  pattern: RegExp,
+  value: T,
+  included: T[],
+  excluded: T[]
+) {
+  return query.replace(
+    bounded(polarity(pattern)),
+    (_, negative: string | undefined) => {
+      const list = negative ? excluded : included;
+      if (!list.includes(value)) list.push(value);
+      return " ";
+    }
+  );
+}
+
+const universityAliases = universities
+  .flatMap((university) =>
+    [
+      university.fullName,
+      university.fullName.replace(/\s*\([^)]*\)\s*$/u, ""),
+      university.shortName,
+      university.shortName.split(" ")[0],
+      university.id,
+    ].map((name) => ({ name: normalize(name), id: university.id }))
+  )
+  .sort((first, second) => second.name.length - first.name.length);
+const universityByAlias = new Map(
+  universityAliases.map(({ name, id }) => [name, id])
+);
+const aliasesPattern = [...universityByAlias.keys()]
+  .map(escapePattern)
+  .join("|");
+const universityList = new RegExp(
+  "(?:(кроме|без\\s+участия|исключая|за\\s+исключением)\\s+)?(" +
+    "(?:" +
+    aliasesPattern +
+    ")(?:(?:\\s*,\\s*|\\s+(?:и|или|с|со)\\s+)(?:" +
+    aliasesPattern +
+    "))*)",
+  "u"
+);
+const universityAliasPattern = bounded(new RegExp(aliasesPattern, "u"));
+const universityRole = new RegExp(
+  "(?:от(?:\\s+имени)?|для)\\s+(?:" + aliasesPattern + ")",
+  "u"
+);
+const typeExclusion =
+  /(?:кроме|исключая|за\s+исключением)\s+(?:[\p{L}-]+\s+){0,3}(?:проект|лаборатор|паспорт|объект|карточк)[а-я]*/u;
+const quotes = /[«"“]([^»"”]+)[»"”]/gu;
+const partnerLabel = /(?:индустриальн[а-я]*\s+)?партнер[а-я]*/u;
+const organizationType = /(?:ооо|пао|ао|гк)/u;
+const equipmentQualifier = bounded(
+  /(?:с\s+)?оборудовани[а-я]*|оснащенн[а-я]*/u
+);
 
 function parseQuery(
   rawQuery: string,
   customTypes: CardTypeDefinition[]
 ): ParsedQuery {
-  const query = normalize(rawQuery);
+  let rest = normalize(rawQuery).replace(requestLead, " ");
   const filters: AnalyticsFilter[] = [];
-  const explicitCustomName = query.match(
-    /(?:^|\s)тип[а-я]*\s+[«"]([^"»]+)["»]/u
-  )?.[1];
-  const activeCustomTypes = explicitCustomName
-    ? customTypes.filter(
-        (type) => normalize(type.name) === normalize(explicitCustomName)
-      )
-    : [];
-  const cardTypes = detectCardTypes(query, Boolean(explicitCustomName));
-  const usesDefaultCardTypes = cardTypes.size === 0;
-  if (usesDefaultCardTypes) {
-    cardTypes.add("project");
-    cardTypes.add("laboratory");
-  }
-  const filterQuery = query.replace(/[«"][^"»]+["»]/gu, "");
-  const industries = INDUSTRIES.filter((industry) =>
-    includesAny(filterQuery, industry.queryKeywords)
+  const unparsed: string[] = [];
+  const explicitCustomType = bounded(
+    /(?:карточк[а-я]*\s+)?тип[а-я]*\s+[«"“]([^»"”]+)[»"”]/u
   );
-  const universityIds = universities
-    .filter((university) => {
-      const names = [university.id, university.shortName, university.fullName];
+  const customName = [...rest.matchAll(explicitCustomType)][0]?.[1];
+  const customTypeIds = customTypes
+    .filter((type) => normalize(type.name) === customName)
+    .map((type) => type.id);
+  rest = rest.replace(explicitCustomType, (_match, name: string) => {
+    if (name !== customName || customTypeIds.length === 0) unparsed.push(name);
+    return " ";
+  });
 
-      return names.some((name) => {
-        const normalizedName = normalize(name);
-        return (
-          filterQuery.includes(normalizedName) ||
-          (name === university.fullName &&
-            normalizedName
-              .split(/\s+/)
-              .every((part) => filterQuery.includes(part)))
-        );
+  const namedPartner = new RegExp(
+    "(?:с\\s+)?" +
+      partnerLabel.source +
+      "\\s+(?:(" +
+      organizationType.source +
+      ')\\s+)?[«"“]([^»"”]+)[»"”]',
+    "u"
+  );
+  const unquotedPartner =
+    /(?:с\s+)?(?:индустриальн[а-я]*\s+)?партнером\s+((?!(?:в|по|на|кроме|без|из|у)\s)[\p{L}\p{N}][^«"“,.;!?]*?)(?=$|[.,;!?]|\s+(?:в|по|на|кроме|без|и|или|из|у)\s)/u;
+  const partnerNames = new Set<string>();
+  rest = rest.replace(
+    bounded(namedPartner),
+    (_match, legal: string | undefined, name: string) => {
+      partnerNames.add(legal ? legal + " " + name : name);
+      return " ";
+    }
+  );
+  rest = rest.replace(bounded(unquotedPartner), (_match, name: string) => {
+    partnerNames.add(name.trim());
+    return " ";
+  });
+  const partnerName = partnerNames.values().next().value ?? null;
+  if (partnerNames.size > 1) unparsed.push(...partnerNames);
+
+  // Quoted entity names remain required phrases and do not activate keyword filters.
+  const terms = [...rest.matchAll(quotes)]
+    .map((match) => tokenizeKnowledgeText(match[1]))
+    .filter((term) => term.length > 0);
+  rest = rest.replace(quotes, " ");
+  if (/[«»"“”]/u.test(rest)) unparsed.push("незакрытая цитата");
+  const equipmentOnly = [...rest.matchAll(equipmentQualifier)].length > 0;
+  rest = rest.replace(equipmentQualifier, " ");
+
+  const universityIds: string[] = [];
+  let universityAlternatives = false;
+  let universityCooperation = false;
+  const excludedUniversities: string[] = [];
+  if (bounded(universityRole).test(rest)) unparsed.push("роль вуза");
+  rest = rest.replace(
+    bounded(universityList),
+    (_, negative: string | undefined, names: string) => {
+      const ids = negative ? excludedUniversities : universityIds;
+      const aliases = [...names.matchAll(universityAliasPattern)];
+      const connectors = aliases.slice(1).map((next, index) => {
+        const previous = aliases[index];
+        return names
+          .slice(previous.index + previous[0].length, next.index)
+          .trim();
       });
-    })
-    .map((university) => university.id);
-  const requirePartner = /партнер|индустриальн/.test(filterQuery);
-  const partnerName =
-    query.match(
-      /партнер[а-я]*\s+(?:(?:ооо|пао|ао|гк)\s+)?[«"]([^"»]+)["»]/u
-    )?.[1] ?? null;
-  const stages = READINESS_KEYWORDS.filter((item) =>
-    includesAny(filterQuery, item.keywords)
-  ).map((item) => item.stage);
-  const contours = CONTOUR_KEYWORDS.filter((item) =>
-    item.pattern.test(filterQuery)
-  ).map((item) => item.contour);
-  const hasCampusContour =
-    /контур[а-яёa-z]*\s+(?:в\s+)?кампус/.test(query) ||
-    /кампус[а-яёa-z]*\s+контур/.test(query);
-
-  if (hasCampusContour) contours.push("кампус");
-
-  const jointOnly =
-    /между собой|межвузов|совместн|кооперац/.test(query) &&
-    cardTypes.has("project");
-
-  if (jointOnly) {
-    cardTypes.clear();
-    cardTypes.add("project");
-  }
-
-  const sphereMention = query.match(
-    /(?:в\s+сфере|в\s+области|по\s+отрасли|в\s+отрасли|по\s+теме|в\s+тематике)\s+([^.,;!?]{2,80})/
+      if (!negative) {
+        if (connectors.some((word) => word === "с" || word === "со"))
+          universityCooperation = true;
+        if (connectors.includes("или")) {
+          if (connectors.some((word) => word !== "или"))
+            unparsed.push("связь между вузами");
+          universityAlternatives = true;
+        }
+      }
+      for (const [alias] of aliases) {
+        const id = universityByAlias.get(alias);
+        if (id && !ids.includes(id)) ids.push(id);
+      }
+      return " ";
+    }
   );
-  const unknownIndustry =
-    industries.length === 0 && sphereMention ? sphereMention[1].trim() : null;
 
-  const activeTypeLabels = Array.from(cardTypes, (type) =>
-    type === "custom" && explicitCustomName
-      ? explicitCustomName
-      : knowledgeCardTypeLabels[type]
+  const absentPartner = bounded(
+    new RegExp("без\\s+" + partnerLabel.source, "u")
   );
-  filters.push({
-    key: "type",
-    label: "Тип карточки",
-    value: activeTypeLabels.join(", "),
-  });
+  const withoutPartner = [...rest.matchAll(absentPartner)].length > 0;
+  rest = rest.replace(absentPartner, " ");
+  const presence = bounded(new RegExp("(?:с\\s+)?" + partnerLabel.source, "u"));
+  const withPartner =
+    Boolean(partnerName) || [...rest.matchAll(presence)].length > 0;
+  rest = rest.replace(presence, " ");
+  if (withPartner && withoutPartner) unparsed.push("наличие партнёра");
+  const partner = withoutPartner ? "absent" : withPartner ? "present" : null;
 
-  industries.forEach((industry) => {
-    filters.push({
-      key: "industry",
-      label: "Отрасль",
-      value: industry.label,
-    });
-  });
-
-  if (unknownIndustry) {
-    filters.push({
-      key: "industry",
-      label: "Отрасль",
-      value: `${unknownIndustry} — точного совпадения нет`,
-    });
+  const contours: Contour[] = [];
+  const excludedContours: Contour[] = [];
+  for (const { contour, pattern } of CONTOUR_KEYWORDS) {
+    rest = consumePolarity(rest, pattern, contour, contours, excludedContours);
+  }
+  if (contours.length || excludedContours.length) {
+    rest = rest.replace(bounded(/в\s+контур[а-я]*|контур[а-я]*/u), " ");
   }
 
-  universityIds.forEach((id) => {
-    filters.push({
-      key: "university",
-      label: "Вуз",
-      value: getUniversityName(id),
-    });
-  });
-
-  if (requirePartner) {
-    filters.push({
-      key: "partner",
-      label: "Партнёры",
-      value: partnerName
-        ? `Партнёр «${partnerName}»`
-        : "Только карточки с указанным партнёром",
-    });
+  const cardTypes = new Set<AnalyticsCardType>();
+  if (bounded(typeExclusion).test(rest))
+    unparsed.push("исключение типа карточки");
+  if (customName) cardTypes.add("custom");
+  for (const [type, pattern] of typePhrases) {
+    const matches = [...rest.matchAll(bounded(pattern))];
+    if (!matches.length) continue;
+    cardTypes.add(type);
+    rest = rest.replace(bounded(pattern), " ");
+  }
+  const stages: ReadinessStage[] = [];
+  const excludedStages: ReadinessStage[] = [];
+  for (const { stage, keywords } of READINESS_KEYWORDS) {
+    const pattern = new RegExp(
+      "(?:" + keywords.map(escapePattern).join("|") + ")[а-я]*",
+      "u"
+    );
+    rest = consumePolarity(rest, pattern, stage, stages, excludedStages);
+  }
+  const placements: PlacementStatus[] = [];
+  const excludedPlacements: PlacementStatus[] = [];
+  for (const [status, pattern] of placementPhrases) {
+    rest = consumePolarity(
+      rest,
+      pattern,
+      status,
+      placements,
+      excludedPlacements
+    );
+  }
+  if (placements.length > 1) unparsed.push("размещение лаборатории");
+  if (stages.length > 1) unparsed.push("стадия проекта");
+  if (contours.length > 1) unparsed.push("контур проекта");
+  if (
+    (placements.length ||
+      excludedPlacements.length ||
+      cardTypes.has("laboratory")) &&
+    bounded(/в\s+кампус[а-я]*/u).test(rest)
+  ) {
+    unparsed.push("в кампусе");
+  }
+  const jointPattern = bounded(
+    /между\s+собой|межвузовск[а-я]*|совместн[а-я]*/u
+  );
+  const jointOnly = [...rest.matchAll(jointPattern)].length > 0;
+  rest = rest.replace(jointPattern, " ");
+  if (jointOnly || partner) {
+    rest = rest
+      .replace(bounded(relationWords), " ")
+      .replace(bounded(/вуз[а-я]*/u), " ");
   }
 
-  stages.forEach((stage) => {
-    filters.push({ key: "readiness", label: "Статус", value: stage });
-  });
-
-  contours.forEach((contour) => {
-    filters.push({ key: "contour", label: "Контур", value: contour });
-  });
-
-  if (jointOnly) {
-    filters.push({
-      key: "joint",
-      label: "Связи",
-      value: "Только совместные проекты вузов",
-    });
+  const allCards = bounded(/карточк[а-я]*/u);
+  const explicitAllCards = [...rest.matchAll(allCards)].length > 0;
+  rest = rest.replace(allCards, " ");
+  const usesDefaultCardTypes =
+    cardTypes.size === 0 &&
+    !jointOnly &&
+    !explicitAllCards &&
+    !equipmentOnly &&
+    !contours.length &&
+    !excludedContours.length &&
+    !placements.length &&
+    !excludedPlacements.length &&
+    !stages.length &&
+    !excludedStages.length;
+  if (cardTypes.size === 0) {
+    if (equipmentOnly || placements.length || excludedPlacements.length)
+      cardTypes.add("laboratory");
+    if (
+      jointOnly ||
+      contours.length ||
+      excludedContours.length ||
+      stages.length ||
+      excludedStages.length
+    ) {
+      cardTypes.add("project");
+    }
+    if (cardTypes.size === 0) {
+      cardTypes.add("project").add("laboratory");
+      if (explicitAllCards)
+        cardTypes.add("campus").add("university").add("custom");
+    }
   }
 
+  const industries: IndustryDefinition[] = [];
+  for (const industry of INDUSTRIES) {
+    const topic = new RegExp(
+      "(?:" + industry.queryKeywords.map(escapePattern).join("|") + ")[а-я]*",
+      "u"
+    );
+    const topicPhrase = new RegExp(
+      topic.source + "(?:\\s+технологи[а-я]*)?",
+      "u"
+    );
+    const scoped = bounded(
+      new RegExp(industryScope.source + "\\s+" + topicPhrase.source, "u")
+    );
+    if ([...rest.matchAll(scoped)].length > 0) {
+      industries.push(industry);
+      rest = rest.replace(scoped, " ");
+      continue;
+    }
+    // A bare topic can be an industry only when it is the whole remaining query.
+    // In "робот KUKA", both words remain subject constraints.
+    const words = tokenizeKnowledgeText(rest).filter(
+      (word) => !filler.has(word)
+    );
+    const isBareTopic =
+      words.length > 0 &&
+      new RegExp("^(?:" + topicPhrase.source + ")$", "u").test(words.join(" "));
+    if (isBareTopic && !equipmentOnly && terms.length === 0) {
+      industries.push(industry);
+      rest = rest.replace(bounded(topicPhrase), " ");
+    }
+  }
+
+  const unknownScope = [...rest.matchAll(bounded(industryScope))][0];
+  const unknownIndustry = unknownScope
+    ? rest.slice(unknownScope.index + unknownScope[0].length).trim()
+    : null;
+  if (unknownScope) unparsed.push(unknownIndustry || unknownScope[0] || "");
+  for (const term of knowledgeQueryTerms(rest)) {
+    const word = term[0];
+    if (filler.has(word)) continue;
+    if (clarificationWord.test(word) || /^\d/u.test(word)) unparsed.push(word);
+    else terms.push(term);
+  }
+
+  const addFilter = (key: AnalyticsFilterKey, label: string, value: string) =>
+    filters.push({ key, label, value });
+  addFilter(
+    "type",
+    "Тип карточки",
+    [...cardTypes]
+      .map((type) =>
+        type === "custom" && customName
+          ? customName
+          : knowledgeCardTypeLabels[type]
+      )
+      .join(", ")
+  );
+  industries.forEach((industry) =>
+    addFilter("industry", "Отрасль", industry.label)
+  );
+  if (unknownIndustry)
+    addFilter(
+      "industry",
+      "Отрасль",
+      unknownIndustry + " — точного совпадения нет"
+    );
+  universityIds.forEach((id) =>
+    addFilter(
+      "university",
+      universityAlternatives ? "Один из вузов" : "Вуз",
+      getUniversityName(id)
+    )
+  );
+  excludedUniversities.forEach((id) =>
+    addFilter("university", "Вуз", "Кроме " + getUniversityName(id))
+  );
+  if (partner === "present") {
+    addFilter(
+      "partner",
+      "Партнёры",
+      partnerName
+        ? "Партнёр «" + partnerName + "»"
+        : "Только карточки с указанным партнёром"
+    );
+  } else if (partner === "absent") {
+    addFilter("partner", "Партнёры", "Без указанного партнёра");
+  }
+  stages.forEach((stage) => addFilter("readiness", "Статус", stage));
+  excludedStages.forEach((stage) =>
+    addFilter("readiness", "Статус", "Кроме: " + stage)
+  );
+  placements.forEach((status) =>
+    addFilter("readiness", "Размещение", placementStatusLabels[status])
+  );
+  excludedPlacements.forEach((status) =>
+    addFilter(
+      "readiness",
+      "Размещение",
+      "Кроме: " + placementStatusLabels[status]
+    )
+  );
+  contours.forEach((contour) => addFilter("contour", "Контур", contour));
+  excludedContours.forEach((contour) =>
+    addFilter("contour", "Контур", "Кроме: " + contour)
+  );
+  if (jointOnly) addFilter("joint", "Связи", "Только совместные проекты вузов");
+  if (
+    usesDefaultCardTypes &&
+    filters.length === 1 &&
+    terms.length === 0 &&
+    !tokenizeKnowledgeText(rawQuery).some((word) => word === "все")
+  ) {
+    unparsed.push("предмет запроса");
+  }
+
+  const remainingTerms = [...terms];
+  // Quoted subjects were extracted before parsing the filters. Restore their
+  // position before the equipment matcher pairs a model with the preceding kind.
+  const orderedTerms = knowledgeQueryTerms(rawQuery).flatMap((original) => {
+    const index = remainingTerms.findIndex(
+      (term) => term.join("\0") === original.join("\0")
+    );
+    return index < 0 ? [] : remainingTerms.splice(index, 1);
+  });
   return {
     filters,
     cardTypes,
-    usesDefaultCardTypes: usesDefaultCardTypes && !jointOnly,
+    usesDefaultCardTypes,
     industries,
     universityIds,
-    requirePartner,
+    universityAlternatives,
+    universityCooperation,
+    excludedUniversities,
+    partner,
     partnerName,
-    customTypeIds: activeCustomTypes.map((type) => type.id),
+    customTypeIds,
     stages,
+    excludedStages,
+    placements,
+    excludedPlacements,
     contours,
+    excludedContours,
     jointOnly,
-    unknownIndustry,
+    equipmentOnly,
+    terms: [...orderedTerms, ...remainingTerms],
+    unparsed: [...new Set(unparsed)],
   };
 }
 
 export function getAnalyticsCriteria(
   query: string,
-  customTypes: CardTypeDefinition[],
+  customTypes: CardTypeDefinition[]
 ) {
-  const { filters, usesDefaultCardTypes } = parseQuery(query, customTypes);
-  return { filters, usesDefaultCardTypes };
+  const { filters, usesDefaultCardTypes, equipmentOnly, terms, unparsed } =
+    parseQuery(query, customTypes);
+  return { filters, usesDefaultCardTypes, equipmentOnly, terms, unparsed };
+}
+
+function hasPartner(value: string) {
+  const name = normalize(value);
+  const absence =
+    /^(?:[-—–]+|нет|не применимо|(?:(?:индустриальн[а-я]*\s+)?партнер[а-я]*(?:\s+[а-я-]+){0,6}\s+)?не\s+(?:указан|установлен|определен|подтвержден|назначен|известен)[а-я]*)(?:[.!])?$/u;
+  return Boolean(name) && !absence.test(name);
 }
 
 function matchesQuery(card: KnowledgeCard, parsed: ParsedQuery): boolean {
+  if (parsed.unparsed.length || !parsed.cardTypes.has(card.type)) return false;
   if (
     card.type === "custom" &&
+    parsed.customTypeIds.length &&
     !parsed.customTypeIds.includes(card.customTypeId)
-  )
+  ) {
     return false;
-  if (!parsed.cardTypes.has(card.type)) return false;
-
-  if (parsed.unknownIndustry) return false;
-
-  if (parsed.industries.length > 0) {
-    const industryText = normalize(cardIndustryText(card));
-    const matchesIndustry = parsed.industries.some((industry) =>
-      includesAny(industryText, industry.cardKeywords)
-    );
-
-    if (!matchesIndustry) return false;
+  }
+  if (
+    !parsed.industries.every((industry) =>
+      includesAny(normalize(cardIndustryText(card)), industry.cardKeywords)
+    )
+  ) {
+    return false;
   }
 
-  if (parsed.universityIds.length > 0) {
-    const ids = cardUniversityIds(card);
-    const hasUniversities = parsed.jointOnly
-      ? parsed.universityIds.every((id) => ids.includes(id))
-      : parsed.universityIds.some((id) => ids.includes(id));
-
+  const ids = cardUniversityIds(card);
+  if (parsed.excludedUniversities.some((id) => ids.includes(id))) return false;
+  if (parsed.universityIds.length) {
+    const hasUniversities =
+      (parsed.jointOnly || parsed.universityCooperation) &&
+      !parsed.universityAlternatives
+        ? parsed.universityIds.every((id) => ids.includes(id))
+        : parsed.universityIds.some((id) => ids.includes(id));
     if (!hasUniversities) return false;
   }
 
-  const partner = normalize(cardPartner(card));
+  const partner = cardPartner(card);
+  if (parsed.partner === "present" && !hasPartner(partner)) return false;
   if (
-    parsed.requirePartner &&
-    (!partner || /^(?:[-—]+|нет|не указан[а-я]*|не применимо)$/.test(partner))
+    parsed.partner === "absent" &&
+    !["project", "laboratory"].includes(card.type)
   )
     return false;
-  if (parsed.partnerName && !partner.includes(normalize(parsed.partnerName)))
+  if (parsed.partner === "absent" && hasPartner(partner)) return false;
+  if (
+    parsed.partnerName &&
+    matchKnowledgeTerm(
+      indexKnowledgeFragment(partner),
+      tokenizeKnowledgeText(parsed.partnerName)
+    ) < 0
+  )
     return false;
-
-  if (parsed.stages.length > 0) {
-    if (card.type !== "project") return false;
-    if (!parsed.stages.includes(card.readinessStage)) return false;
+  if (parsed.stages.length || parsed.excludedStages.length) {
+    if (
+      card.type !== "project" ||
+      parsed.excludedStages.includes(card.readinessStage)
+    )
+      return false;
+    if (parsed.stages.length && !parsed.stages.includes(card.readinessStage))
+      return false;
   }
-
-  if (parsed.contours.length > 0) {
-    if (card.type !== "project") return false;
-    if (!parsed.contours.includes(card.contour)) return false;
+  if (parsed.placements.length || parsed.excludedPlacements.length) {
+    if (
+      card.type !== "laboratory" ||
+      parsed.excludedPlacements.includes(card.placementStatus)
+    )
+      return false;
+    if (
+      parsed.placements.length &&
+      !parsed.placements.includes(card.placementStatus)
+    )
+      return false;
   }
-
-  if (parsed.jointOnly && !isJointProject(card)) return false;
-
-  return true;
+  if (parsed.contours.length || parsed.excludedContours.length) {
+    if (
+      card.type !== "project" ||
+      parsed.excludedContours.includes(card.contour)
+    )
+      return false;
+    if (parsed.contours.length && !parsed.contours.includes(card.contour))
+      return false;
+  }
+  return !parsed.jointOnly || isJointProject(card);
 }
 
 function unique(values: string[]): string[] {
@@ -594,19 +948,17 @@ function unique(values: string[]): string[] {
 function uniquePartners(values: string[]): string[] {
   const seen = new Map<string, string>();
 
-  values
-    .filter((value) => Boolean(value) && value !== "—")
-    .forEach((value) => {
-      const cleaned =
-        value
-          .replace(/\s*\([^)]*\)/g, "")
-          .split(";")[0]
-          ?.trim() ?? value;
-      const key = normalize(cleaned).replace(/[«»"']/g, "");
-      if (key && !seen.has(key)) {
-        seen.set(key, cleaned);
-      }
-    });
+  values.filter(hasPartner).forEach((value) => {
+    const cleaned =
+      value
+        .replace(/\s*\([^)]*\)/g, "")
+        .split(";")[0]
+        ?.trim() ?? value;
+    const key = normalize(cleaned).replace(/[«»"']/g, "");
+    if (key && !seen.has(key)) {
+      seen.set(key, cleaned);
+    }
+  });
 
   return [...seen.values()];
 }
@@ -639,7 +991,17 @@ export function buildAnalyticsReport(
       (card): card is KnowledgeCard =>
         card !== null && matchesQuery(card, parsed)
     )
-    .sort((a, b) => {
+    .map((card) => ({
+      card,
+      relevance: knowledgeCardMatch(
+        card,
+        parsed.terms,
+        parsed.equipmentOnly ? "equipment" : "structured"
+      ),
+    }))
+    .filter(({ relevance }) => relevance > 0)
+    .sort(({ card: a, relevance: first }, { card: b, relevance: second }) => {
+      if (first !== second) return second - first;
       const typeOrder: Record<KnowledgeCard["type"], number> = {
         project: 0,
         laboratory: 1,
@@ -653,7 +1015,7 @@ export function buildAnalyticsReport(
 
       return a.title.localeCompare(b.title, "ru");
     });
-  const rows = matchedCards.map((card) => toRow(card, customTypes));
+  const rows = matchedCards.map(({ card }) => toRow(card, customTypes));
 
   const summary: AnalyticsSummary = {
     total: rows.length,
@@ -677,10 +1039,12 @@ export function buildAnalyticsReport(
 
   let notice: string | null = null;
 
-  if (rows.length === 0) {
-    notice = parsed.unknownIndustry
-      ? `В базе нет карточек с отраслью «${parsed.unknownIndustry}». Система не добавляет сведения и не делает предположений.`
-      : `По запросу «${query}» в базе нет подходящих карточек. Система не добавляет сведения и не делает предположений.`;
+  const needsClarification = parsed.unparsed.length > 0;
+  if (needsClarification) {
+    notice =
+      "Уточните условия запроса: «" + parsed.unparsed.join("», «") + "».";
+  } else if (rows.length === 0) {
+    notice = `По запросу «${query}» в базе нет подходящих карточек. Система не добавляет сведения и не делает предположений.`;
   }
 
   return {
@@ -689,5 +1053,65 @@ export function buildAnalyticsReport(
     cards: rows,
     summary,
     notice,
+    interpretation: needsClarification
+      ? {
+          status: "needs-clarification",
+          message: notice ?? undefined,
+          unparsed: parsed.unparsed,
+        }
+      : { status: "ready" },
   };
+}
+
+export function getAnalyticsExamples(
+  cards: KnowledgeCard[],
+  customTypes: CardTypeDefinition[] = []
+): string[] {
+  const approved = cards
+    .map(getApprovedVersion)
+    .filter((card) => card !== null);
+  if (!approved.length) return [];
+
+  const candidates = [
+    "Собери все проекты взаимодействия вузов с индустриальными партнёрами в сфере медицины",
+    "Сделай отчёт по взаимодействию вузов между собой в здравоохранении",
+    "Покажи действующие лаборатории",
+    "Покажи паспорт кампуса",
+    ...approved
+      .toSorted(
+        (first, second) =>
+          Number(second.type === "laboratory") -
+          Number(first.type === "laboratory")
+      )
+      .map((card) => {
+        if (card.type === "university")
+          return "Покажи паспорт вуза " + getUniversityName(card.universityId);
+        if (card.type === "laboratory") {
+          const equipment = card.equipment.find(
+            (entry) => entry && entry.length < 80 && !/[«»"]/u.test(entry)
+          );
+          if (equipment) return "Покажи лаборатории с «" + equipment + "»";
+        }
+        return "Покажи карточки «" + card.id + "»";
+      }),
+  ];
+  const examples: string[] = [];
+  const results = new Set<string>();
+  for (const query of new Set(candidates)) {
+    const { cards: rows, interpretation } = buildAnalyticsReport(
+      query,
+      approved,
+      customTypes
+    );
+    if (!rows.length || interpretation?.status !== "ready") continue;
+    const ids = rows
+      .map((row) => row.id)
+      .sort()
+      .join("|");
+    if (results.has(ids)) continue;
+    results.add(ids);
+    examples.push(query);
+    if (examples.length === 5) break;
+  }
+  return examples;
 }

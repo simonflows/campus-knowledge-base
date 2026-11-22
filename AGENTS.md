@@ -72,6 +72,9 @@ Before building, classify the request:
 
 ## Repo Map
 
+- Public `/demo` is an explicit owner-authorized exception to working-storage rules: it keeps only an educational dataset and edits in the visitor's browser. It must never issue working API writes, call paid providers, change the working session, or export to Disk. Preserve reload/reset/corruption safeguards. All real work continues to use DynamoDB/YDB.
+- Release 0.9.6 contracts: `docs/release-0.9.6-contracts.md`, `docs/release-0.9.6-access.md`, and `docs/release-0.9.6-disk.md`. Read the matching contract before changing AI, approval or Disk protocols. Run `npm run test:096` for their regression suite; normal full checks still apply.
+
 - Main page: `app/page.tsx`.
 - Root chrome/metadata: `app/layout.tsx`. Product name lives in the single `appName` constant.
 - DynamoDB schema: `lib/schema.ts`.

@@ -71,7 +71,7 @@ export function parseTokenUsage(
 
 export async function callYandexAi(
   messages: YandexAiMessage[],
-  options?: { temperature?: number; maxTokens?: number }
+  options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
 ): Promise<string> {
   return (await callYandexAiWithUsage(messages, options)).text;
 }

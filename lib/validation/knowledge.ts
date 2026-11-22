@@ -6,6 +6,8 @@ import {
   CUSTOM_FIELD_TYPES,
   PLACEMENT_STATUSES,
   READINESS_STAGES,
+  folderIds,
+  getUniversityIdFromFolder,
   type CardTypeDefinition,
   type CustomCardField,
   type CustomFieldValue,
@@ -21,6 +23,7 @@ const universityIdSchema = text.refine(
 const ownerIds = z.array(text.max(80)).max(2000)
   .refine(ids => new Set(ids).size === ids.length, "Владельцы не должны повторяться")
   .optional();
+const organizationScope = z.enum(["rio", "chkk"]).optional();
 
 export const evidenceUrlSchema = z
   .string()
@@ -98,6 +101,7 @@ export const structuredMetricSchema = z.object({
 const baseCardSchema = z.object({
   ...evidenceFields,
   ownerIds,
+  organizationScope,
   title: text.max(200),
   folderId: text,
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -202,10 +206,21 @@ const cardTypeFieldsSchema = z
     });
   });
 
-export const cardTypeInputSchema = z.object({
+export function hasRequiredConstructionField(fields: CardTypeDefinition["fields"]): boolean {
+  return fields.some(field => field.required);
+}
+
+const cardTypeProperties = z.object({
   name: text.max(120),
   description: z.string().trim().max(500).default(""),
   fields: cardTypeFieldsSchema,
+  organizationScope: z.literal("chkk").optional(),
+});
+
+export const cardTypeInputSchema = cardTypeProperties.superRefine((type, ctx) => {
+  if (type.organizationScope === "chkk" && !hasRequiredConstructionField(type.fields)) {
+    ctx.addIssue({ code: "custom", path: ["fields"], message: "Для параметра ЧКК добавьте обязательное поле." });
+  }
 });
 
 export const cardTypeUpdateSchema = z
@@ -213,12 +228,14 @@ export const cardTypeUpdateSchema = z
     name: text.max(120).optional(),
     description: z.string().trim().max(500).optional(),
     fields: cardTypeFieldsSchema.optional(),
+    organizationScope: z.literal("chkk").nullable().optional(),
   })
   .refine(
     (data) =>
       data.name !== undefined ||
       data.description !== undefined ||
-      data.fields !== undefined,
+      data.fields !== undefined ||
+      data.organizationScope !== undefined,
     { message: "Нет данных для обновления" }
   );
 
@@ -227,8 +244,10 @@ export type CardTypeInput = z.infer<typeof cardTypeInputSchema>;
 const customCardSchema = z.object({
   ...evidenceFields,
   ownerIds,
+  organizationScope,
   type: z.literal("custom"),
   customTypeId: text,
+  universityId: universityIdSchema.optional(),
   title: text.max(200),
   folderId: z.string().trim().optional().default(""),
   owners: z.array(text).min(1, "Укажите хотя бы одного владельца карточки"),
@@ -270,7 +289,7 @@ export const knowledgeCardInputSchema = z
         });
       }
     }
-    if (card.type === "project" && !card.isJoint && !card.initiatorUniversityId) {
+    if (card.type === "project" && !card.isJoint && !card.initiatorUniversityId && card.organizationScope !== "rio") {
       ctx.addIssue({
         code: "custom",
         path: ["initiatorUniversityId"],
@@ -295,6 +314,28 @@ export const knowledgeCardInputSchema = z
   });
 
 export type KnowledgeCardInput = z.infer<typeof knowledgeCardInputSchema>;
+
+export function canonicalKnowledgeFolder(card: KnowledgeCardInput): string | null {
+  switch (card.type) {
+    case "campus":
+      return folderIds.campus;
+    case "university":
+      return folderIds.subfolder(card.universityId, "passport");
+    case "custom":
+      return card.organizationScope === "chkk" ? folderIds.chkkParameters : folderIds.customType(card.customTypeId);
+    case "project":
+      if (card.isJoint) return folderIds.joint;
+      if (card.organizationScope === "rio" && !card.initiatorUniversityId) return folderIds.rioProjects;
+      return card.initiatorUniversityId ? folderIds.subfolder(card.initiatorUniversityId, "products") : null;
+    case "laboratory": {
+      if (card.organizationScope === "chkk") return folderIds.campus;
+      const universityId = getUniversityIdFromFolder(card.folderId);
+      return universityId && universities.some(item => item.id === universityId)
+        ? folderIds.subfolder(universityId, "infrastructure")
+        : null;
+    }
+  }
+}
 
 function isEmptyValue(value: unknown): value is undefined | null | "" | [] {
   return (

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canEditCard, canRequestEdit, roleLabels, visibleKnowledgeCard } from "@/lib/auth";
+import { canManageEditRequests, canRequestEdit, cardRequestOwners, roleLabels, visibleKnowledgeCard } from "@/lib/auth";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
 import type { CardEditRequest, KnowledgeCard } from "@/lib/knowledge";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
+import { sessionDirectory } from "@/lib/pilot-auth";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   editRequestCreateSchema,
@@ -14,12 +15,18 @@ import {
 
 type RouteContext = { params: Promise<{ id: string }> };
 
-async function saveRequests(card: KnowledgeCard, editRequests: CardEditRequest[], user: SessionUser, status = 200) {
+async function saveRequests(
+  card: KnowledgeCard, editRequests: CardEditRequest[], user: SessionUser,
+  status = 200, recipient?: CardEditRequest["recipient"],
+) {
   try {
     const updated = await setKnowledgeCardModeration(card.id, { editRequests }, card.updatedAt);
     if (!updated) return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
     return NextResponse.json(visibleKnowledgeCard(user, updated), {
-      status, headers: { "Cache-Control": "private, no-store" },
+      status, headers: {
+        "Cache-Control": "private, no-store",
+        ...(recipient ? { "X-Canon-Edit-Request-Recipient": recipient } : {}),
+      },
     });
   } catch (error) {
     if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
@@ -67,7 +74,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
         error:
           user.role === "guest"
             ? "Гость не может отправлять запросы на правку"
-            : "У вас есть право редактировать эту карточку напрямую",
+            : "Для этой карточки запрос на правку недоступен вашей роли",
       },
       { status: 403 }
     );
@@ -105,9 +112,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
     message: parsed.data.message,
     createdAt: new Date().toISOString(),
     status: "open",
+    recipient: cardRequestOwners(card, sessionDirectory()).length ? "owner" : "coordinator",
   };
 
-  return saveRequests(card, [...(card.editRequests ?? []), editRequest], user, 201);
+  return saveRequests(card, [...(card.editRequests ?? []), editRequest], user, 201, editRequest.recipient);
 }
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
@@ -142,7 +150,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     return NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
-  if (!canEditCard(user, card)) {
+  if (!canManageEditRequests(user, card)) {
     return NextResponse.json(
       {
         error:
@@ -209,6 +217,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       message: item.message,
       createdAt: item.createdAt,
       status: "open" as const,
+      ...(item.recipient ? { recipient: item.recipient } : {}),
     };
   });
 

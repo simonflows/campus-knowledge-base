@@ -36,7 +36,17 @@ export type DiskRegistry = {
   summaryPath: string;
   confirmedAt: string;
   fingerprint: string;
+  sequence?: number;
+  pendingRows?: number;
+  receiptPath?: string;
+  receiptLastAttemptAt?: string;
+  receiptError?: string;
+  summaryInvalid?: boolean;
+  rebuildLastAttemptAt?: string;
+  rebuildError?: string;
 };
+
+export type DiskRegistryContent = "cards" | "articles";
 
 export type DiskRegistryCommit = {
   next: DiskRegistry;
@@ -57,29 +67,39 @@ export const diskSyncStatusLabels: Record<DiskSyncStatus, string> = {
 };
 
 // Disk writes do not advance the content version. Compare the observed attempt as well.
-function observedProgressCondition(sync?: DiskSyncInfo) {
+function observedProgressCondition(sync?: DiskSyncInfo, snapshot = false) {
+  const path = snapshot ? "approvedSnapshot.diskSync" : "diskSync";
+  const statusName = snapshot ? "#snapshotSyncStatus" : "#syncStatus";
+  const statusValue = snapshot ? ":snapshotSyncStatus" : ":syncStatus";
+  const attemptValue = snapshot ? ":snapshotAttempt" : ":observedAttempt";
   const state = sync
-    ? "diskSync.#syncStatus = :syncStatus"
-    : "attribute_not_exists(diskSync)";
+    ? `${path}.${statusName} = ${statusValue}`
+    : `attribute_not_exists(${path})`;
   const attempt = sync?.attemptId
-    ? "diskSync.attemptId = :observedAttempt"
-    : "attribute_not_exists(diskSync.attemptId)";
+    ? `${path}.attemptId = ${attemptValue}`
+    : `attribute_not_exists(${path}.attemptId)`;
   return {
     ConditionExpression: `${state} AND ${attempt}`,
-    ...(sync && { ExpressionAttributeNames: { "#syncStatus": "status" } }),
+    ...(sync && { ExpressionAttributeNames: { [statusName]: "status" } }),
     ExpressionAttributeValues: {
-      ...(sync && { ":syncStatus": sync.status }),
-      ...(sync?.attemptId && { ":observedAttempt": sync.attemptId }),
+      ...(sync && { [statusValue]: sync.status }),
+      ...(sync?.attemptId && { [attemptValue]: sync.attemptId }),
     },
   };
 }
 
-export function observedExportCondition(record: { updatedAt: string; diskSync?: DiskSyncInfo }) {
+export function observedExportCondition(record: { updatedAt: string; diskSync?: DiskSyncInfo; approvedSnapshot?: { diskSync?: DiskSyncInfo } }) {
   const progress = observedProgressCondition(record.diskSync);
+  const snapshot = record.approvedSnapshot ? observedProgressCondition(record.approvedSnapshot.diskSync, true) : undefined;
   return {
-    ...progress,
-    ConditionExpression: "updatedAt = :previousUpdatedAt AND " + progress.ConditionExpression,
-    ExpressionAttributeValues: { ...progress.ExpressionAttributeValues, ":previousUpdatedAt": record.updatedAt },
+    ...(progress.ExpressionAttributeNames || snapshot?.ExpressionAttributeNames
+      ? { ExpressionAttributeNames: { ...progress.ExpressionAttributeNames, ...snapshot?.ExpressionAttributeNames } }
+      : {}),
+    ConditionExpression: "updatedAt = :previousUpdatedAt AND " + progress.ConditionExpression +
+      (snapshot ? " AND " + snapshot.ConditionExpression : ""),
+    ExpressionAttributeValues: {
+      ...progress.ExpressionAttributeValues, ...snapshot?.ExpressionAttributeValues, ":previousUpdatedAt": record.updatedAt,
+    },
   };
 }
 
@@ -91,13 +111,42 @@ export function diskAttemptMatches(current: DiskSyncInfo | undefined, guard?: Di
   return current?.status === guard.previous?.status && current?.attemptId === guard.previous?.attemptId;
 }
 
-export function diskAttemptCondition(guard?: DiskAttemptGuard) {
+export function diskAttemptCondition(guard?: DiskAttemptGuard, snapshot = false) {
   if (guard === undefined) return { ConditionExpression: "", ExpressionAttributeValues: {}, ExpressionAttributeNames: {} };
   if (typeof guard === "string") return {
-    ConditionExpression: " AND diskSync.attemptId = :attempt", ExpressionAttributeValues: { ":attempt": guard }, ExpressionAttributeNames: {},
+    ConditionExpression: ` AND ${snapshot ? "approvedSnapshot." : ""}diskSync.attemptId = :attempt`,
+    ExpressionAttributeValues: { ":attempt": guard }, ExpressionAttributeNames: {},
   };
-  const progress = observedProgressCondition(guard.previous);
+  const progress = observedProgressCondition(guard.previous, snapshot);
   return { ...progress, ConditionExpression: " AND " + progress.ConditionExpression };
+}
+
+export const DISK_RECOVERY_ACTIVE_MS = 90_000;
+export const DISK_RECOVERY_FAILURE_MS = 300_000;
+
+export function diskRecoveryDue(
+  sync: DiskSyncInfo | undefined, updatedAt: string, revisionId: string | undefined, now: number,
+): boolean {
+  const age = now - Date.parse(sync?.lastAttemptAt ?? "");
+  if (sync?.status === "pending" && sync.attemptId && age < DISK_RECOVERY_ACTIVE_MS) return false;
+  if (sync?.status === "failed" && age < DISK_RECOVERY_FAILURE_MS) return false;
+  return !isDiskSyncCurrent(sync, updatedAt, revisionId);
+}
+
+export function isDiskSyncCurrent(sync: DiskSyncInfo | undefined, updatedAt: string, revisionId?: string) {
+  return sync?.status === "synced" && sync.sourceUpdatedAt === updatedAt &&
+    sync.sourceRevisionId === revisionId && Boolean(sync.filePath && sync.summaryPath);
+}
+
+export function diskReceiptDue(registry: DiskRegistry, now: number): boolean {
+  const age = now - Date.parse(registry.receiptLastAttemptAt ?? "");
+  return !registry.receiptPath && !(age < (registry.receiptError ? DISK_RECOVERY_FAILURE_MS : DISK_RECOVERY_ACTIVE_MS));
+}
+
+export function diskRegistrySequence(registry?: DiskRegistry | null): number {
+  const stored = registry?.sequence ?? 0;
+  if (!Number.isSafeInteger(stored) || stored < 0) throw new Error("Некорректный номер сводки Диска.");
+  return stored;
 }
 
 export function lastSuccessfulDiskExport(

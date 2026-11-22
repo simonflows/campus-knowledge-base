@@ -60,10 +60,11 @@ async function main() {
     userId: string,
     body: unknown,
     handler: (request: NextRequest) => Promise<T>,
+    observedVersion?: string,
   ) {
     const request = new NextRequest(origin + path, {
       method,
-      headers: { Origin: origin, "Content-Type": "application/json" },
+      headers: { Origin: origin, "Content-Type": "application/json", ...(observedVersion ? { "If-Match": observedVersion } : {}) },
       body: JSON.stringify(body),
     });
     const token = signSessionToken(userId);
@@ -89,8 +90,10 @@ async function main() {
     assert.equal((await call(moderationPath, "POST", author, { action: "approve" },
       (request) => moderate(request, context))).status, 403);
     assert.equal(uploads.size, 0);
+    assert.equal((await call(moderationPath, "POST", coordinator, { action: "approve" },
+      (request) => moderate(request, context))).status, 428, "Approval must identify the reviewed card version");
     const approved = await call(moderationPath, "POST", coordinator, { action: "approve" },
-      (request) => moderate(request, context));
+      (request) => moderate(request, context), card.updatedAt);
     assert.equal(approved.status, 200);
     const storedCard = await getKnowledgeCardById(card.id);
     assert.equal(storedCard?.diskSync?.status, "synced");

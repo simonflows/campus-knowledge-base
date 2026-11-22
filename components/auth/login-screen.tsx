@@ -34,9 +34,11 @@ const demoGroups = demoAccountsByRole();
 type LoginScreenProps = {
   currentUser: SessionUser | null;
   demo: boolean;
+  returnTo?: string;
+  staffRequired?: boolean;
 };
 
-export function LoginScreen({ currentUser, demo }: LoginScreenProps) {
+export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffRequired = false }: LoginScreenProps) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pinForAdmin, setPinForAdmin] = useState("");
@@ -87,7 +89,7 @@ export function LoginScreen({ currentUser, demo }: LoginScreenProps) {
         description: roleLabels[data.user.role],
       });
       router.refresh();
-      router.push("/knowledge");
+      router.push(returnTo);
     } catch {
       toast.error("Ошибка сети при входе");
     } finally {
@@ -136,6 +138,11 @@ export function LoginScreen({ currentUser, demo }: LoginScreenProps) {
           </Link>
         </WorkspaceMasthead>
         <div className="desk-access-body">
+          {staffRequired && (
+            <p className="text-sm text-muted-foreground" role="status">
+              Аналитика доступна сотрудникам. Войдите с персональным доступом или попробуйте локальное демо.
+            </p>
+          )}
           {currentUser ? (
             <div className="desk-active-account">
               <span className="desk-icon" aria-hidden="true">
@@ -202,6 +209,14 @@ export function LoginScreen({ currentUser, demo }: LoginScreenProps) {
               </form>
             </div>
           ) : null}
+          {!demo && (
+            <div className="flex flex-wrap items-center gap-4">
+              <Link href="/demo" className="desk-text-link">Попробовать в демо-режиме</Link>
+              {currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
+                <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
+              )}
+            </div>
+          )}
           {demo ? (
             <section aria-labelledby="demo-accounts">
               <div className="desk-access-selection">

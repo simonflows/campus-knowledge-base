@@ -26,7 +26,6 @@ import {
   PLACEMENT_STATUSES,
   placementStatusLabels,
   READINESS_STAGES,
-  UNIVERSITY_SUBFOLDERS,
   type CampusLegalEntity,
   type CampusMetric,
   type CampusTariff,
@@ -39,6 +38,7 @@ import {
 import {
   buildCustomFieldValuesSchema,
   knowledgeCardInputSchema,
+  type KnowledgeCardInput,
 } from "@/lib/validation/knowledge";
 import { cn } from "@/lib/utils";
 import { UniversityMetricsEditor } from "./university-metrics-editor";
@@ -106,6 +106,7 @@ type KnowledgeCardFormProps = {
   onCreated: (card: KnowledgeCard) => void;
   onUpdated?: (card: KnowledgeCard) => void;
   onCancel: () => void;
+  saveCard?: (payload: KnowledgeCardInput, initial: KnowledgeCard | null) => Promise<KnowledgeCard>;
 };
 
 export function KnowledgeCardForm({
@@ -119,6 +120,7 @@ export function KnowledgeCardForm({
   onCreated,
   onUpdated,
   onCancel,
+  saveCard,
 }: KnowledgeCardFormProps) {
   const projectCard = initialCard?.type === "project" ? initialCard : null;
   const laboratoryCard =
@@ -128,20 +130,32 @@ export function KnowledgeCardForm({
   const universityCard =
     initialCard?.type === "university" ? initialCard : null;
   const isEdit = Boolean(initialCard);
+  const organizationScope = initialCard?.organizationScope ?? (!isEdit &&
+    (currentUser?.role === "rio" || currentUser?.role === "chkk") ? currentUser.role : undefined);
+  const staffUniversityId = currentUser?.universityId;
+  const laboratoryFolderUniversity = initialCard?.type === "laboratory"
+    ? getUniversityIdFromFolder(initialCard.folderId) : null;
+  const availableUniversities = staffUniversityId
+    ? universities.filter(university => university.id === staffUniversityId || university.id === laboratoryFolderUniversity)
+    : universities;
+  const availableCustomTypes = customTypes.filter(definition =>
+    currentUser?.role === "admin" || (definition.organizationScope === "chkk") === (currentUser?.role === "chkk")
+  );
 
   const defaultUniversityId =
+    staffUniversityId ??
     (defaultFolderId ? getUniversityIdFromFolder(defaultFolderId) : null) ??
-    currentUser?.universityId ??
     "susu";
   const initialCustomTypeFromFolder =
-    !initialCard && defaultFolderId?.startsWith(`${folderIds.customRoot}/`)
-      ? defaultFolderId.slice(`${folderIds.customRoot}/`.length)
-      : null;
+    !initialCard && defaultFolderId === folderIds.chkkParameters
+      ? availableCustomTypes.find(definition => definition.organizationScope === "chkk")?.id ?? null
+      : !initialCard && defaultFolderId?.startsWith(`${folderIds.customRoot}/`)
+        ? availableCustomTypes.find(definition => folderIds.customType(definition.id) === defaultFolderId)?.id ?? null
+        : null;
   const initialFormType: FormType =
     initialCard?.type ??
-    (initialCustomTypeFromFolder
-      ? "custom"
-      : defaultFolderId?.endsWith("/infrastructure")
+    (initialCustomTypeFromFolder ? "custom" : organizationScope === "chkk" ? "laboratory"
+      : organizationScope !== "rio" && defaultFolderId?.endsWith("/infrastructure")
         ? "laboratory"
         : "project");
 
@@ -164,10 +178,8 @@ export function KnowledgeCardForm({
   const [ownerAssignmentEdited, setOwnerAssignmentEdited] = useState(false);
   const [folderId, setFolderId] = useState(
     initialCard?.folderId ??
-      (defaultFolderId &&
-      defaultFolderId.startsWith(`${folderIds.universities}/`) &&
-      defaultFolderId.split("/").length >= 3
-        ? defaultFolderId
+      (organizationScope === "chkk" ? folderIds.campus
+        : organizationScope === "rio" ? folderIds.rioProjects
         : folderIds.subfolder(
             defaultUniversityId,
             initialFormType === "laboratory" ? "infrastructure" : "products"
@@ -175,7 +187,7 @@ export function KnowledgeCardForm({
   );
   const [sphere, setSphere] = useState(projectCard?.sphere ?? "");
   const [initiatorUniversityId, setInitiatorUniversityId] = useState(
-    projectCard?.initiatorUniversityId ?? defaultUniversityId
+    projectCard?.initiatorUniversityId ?? (organizationScope === "rio" ? "" : defaultUniversityId)
   );
   const [coExecutors, setCoExecutors] = useState(
     projectCard?.coExecutors.join(", ") ?? ""
@@ -193,6 +205,8 @@ export function KnowledgeCardForm({
     projectCard?.confirmedFigures.join("\n") ?? ""
   );
   const [isJoint, setIsJoint] = useState(projectCard?.isJoint ?? false);
+  const projectFolderId = isJoint ? folderIds.joint
+    : initiatorUniversityId ? folderIds.subfolder(initiatorUniversityId, "products") : folderIds.rioProjects;
   const [externalParticipants, setExternalParticipants] = useState(projectCard?.externalParticipantNames?.join("\n") ?? "");
   const [participantUniversityIds, setParticipantUniversityIds] = useState<
     string[]
@@ -259,6 +273,10 @@ export function KnowledgeCardForm({
   const selectedCustomType = selectedCustomTypeId
     ? (customTypes.find((item) => item.id === selectedCustomTypeId) ?? null)
     : null;
+  const cardOrganizationScope = type === "custom" && selectedCustomType?.organizationScope === "chkk"
+    ? "chkk" : organizationScope;
+  const customFolderId = selectedCustomType?.organizationScope === "chkk"
+    ? folderIds.chkkParameters : selectedCustomType ? folderIds.customType(selectedCustomType.id) : folderId;
   const typeLabel = initialCard
     ? initialCard.type === "custom"
       ? (selectedCustomType?.name ?? knowledgeCardTypeLabels.custom)
@@ -279,7 +297,8 @@ export function KnowledgeCardForm({
 
       setType("custom");
       setSelectedCustomTypeId(typeId);
-      setFolderId(folderIds.customType(typeId));
+      setFolderId(availableCustomTypes.find(definition => definition.id === typeId)?.organizationScope === "chkk"
+        ? folderIds.chkkParameters : folderIds.customType(typeId));
       return;
     }
 
@@ -493,15 +512,14 @@ export function KnowledgeCardForm({
       title,
       folderId:
         type === "custom" && selectedCustomType
-          ? folderIds.customType(selectedCustomType.id)
+          ? customFolderId
           : type === "campus"
             ? folderIds.campus
             : type === "university"
               ? folderIds.subfolder(universityId, "passport")
-              : isJoint
-                ? folderIds.joint
-                : folderId,
+              : type === "project" ? projectFolderId : folderId,
       owners: splitLines(owners),
+      ...(cardOrganizationScope ? { organizationScope: cardOrganizationScope } : {}),
       ...(currentUser?.role === "admin" && ownerAssignmentEdited ? { ownerIds } : {}),
       referenceDescription,
       stopFormula,
@@ -523,6 +541,7 @@ export function KnowledgeCardForm({
               ...base,
               type: "custom" as const,
               customTypeId: selectedCustomType.id,
+              ...(customCard?.universityId ? { universityId: customCard.universityId } : {}),
               customFields,
             }
           : type === "project"
@@ -598,6 +617,22 @@ export function KnowledgeCardForm({
     }
 
     setIsSaving(true);
+
+    if (saveCard) {
+      try {
+        const card = await saveCard(cardPayload, initialCard);
+        if (isEdit) onUpdated?.(card);
+        else onCreated(card);
+        toast.success("Карточка сохранена в браузере");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Не удалось сохранить карточку в браузере";
+        setFormError(message);
+        toast.error(message);
+      } finally {
+        setIsSaving(false);
+      }
+      return;
+    }
 
     try {
       const endpoint =
@@ -676,12 +711,16 @@ export function KnowledgeCardForm({
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <CardTitle className="font-heading text-xl">
-            {isEdit
+            {saveCard
+              ? isEdit ? "Редактирование учебной карточки" : "Новая учебная карточка"
+              : isEdit
               ? "Редактирование официальной карточки"
               : "Новая официальная карточка"}
           </CardTitle>
           <CardDescription>
-            {isEdit
+            {saveCard
+              ? "Изменения остаются в этом браузере. Карточку можно согласовать в учебном режиме."
+              : isEdit
               ? "Правки сохраняются в карточку. Чужие утверждённые карточки доступны только для запроса правки."
               : currentUser?.role === "university_pr"
                 ? "Карточка сохранится черновиком и уйдёт координатору на подтверждение. В официальные данные она попадёт только после одобрения."
@@ -728,13 +767,14 @@ export function KnowledgeCardForm({
                   onChange={(event) => handleTypeChange(event.target.value)}
                 >
                   <optgroup label="Стандартные типы">
-                    <option value="project">Проект / продукт</option>
-                    <option value="laboratory">Лаборатория / объект</option>
-                    <option value="university">Паспорт вуза</option>
+                    {organizationScope !== "chkk" && <option value="project">Проект / продукт</option>}
+                    {organizationScope !== "rio" && <option value="laboratory">Лаборатория / объект</option>}
+                    {!organizationScope && <option value="university">Паспорт вуза</option>}
+                    {currentUser?.role === "admin" && <option value="campus">Паспорт кампуса</option>}
                   </optgroup>
-                  {customTypes.length > 0 ? (
+                  {availableCustomTypes.length > 0 ? (
                     <optgroup label="Пользовательские типы">
-                      {customTypes.map((customType) => (
+                      {availableCustomTypes.map((customType) => (
                         <option
                           key={customType.id}
                           value={`custom:${customType.id}`}
@@ -802,12 +842,14 @@ export function KnowledgeCardForm({
                   {ownerCandidates.filter(candidate => canAssignCardOwner(candidate, {
                     type,
                     folderId: type === "custom" && selectedCustomType
-                      ? folderIds.customType(selectedCustomType.id)
+                      ? customFolderId
                       : type === "university"
                         ? folderIds.subfolder(universityId, "passport")
-                        : type === "project" && isJoint ? folderIds.joint : folderId,
+                        : type === "project" ? projectFolderId : folderId,
+                    organizationScope: cardOrganizationScope,
+                    requiredApprovalUniversityIds: initialCard?.requiredApprovalUniversityIds,
                     owners: [],
-                    universityId,
+                    universityId: type === "custom" ? customCard?.universityId : universityId,
                     initiatorUniversityId,
                     isJoint,
                     participantUniversityIds,
@@ -847,10 +889,12 @@ export function KnowledgeCardForm({
                   </option>
                 </select>
                 <p className="text-[11px] text-muted-foreground">
-                  Карточка появится в разделе «03_Пользовательские_типы».
+                  {cardOrganizationScope === "chkk"
+                    ? "Карточка появится в папке «Параметры ЧКК»."
+                    : "Карточка появится в разделе «Пользовательские типы»."}
                 </p>
               </div>
-            ) : type === "campus" || type === "university" ? (
+            ) : type === "campus" || type === "university" || organizationScope === "chkk" ? (
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="card-folder">
                   Папка хранения
@@ -867,8 +911,17 @@ export function KnowledgeCardForm({
                 <p className="text-[11px] text-muted-foreground">
                   {type === "university"
                     ? "Показатели хранятся в паспорте выбранного вуза."
-                    : "Общие параметры кампуса редактирует только координатор."}
+                    : organizationScope === "chkk" ? "Объекты и строительные параметры УНК."
+                      : "Общий паспорт кампуса редактирует координатор."}
                 </p>
+              </div>
+            ) : type === "project" ? (
+              <div className="space-y-2">
+                <label className="text-sm font-medium" htmlFor="card-folder">Папка хранения</label>
+                <Input id="card-folder" value={isJoint ? "02_Совместные_проекты"
+                  : initiatorUniversityId
+                    ? `${universities.find(university => university.id === initiatorUniversityId)?.shortName} / Продукты_и_проекты`
+                    : "04_Проекты_РИОН"} disabled />
               </div>
             ) : (
               <div className="space-y-2">
@@ -878,33 +931,17 @@ export function KnowledgeCardForm({
                 <select
                   id="card-folder"
                   className={selectClassName}
-                  value={isJoint ? folderIds.joint : folderId}
+                  value={folderId}
                   onChange={(event) => setFolderId(event.target.value)}
                   disabled={
-                    (type === "project" && isJoint) ||
-                    (isEdit && currentUser?.role !== "admin")
+                    isEdit && currentUser?.role !== "admin"
                   }
                 >
-                  {universities.map((university) => (
-                    <optgroup key={university.id} label={university.shortName}>
-                      {UNIVERSITY_SUBFOLDERS.map((subfolder) => (
-                        <option
-                          key={subfolder.key}
-                          value={folderIds.subfolder(
-                            university.id,
-                            subfolder.key
-                          )}
-                        >
-                          {university.shortName} / {subfolder.name}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                  {type === "project" && isJoint ? (
-                    <option value={folderIds.joint}>
-                      02_Совместные_проекты
+                  {availableUniversities.map((university) => (
+                    <option key={university.id} value={folderIds.subfolder(university.id, "infrastructure")}>
+                      {university.shortName} / Инфраструктура_и_лаборатории
                     </option>
-                  ) : null}
+                  ))}
                 </select>
               </div>
             )}
@@ -983,7 +1020,7 @@ export function KnowledgeCardForm({
                         setInitiatorUniversityId("");
                       } else if (!event.target.checked) {
                         setParticipantUniversityIds([]);
-                        if (!initiatorUniversityId) setInitiatorUniversityId(defaultUniversityId);
+                        if (!initiatorUniversityId && organizationScope !== "rio") setInitiatorUniversityId(defaultUniversityId);
                       }
                     }}
                     className="h-4 w-4 accent-primary"
@@ -1071,12 +1108,14 @@ export function KnowledgeCardForm({
                     id="card-initiator"
                     className={selectClassName}
                     value={initiatorUniversityId}
+                    disabled={!isJoint && Boolean(staffUniversityId)}
                     onChange={(event) =>
                       setInitiatorUniversityId(event.target.value)
                     }
                   >
-                    {isJoint ? <option value="">Совместная инициатива, отдельный инициатор не установлен</option> : null}
-                    {universities.map((university) => (
+                    {isJoint ? <option value="">Совместная инициатива, отдельный инициатор не установлен</option>
+                      : organizationScope === "rio" ? <option value="">АНО «РИОН»</option> : null}
+                    {(isJoint ? universities : availableUniversities).map((university) => (
                       <option key={university.id} value={university.id}>
                         {university.shortName}
                       </option>

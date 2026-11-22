@@ -5,16 +5,27 @@ import { buildAnalyticsReport } from "@/lib/analytics";
 import { getAllCardTypes, getCanonicalKnowledgeCards } from "@/lib/models";
 import { analyticsQuerySchema } from "@/lib/validation/analytics";
 import { assistAnalytics, authorizeFlashAssist } from "@/lib/flash-assist";
+import { buildAnalyticsWithAi } from "@/lib/canon-analytics-ai";
+import { JsonBodyError, readBoundedJson } from "@/lib/http-json";
+import { getSessionUser } from "@/lib/auth-server";
+
+async function loadAnalyticsSnapshot() {
+  const [cards, types] = await Promise.all([getCanonicalKnowledgeCards(), getAllCardTypes()]);
+  return { cards, types };
+}
 
 export async function POST(request: NextRequest) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: "Для аналитики войдите в аккаунт сотрудника. Локальные примеры доступны в демо." }, { status: 401 });
+  if (user.role === "guest") return NextResponse.json({ error: "Гостевой доступ позволяет читать карточки и проверять текст. Аналитика доступна сотрудникам." }, { status: 403 });
   let body: unknown;
 
   try {
-    body = await request.json();
-  } catch {
+    body = await readBoundedJson(request, 16 * 1024);
+  } catch (error) {
     return NextResponse.json(
       { error: "Некорректный JSON в теле запроса" },
-      { status: 400 }
+      { status: error instanceof JsonBodyError ? error.status : 400 }
     );
   }
 
@@ -31,20 +42,24 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { query, flashAssist } = parsed.data;
-  const account = flashAssist ? await authorizeFlashAssist(request) : null;
+  const { query, flashAssist, useAi } = parsed.data;
+  const account = flashAssist || useAi ? await authorizeFlashAssist(request) : null;
   if (account instanceof Response) return account;
-  const data = await Promise.all([
-    getCanonicalKnowledgeCards(), getAllCardTypes(),
-  ]).catch(() => null);
-  if (!data) return unavailableStorageResponse();
-  const [cards, types] = data;
-  const report = buildAnalyticsReport(query, cards, types);
+  const snapshot = await loadAnalyticsSnapshot().catch(() => null);
+  if (!snapshot) return unavailableStorageResponse();
+  if (useAi && account) {
+    const report = await buildAnalyticsWithAi({
+      request, accountId: account, query, snapshot, loadCurrent: loadAnalyticsSnapshot,
+    });
+    if (!report) return unavailableStorageResponse();
+    return NextResponse.json(report, { headers: { "Cache-Control": "private, no-store" } });
+  }
+  const report = buildAnalyticsReport(query, snapshot.cards, snapshot.types);
   return NextResponse.json(
     account
       ? {
           ...report,
-          flashAssist: await assistAnalytics(request, account, query, types).catch(() => ({ status: "failed" })),
+          flashAssist: await assistAnalytics(request, account, query, snapshot.types).catch(() => ({ status: "failed" })),
         }
       : report,
     account ? { headers: { "Cache-Control": "no-store" } } : undefined,

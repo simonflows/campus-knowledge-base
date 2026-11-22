@@ -56,6 +56,7 @@ import {
   type SessionUser,
 } from "@/lib/auth";
 import { diskSyncStatusLabels } from "@/lib/disk-sync";
+import type { ReadyArticle } from "@/lib/articles";
 import {
   buildKnowledgeTree,
   cardStatusLabels,
@@ -65,6 +66,7 @@ import {
   getCardsForFolder,
   getCardTypeLabel,
   getUniversityFullName,
+  getUniversityIdFromFolder,
   isJointProject,
   isJointReferenceForFolder,
   placementStatusLabels,
@@ -90,6 +92,7 @@ type KnowledgeBaseProps = {
   initialAction?: string | null;
   initialFolderId?: string | null;
   initialQuery?: string;
+  initialFolderArticles?: Pick<ReadyArticle, "id" | "title">[] | null;
   dbAvailable: boolean;
   currentUser: SessionUser | null;
   ownerCandidates?: CardOwnerCandidate[];
@@ -102,6 +105,7 @@ export function KnowledgeBase({
   initialAction,
   initialFolderId,
   initialQuery = "",
+  initialFolderArticles,
   dbAvailable,
   currentUser,
   ownerCandidates,
@@ -148,6 +152,9 @@ export function KnowledgeBase({
     searchQuery.trim().length > 0 ||
     typeFilter !== "all" ||
     statusFilter !== "all";
+  const showingArticles = !hasGlobalFilter && Boolean(selectedFolder?.universityId &&
+    selectedFolderId === folderIds.subfolder(selectedFolder.universityId, "articles"));
+  const folderArticles = selectedFolderId === initialFolderId ? initialFolderArticles : undefined;
 
   const folderCards = useMemo(() => {
     if (!hasGlobalFilter) {
@@ -184,7 +191,12 @@ export function KnowledgeBase({
   const canModerateCards = canModerate(currentUser) && dbAvailable;
 
   const handleSelectFolder = (folderId: string) => {
-    if (requestedVersion) router.push("/knowledge", { scroll: false });
+    const universityId = getUniversityIdFromFolder(folderId);
+    if (universityId && folderId === folderIds.subfolder(universityId, "articles")) {
+      router.push(`/knowledge?${new URLSearchParams({ folder: folderId })}`, { scroll: false });
+    } else if (requestedVersion || params.has("folder")) {
+      router.push(`/knowledge?${new URLSearchParams({ folder: folderId })}`, { scroll: false });
+    }
     setSelectedFolderId(folderId);
     setSelectedCardId(null);
     setEditingCardId(null);
@@ -258,7 +270,7 @@ export function KnowledgeBase({
 
   const handleTypeCreated = (type: CardTypeWithStats) => {
     setCustomTypes((current) => [...current, type]);
-    setSelectedFolderId(folderIds.customType(type.id));
+    setSelectedFolderId(type.organizationScope === "chkk" ? folderIds.chkkParameters : folderIds.customType(type.id));
     setSelectedCardId(null);
     setShowForm(false);
   };
@@ -508,7 +520,7 @@ export function KnowledgeBase({
                           Запросить данные у другого вуза
                         </Link>
                       )}
-                      {canAddCard ? (
+                      {canAddCard && !showingArticles ? (
                         <Button
                           type="button"
                           className="h-10 flex-1 sm:h-8 sm:flex-none"
@@ -526,11 +538,15 @@ export function KnowledgeBase({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Badge variant="secondary">
-                      {hasGlobalFilter
-                        ? `Найдено: ${folderCards.length} из ${cards.length}`
-                        : `Карточки: ${folderCards.length}`}
-                    </Badge>
+                    {showingArticles ? (
+                      folderArticles ? <Badge variant="secondary">Статьи: {folderArticles.length}</Badge> : null
+                    ) : (
+                      <Badge variant="secondary">
+                        {hasGlobalFilter
+                          ? `Найдено: ${folderCards.length} из ${cards.length}`
+                          : `Карточки: ${folderCards.length}`}
+                      </Badge>
+                    )}
                     {!hasGlobalFilter && selectedFolder?.universityId ? (
                       <span>
                         {getUniversityFullName(selectedFolder.universityId)}
@@ -642,7 +658,32 @@ export function KnowledgeBase({
                 />
               ) : null}
 
-              {folderCards.length === 0 ? (
+              {showingArticles ? (
+                <Card>
+                  <CardContent>
+                    {folderArticles?.length ? (
+                      <ul className="flex flex-col gap-3">
+                        {folderArticles.map(article => (
+                          <li key={article.id}>
+                            <Link
+                              className="inline-flex items-center gap-2 text-sm font-medium text-primary underline underline-offset-4"
+                              href={`/editor?${new URLSearchParams({ article: article.id })}`}
+                            >
+                              <FileText className="size-4 shrink-0" aria-hidden="true" />
+                              {article.title}
+                            </Link>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-sm text-muted-foreground" role="status">
+                        {folderArticles === null ? "Библиотека временно недоступна."
+                          : folderArticles === undefined ? "Загружаем статьи…" : "В этой папке пока нет согласованных статей."}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              ) : folderCards.length === 0 ? (
                 <Card className="rounded-3xl border-0 py-12 text-center shadow-sm ring-1 ring-foreground/10">
                   <CardContent className="flex flex-col items-center gap-3">
                     <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">

@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   areCardOwnerIdsAssignable,
   canAssignCardOwner,
+  canCreateOrganizationCard,
   canCreateCard,
   visibleKnowledgeCard,
   visibleKnowledgeCards,
@@ -13,7 +14,7 @@ import {
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
-import { folderIds, isCardReadyForPublication } from "@/lib/knowledge";
+import { folderIds, getUniversityIdFromFolder, isCardReadyForPublication, stakeholderApprovalRoles } from "@/lib/knowledge";
 import { sessionDirectory } from "@/lib/pilot-auth";
 import {
   createKnowledgeCard,
@@ -24,6 +25,7 @@ import {
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   buildCustomFieldValuesSchema,
+  canonicalKnowledgeFolder,
   knowledgeCardInputSchema,
 } from "@/lib/validation/knowledge";
 
@@ -35,11 +37,6 @@ export async function GET() {
   } catch {
     return unavailableStorageResponse();
   }
-}
-
-function extractUniversityFolderId(folderId: string): string | null {
-  const match = /^01_universities\/([^/]+)/.exec(folderId);
-  return match?.[1] ?? null;
 }
 
 export async function POST(request: NextRequest) {
@@ -89,7 +86,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const parsed = knowledgeCardInputSchema.safeParse(body);
+  const organizationRole = user.role === "rio" || user.role === "chkk" ? user.role : undefined;
+  const input = body && typeof body === "object" && user.role !== "admin"
+    ? { ...body, organizationScope: organizationRole }
+    : body;
+  const parsed = knowledgeCardInputSchema.safeParse(input);
 
   if (!parsed.success) {
     const hasPlacementError = parsed.error.issues.some(
@@ -119,9 +120,10 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  if (cardInput.folderId === folderIds.campus && user.role !== "admin") {
+  const organizationScope = cardInput.organizationScope;
+  if (organizationScope && !canCreateOrganizationCard(organizationScope, cardInput)) {
     return NextResponse.json(
-      { error: "Папку общих параметров кампуса ведёт администратор канона" },
+      { error: "Этот тип карточки находится за пределами ответственности организации" },
       { status: 403 }
     );
   }
@@ -130,7 +132,7 @@ export async function POST(request: NextRequest) {
     (user.role === "university_owner" || user.role === "university_pr") &&
     user.universityId
   ) {
-    const folderUniversityId = extractUniversityFolderId(cardInput.folderId);
+    const folderUniversityId = getUniversityIdFromFolder(cardInput.folderId);
     if (folderUniversityId && folderUniversityId !== user.universityId) {
       return NextResponse.json(
         { error: "Нельзя создавать карточки в папке другого университета" },
@@ -158,6 +160,15 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const canonicalFolder = canonicalKnowledgeFolder(cardInput);
+  if (!canonicalFolder) {
+    return NextResponse.json({ error: "Выберите папку из дерева базы знаний" }, { status: 400 });
+  }
+  cardInput = { ...cardInput, folderId: canonicalFolder };
+  if (cardInput.type === "custom" && user.role !== "admin") {
+    cardInput = { ...cardInput, universityId: user.universityId };
+  }
+
   if (cardInput.type === "custom") {
     try {
       const typeDef = await getCardTypeById(cardInput.customTypeId);
@@ -167,6 +178,11 @@ export async function POST(request: NextRequest) {
           { error: "Пользовательский тип карточки не найден" },
           { status: 400 }
         );
+      }
+
+      const construction = typeDef.organizationScope === "chkk";
+      if (construction ? user.role !== "admin" && user.role !== "chkk" : cardInput.organizationScope === "chkk") {
+        return NextResponse.json({ error: "Этот тип не доступен для создания в вашей зоне ответственности." }, { status: 403 });
       }
 
       const customFields = buildCustomFieldValuesSchema(typeDef).safeParse(
@@ -185,7 +201,7 @@ export async function POST(request: NextRequest) {
 
       cardInput = {
         ...cardInput,
-        folderId: folderIds.customType(typeDef.id),
+        ...(construction ? { organizationScope: "chkk", folderId: folderIds.chkkParameters, universityId: undefined } : {}),
         customFields: customFields.data,
       };
     } catch {
@@ -203,6 +219,8 @@ export async function POST(request: NextRequest) {
       );
     }
     cardInput = { ...cardInput, ownerIds };
+  } else if (user.role === "university_pr") {
+    cardInput = { ...cardInput, ownerIds: [] };
   } else {
     cardInput = {
       ...cardInput,
@@ -215,22 +233,17 @@ export async function POST(request: NextRequest) {
 
   const needsJointConfirmation =
     cardInput.type === "project" && cardInput.isJoint;
-  const participantApprovals =
-    needsJointConfirmation &&
-    user.universityId &&
-    cardInput.type === "project" &&
-    cardInput.participantUniversityIds.includes(user.universityId)
-      ? [user.universityId]
-      : [];
+  const requiredStakeholders = stakeholderApprovalRoles(cardInput);
   const status = user.role === "admin" && !needsJointConfirmation &&
-    isCardReadyForPublication(cardInput) ? "approved" : "pending";
+    !requiredStakeholders.length && isCardReadyForPublication(cardInput) ? "approved" : "pending";
 
   try {
     const created = await createKnowledgeCard(cardInput, {
       status,
       submittedBy: user.id,
       submittedByName: user.name,
-      participantApprovals,
+      participantApprovals: [],
+      ...(requiredStakeholders.length ? { requiredApprovalStakeholderRoles: requiredStakeholders } : {}),
     });
     const card =
       status === "approved"

@@ -10,7 +10,7 @@ import {
   getCardTypeById,
   updateCardType,
 } from "@/lib/models";
-import { cardTypeUpdateSchema } from "@/lib/validation/knowledge";
+import { cardTypeUpdateSchema, hasRequiredConstructionField } from "@/lib/validation/knowledge";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
 type RouteContext = {
@@ -106,7 +106,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       );
     }
 
-    const updated = await updateCardType(id, parsed.data, current.updatedAt);
+    const { organizationScope, ...patch } = parsed.data;
+    if (organizationScope !== undefined && organizationScope !== (current.organizationScope ?? null)) {
+      return NextResponse.json({ error: "Доступ типа задаётся при создании. Создайте отдельный тип для другой зоны." }, { status: 409 });
+    }
+    if (current.organizationScope === "chkk" && patch.fields && !hasRequiredConstructionField(patch.fields)) {
+      return NextResponse.json({ error: "Для параметра ЧКК добавьте обязательное поле." }, { status: 400 });
+    }
+    const updated = await updateCardType(id, patch, current.updatedAt);
 
     if (!updated) {
       return NextResponse.json(

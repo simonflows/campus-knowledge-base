@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { isApprovedArticle, type ReadyArticle } from "./articles";
 import {
   createPendingDiskSync,
+  diskRegistrySequence,
   lastSuccessfulDiskExport,
+  type DiskRegistry,
+  type DiskRegistryContent,
   type DiskSyncInfo,
 } from "./disk-sync";
 import {
@@ -12,8 +15,10 @@ import {
   getUniversityName,
   getApprovedVersion,
   isCardApproved,
+  knowledgeTree,
   type CardTypeDefinition,
   type KnowledgeCard,
+  type KnowledgeFolderNode,
 } from "./knowledge";
 import { getCardVersionId } from "./knowledge-versions";
 
@@ -26,11 +31,11 @@ export const DISK_CARD_SUMMARY_FILE = "_Сводная_таблица_карто
 export const DISK_ARTICLE_SUMMARY_FILE = "_Сводная_таблица_статей.csv";
 export const DISK_RESTORE_GUIDE = `# Как читать резервную копию
 
-В приложении откройте карточку или материал и найдите проверенную сводку папки. Приложение показывает путь к последней подтверждённой полной копии и сверяет её с опубликованными данными.
+На Диске откройте папку с материалами, затем _Подтверждённые_сводки и выберите «Карточки» или «Статьи». Откройте подтверждение с наибольшим номером в начале имени файла. В нём есть ссылка на сводную CSV. В CSV найдите нужный материал и путь к его MD. Сортируйте подтверждения по имени файла: дата загрузки на Диск не учитывает задержку старой попытки.
 
-Имена MD и CSV содержат метку данных и хеш. На самом Диске найдите файл по пути из приложения. Более поздняя дата загрузки или метка в имени не подтверждает актуальность: старая попытка может завершиться позже новой. Если приложение недоступно, сверяйте строки и ссылки нескольких снимков вручную. Строка «Ожидает выгрузки» ещё не имеет полной копии своей редакции.
+Строка «Ожидает выгрузки» указывает на неполный результат. Для такого материала можно открыть последнюю полностью выгруженную редакцию из предыдущего подтверждения. CSV только с заголовком означает, что в папке больше нет действующих материалов. Прежние редакции сохраняются. Если приложение недоступно, Диск показывает те подтверждения, которые успели разместить.
 
-Совместные проекты хранятся едиными MD в 02_Совместные_проекты. В папках вузов находятся только .link.md указатели с ID, версией и путём к этой карточке. Новую редакцию можно считать полностью выгруженной после успешной записи MD, указателей и CSV. Повтор после ошибки пишет те же файлы этой версии; предыдущие версии сохраняются.
+Совместные проекты хранятся едиными MD в 02_Совместные_проекты. Их действующие редакции перечислены в подтверждённых сводках этого раздела. В папках вузов файлы .link.md указывают ID, версию и путь к одной конкретной редакции. Повтор после ошибки сохраняет файлы той же редакции. Предыдущие версии доступны в архиве.
 
 В CSV и MD публикуются только утверждённые карточки и согласованные статьи. Пока правка карточки проходит согласование, в реестре остаётся предыдущая утверждённая версия. Личные черновики не являются частью этого дерева. Показатели вузов находятся в собственных паспортах с годом, единицей, статусом факт/план, документом, датой проверки и ответственным.
 
@@ -85,6 +90,40 @@ function toResourcePath(segments: string[]): string {
 export function diskRegistryId(kind: "cards" | "articles", segments: string[]): string {
   const scope = createHash("sha256").update(toResourcePath(segments)).digest("hex");
   return `disk-registry:${kind}:${scope}`;
+}
+
+export const EMPTY_DISK_REGISTRY_FINGERPRINT = createHash("sha256").update("[]").digest("hex");
+
+export function diskRegistryFolder(registry: DiskRegistry): { kind: DiskRegistryContent; segments: string[]; summaryName: string } | null {
+  const kind = registry.id.startsWith("disk-registry:cards:") ? "cards"
+    : registry.id.startsWith("disk-registry:articles:") ? "articles" : null;
+  const parts = registry.summaryPath.split("/");
+  const summaryName = parts.pop();
+  if (!kind || !summaryName?.endsWith(".csv") || !parts.length ||
+      parts.some(part => !part || part === "." || part === ".." || part.includes("\\")) ||
+      diskRegistryId(kind, parts) !== registry.id) return null;
+  return { kind, segments: parts, summaryName };
+}
+
+export function diskRegistryReceipt(registry: DiskRegistry) {
+  const folder = diskRegistryFolder(registry);
+  if (!folder) throw new Error("Некорректный путь сводки Диска.");
+  const number = String(diskRegistrySequence(registry)).padStart(16, "0");
+  const content = [
+    "# Подтверждённая сводка",
+    "",
+    `- Номер: ${number}`,
+    `- Подтверждена (UTC): ${registry.confirmedAt}`,
+    `- Ожидают выгрузки: ${registry.pendingRows ?? "см. сводную таблицу"}`,
+    "",
+    `[Открыть сводную CSV](../../${encodeURIComponent(folder.summaryName)})`,
+    "",
+  ].join("\n");
+  return {
+    segments: [...folder.segments, "_Подтверждённые_сводки", folder.kind === "cards" ? "Карточки" : "Статьи"],
+    fileName: `${number}--${sanitizeFileName(registry.versionId)}--${contentHash(content)}.md`,
+    content,
+  };
 }
 
 export function getCardDiskFolderSegments(card: KnowledgeCard): string[] {
@@ -359,6 +398,15 @@ function approvedArticlesInFolder(article: ReadyArticle, allArticles: ReadyArtic
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
+export function countCardSummaryPending(scope: KnowledgeCard, cards: KnowledgeCard[], uploadedId: string): number {
+  return approvedCardsInFolder(scope, cards).filter(item => item.id !== uploadedId && !matchingDiskBackup(item).complete).length;
+}
+
+export function countArticleSummaryPending(scope: ReadyArticle, articles: ReadyArticle[], uploadedId: string): number {
+  return approvedArticlesInFolder(scope, articles)
+    .filter(item => item.id !== uploadedId && !matchingDiskBackup(item, item.approval!.revisionId).complete).length;
+}
+
 // Track exported substance and row completeness. Comments and freshness-only writes
 // can advance updatedAt without changing the published card.
 export function cardRegistryFingerprint(
@@ -385,6 +433,16 @@ export function articleRegistryFingerprint(scope: ReadyArticle, articles: ReadyA
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
+const articleSummaryColumns = [
+  "ID", "Название", "Вуз", "Проект", "Тема", "Карточки-источники", "Обновлено", "Согласованная редакция",
+  "Путь к неизменяемому MD", "Согласованный снимок реестра (UTC)", "Состояние MD", "Версии источников",
+];
+
+const cardSummaryColumns = [
+  "ID", "Название", "Тип", "Папка", "Владельцы", "Обновлено (UTC)",
+  "Путь к неизменяемому MD", "Согласованный снимок реестра (UTC)", "Состояние MD",
+];
+
 export function buildArticlesSummaryCsv(
   article: ReadyArticle,
   allArticles: ReadyArticle[]
@@ -392,20 +450,7 @@ export function buildArticlesSummaryCsv(
   const approved = approvedArticlesInFolder(article, allArticles);
   const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
-    [
-      "ID",
-      "Название",
-      "Вуз",
-      "Проект",
-      "Тема",
-      "Карточки-источники",
-      "Обновлено",
-      "Согласованная редакция",
-      "Путь к неизменяемому MD",
-      "Согласованный снимок реестра (UTC)",
-      "Состояние MD",
-      "Версии источников",
-    ],
+    articleSummaryColumns,
     ...approved.map((item) => {
         const revisionId = item.approval!.revisionId;
         const isTarget =
@@ -448,17 +493,7 @@ export function buildKnowledgeCardsSummaryCsv(
   const approved = approvedCardsInFolder(card, allCards);
   const snapshotAt = snapshotVersion(approved);
   const rows: Array<Array<string | number | null | undefined>> = [
-    [
-      "ID",
-      "Название",
-      "Тип",
-      "Папка",
-      "Владельцы",
-      "Обновлено (UTC)",
-      "Путь к неизменяемому MD",
-      "Согласованный снимок реестра (UTC)",
-      "Состояние MD",
-    ],
+    cardSummaryColumns,
     ...approved.map((item) => {
         const segments = getCardDiskFolderSegments(item);
         const isTarget = item.id === card.id && item.updatedAt === card.updatedAt;
@@ -575,20 +610,17 @@ async function ensureFolder(
 
   for (const segment of segments) {
     folderSegments.push(segment);
-    const current = toResourcePath(folderSegments);
-    const response = await diskRequest(
-      signal,
-      token,
-      `${DISK_API_BASE}/resources?path=${encodeURIComponent(current)}`,
-      { method: "PUT" }
-    );
+    await ensureDirectory(signal, token, folderSegments);
+  }
+}
 
-    if (!response.ok && response.status !== 409) {
-      throw new YandexDiskError(
-        `Не удалось создать папку «${current}» (HTTP ${response.status})`,
-        response.status
-      );
-    }
+async function ensureDirectory(signal: AbortSignal, token: string, segments: string[]) {
+  const current = toResourcePath(segments);
+  const response = await diskRequest(
+    signal, token, `${DISK_API_BASE}/resources?path=${encodeURIComponent(current)}`, { method: "PUT" },
+  );
+  if (!response.ok && response.status !== 409) {
+    throw new YandexDiskError(`Не удалось создать папку «${current}» (HTTP ${response.status})`, response.status);
   }
 }
 
@@ -664,6 +696,99 @@ async function uploadFile(
   }
 
   return toDisplayPath([...segments, fileName]);
+}
+
+const treePreparations = new Map<string, Promise<void>>();
+const readyTrees = new Set<string>();
+
+export function isDiskBackupTreeReady(): boolean {
+  return readyTrees.has(toResourcePath([]));
+}
+
+export function ensureDiskBackupTree(signal: AbortSignal = diskAttemptDeadline()): Promise<void> {
+  const root = toResourcePath([]);
+  const prepared = treePreparations.get(root);
+  if (prepared) return prepared;
+
+  const prepare = async () => {
+    const token = getToken();
+    let layer: { node: KnowledgeFolderNode; segments: string[] }[] =
+      knowledgeTree.map(node => ({ node, segments: [node.name] }));
+    while (layer.length) {
+      for (let offset = 0; offset < layer.length; offset += 4) {
+        signal.throwIfAborted();
+        const results = await Promise.allSettled(layer.slice(offset, offset + 4)
+          .map(({ segments }) => ensureDirectory(signal, token, segments)));
+        const failure = results.find(result => result.status === "rejected");
+        if (failure) throw failure.reason;
+      }
+      layer = layer.flatMap(({ node, segments }) =>
+        (node.children ?? []).map(child => ({ node: child, segments: [...segments, child.name] })));
+    }
+    await uploadFile(signal, token, [], "_КАК_ЧИТАТЬ_РЕЗЕРВ.md", DISK_RESTORE_GUIDE, "text/markdown; charset=utf-8");
+    readyTrees.add(root);
+  };
+
+  const attempt = prepare().catch(error => {
+    treePreparations.delete(root);
+    throw error;
+  });
+  treePreparations.set(root, attempt);
+  return attempt;
+}
+
+export function uploadDiskRegistryReceipt(registry: DiskRegistry, signal: AbortSignal) {
+  const { segments, fileName, content } = diskRegistryReceipt(registry);
+  return uploadFile(signal, getToken(), segments, fileName, content, "text/markdown; charset=utf-8");
+}
+
+export async function verifyLegacyDiskSummary(registry: DiskRegistry, signal: AbortSignal): Promise<boolean> {
+  const folder = diskRegistryFolder(registry);
+  const hash = folder?.summaryName.match(/--([0-9a-f]{20})\.csv$/)?.[1];
+  if (!folder || !hash) return false;
+  const path = toResourcePath([...folder.segments, folder.summaryName]);
+  const response = await diskRequest(signal, getToken(),
+    `${DISK_API_BASE}/resources/download?path=${encodeURIComponent(path)}`, { redirect: "error" });
+  if (response.status === 404) return false;
+  if (!response.ok) throw new YandexDiskError("Не удалось проверить файл сводки.", response.status);
+  const payload = await response.json() as { href?: unknown };
+  if (typeof payload.href !== "string") throw new YandexDiskError("Диск не вернул ссылку для проверки сводки.");
+  const url = new URL(payload.href);
+  const hosts = ["disk.yandex.net", "disk.yandex.ru"];
+  if (url.protocol !== "https:" || url.port || url.username || url.password ||
+      !hosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) {
+    throw new YandexDiskError("Адрес проверки сводки не принадлежит Диску.");
+  }
+  const file = await fetch(url, { signal, redirect: "error", cache: "no-store" });
+  if (file.status === 404) return false;
+  if (!file.ok || !file.body) throw new YandexDiskError("Файл сводки недоступен для проверки.", file.status);
+  const digest = createHash("sha256");
+  const reader = file.body.getReader();
+  let bytes = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > 8_000_000) {
+      await reader.cancel();
+      return false;
+    }
+    digest.update(value);
+  }
+  return digest.digest("hex").slice(0, 20) === hash;
+}
+
+export function buildEmptyDiskSummary(kind: DiskRegistryContent) {
+  return buildCsv([kind === "cards" ? cardSummaryColumns : articleSummaryColumns]);
+}
+
+export function uploadEmptyDiskSummary(registry: DiskRegistry, signal: AbortSignal) {
+  const folder = diskRegistryFolder(registry);
+  if (!folder) throw new Error("Некорректный путь сводки Диска.");
+  const content = buildEmptyDiskSummary(folder.kind);
+  const prefix = folder.kind === "cards" ? DISK_CARD_SUMMARY_FILE : DISK_ARTICLE_SUMMARY_FILE;
+  const fileName = `${versionStamp(registry.confirmedAt)}--${prefix.replace(/\.csv$/, `--${contentHash(content)}.csv`)}`;
+  return uploadFile(signal, getToken(), folder.segments, fileName, content, "text/csv; charset=utf-8");
 }
 
 export async function syncKnowledgeCardToDisk(

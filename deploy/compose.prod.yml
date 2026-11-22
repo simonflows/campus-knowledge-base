@@ -15,6 +15,7 @@ services:
       CAMPUS_FULL_LOCAL_DEMO: "false"
       SEED_DEMO_ARTICLES: "false"
       USE_DATABASE: "true"
+      CANON_DISK_RECOVERY: ${CANON_DISK_RECOVERY:-true}
       OUTPUT_MODE: ""
       BASE_PATH: ""
     command:

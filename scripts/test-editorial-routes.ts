@@ -53,7 +53,11 @@ export async function runEditorialRoutes(credentials: (profile: string) => { acc
     ["/api/fact-check", { text: "В лаборатории прошёл тестовый показ проекта." }],
     ["/api/analytics", { query: "Покажи лаборатории МИДиС" }],
   ] as const) {
-    const standard = await call(endpoint, "", "POST", input);
+    if (endpoint === "/api/analytics") {
+      assert.equal((await call(endpoint, "", "POST", input)).status, 401);
+      assert.equal((await call(endpoint, guest, "POST", input)).status, 403);
+    }
+    const standard = await call(endpoint, endpoint === "/api/analytics" ? owner : "", "POST", input);
     assert.equal(standard.status, 200);
     const local = await standard.json();
     assert.equal("flashAssist" in local, false);

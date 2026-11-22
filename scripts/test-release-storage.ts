@@ -1,3 +1,4 @@
+import "next/dist/server/node-environment-baseline";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import {
@@ -14,10 +15,12 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { TableName, TABLE_SCHEMAS } from "../lib/schema";
+import type { KnowledgeCard } from "../lib/knowledge";
 import { installPilotFixture } from "./pilot-fixture";
 
 let phase = "scope-guard";
 let closeClient: (() => void) | undefined;
+const reportError = console.error.bind(console);
 
 class ScopeViolation extends Error {
   constructor() {
@@ -93,6 +96,7 @@ async function main() {
     "export",
     "Use DynamoDB acceptance mode"
   );
+  assert.equal(process.env.CANON_DISK_RECOVERY, "false", "QA requires the recovery timer to be off");
   assert.notEqual(
     process.env.CAMPUS_LOCAL_DEMO,
     "true",
@@ -102,6 +106,8 @@ async function main() {
   process.env.YANDEX_DISK_OAUTH_TOKEN = "";
   process.env.YANDEX_AI_STUDIO_API_KEY = "";
   process.env.ALIBABA_DASHSCOPE_API_KEY = "";
+  process.env.CAMPUS_PUBLIC_ORIGIN = "https://release-storage-qa.invalid";
+  console.error = () => {};
   globalThis.fetch = async () => {
     throw new ScopeViolation();
   };
@@ -123,6 +129,16 @@ async function main() {
         allowed
       ),
     ScopeViolation
+  );
+  assert.throws(
+    () => checkTableOperation(new TransactWriteCommand({ TransactItems: [
+      { Put: { TableName: prefix + TableName.ARTICLES, Item: { id: "pure-guard-check" } } },
+      { ConditionCheck: {
+        TableName: TableName.KNOWLEDGE_CARDS, Key: { id: "pure-guard-check" },
+        ConditionExpression: "attribute_exists(id)",
+      } },
+    ] }), allowed),
+    ScopeViolation,
   );
   assert.throws(
     () =>
@@ -155,10 +171,15 @@ async function main() {
   const { docClient, resetDbAvailableCache } = await import("../lib/db");
   closeClient = () => docClient.destroy();
   const send = docClient.send.bind(docClient);
+  let beforeApprovalWrite: ((operation: TransactWriteCommand) => Promise<void>) | undefined;
   // Guard every routed read/write, including nested transaction operations, before invoking any model.
   docClient.send = (async (command: unknown, ...rest: unknown[]) => {
-    const forward = (operation: unknown) => {
+    const forward = async (operation: unknown) => {
       checkTableOperation(operation, allowed);
+      if (operation instanceof TransactWriteCommand &&
+          operation.input.TransactItems?.some(item => item.Put?.TableName === TableName.ARTICLES)) {
+        await beforeApprovalWrite?.(operation);
+      }
       return Reflect.apply(send, docClient, [operation, ...rest]);
     };
     if (command instanceof ListTablesCommand) {
@@ -219,7 +240,7 @@ async function main() {
   for (const schema of schemas.filter((schema) => !additive.has(schema.name)))
     await ensureTable(schema);
   const models = await import("../lib/models");
-  const { knowledgeSeedCards, folderIds } = await import("../lib/knowledge");
+  const { knowledgeSeedCards, folderIds, getApprovedVersion } = await import("../lib/knowledge");
   const { knowledgeCardInputSchema } =
     await import("../lib/validation/knowledge");
   const { getApprovedCardVersion, getCardVersionId } =
@@ -516,6 +537,272 @@ async function main() {
     summary
   );
 
+  const createSource = (label: string) => models.createKnowledgeCard(
+    knowledgeCardInputSchema.parse({ ...sample, title: sample.title + " " + label, ownerIds: [] }),
+    { status: "approved" },
+  );
+
+  async function submitArticle(heads: KnowledgeCard[], options: { lead?: string; pins?: boolean } = {}) {
+    const sources = heads.map(head => {
+      const approved = getApprovedVersion(head);
+      assert.ok(approved);
+      return approved;
+    });
+    const source = sources[0];
+    const lead = options.lead ?? source.referenceDescription;
+    const document = await createEditorial(author, createEditorialSchema.parse({
+      content: {
+        title: "QA approval " + randomUUID(),
+        lead,
+        sourceCardIds: sources.map(card => card.id),
+        ...(options.pins !== false && { sourceVersions: sources.map(card => ({ cardId: card.id, versionId: getCardVersionId(card) })) }),
+        universityId: author.universityId,
+        sections: [{ id: "qa", heading: "Источник",
+          level: 2, chunks: [{ id: "qa-body", content: lead }] }],
+      },
+    }));
+    return (await mutateEditorial(document.id, author, {
+      action: "submit", version: document.version, revisionId: document.revisionId, reviewerId: reviewer.id, comment: "",
+    })).document;
+  }
+
+  const approveArticle = (document: Awaited<ReturnType<typeof submitArticle>>) =>
+    mutateEditorial(document.id, reviewer, {
+      action: "approve", version: document.version, revisionId: document.revisionId, comment: "",
+    });
+
+  phase = "article-source-commit";
+  const ordinaryArticle = await submitArticle([changed]);
+  const ordinary = await approveArticle(ordinaryArticle);
+  assert.equal(ordinary.document.status, "approved");
+  assert.equal((await models.getArticleById(ordinaryArticle.id))?.approval?.revisionId, ordinaryArticle.revisionId);
+
+  phase = "article-source-commit-race";
+  const raceSource = await createSource("race");
+  const racedArticle = await submitArticle([raceSource]);
+  let insertedRace = false;
+  beforeApprovalWrite = async operation => {
+    const sourceGuard = operation.input.TransactItems?.find(item => item.ConditionCheck?.Key?.id === raceSource.id)?.ConditionCheck;
+    assert.equal(sourceGuard?.TableName, TableName.KNOWLEDGE_CARDS);
+    assert.equal(sourceGuard?.ExpressionAttributeValues?.[":sourceHead"], raceSource.updatedAt);
+    const replacement = await models.updateKnowledgeCard(
+      raceSource.id,
+      knowledgeCardInputSchema.parse({ ...raceSource, title: "QA newer source", referenceDescription: "Новая утверждённая формулировка QA." }),
+      { id: reviewer.id, name: reviewer.name, isAdmin: true },
+      raceSource.updatedAt,
+    );
+    assert.ok(replacement);
+    assert.notEqual(getCardVersionId(replacement), getCardVersionId(raceSource));
+    insertedRace = true;
+  };
+  try {
+    await assert.rejects(approveArticle(racedArticle), { status: 409 });
+  } finally {
+    beforeApprovalWrite = undefined;
+  }
+  assert.ok(insertedRace);
+  assert.equal(await models.getArticleById(racedArticle.id), null);
+  const rejectedHead = await docClient.send(new GetCommand({
+    TableName: TableName.EDITORIAL_DOCUMENTS, Key: { id: racedArticle.id }, ConsistentRead: true,
+  }));
+  assert.equal(rejectedHead.Item?.status, "submitted");
+  assert.equal(rejectedHead.Item?.version, racedArticle.version);
+
+  phase = "article-approved-snapshot-condition";
+  const snapshotSource = await createSource("snapshot");
+  const snapshotHead = await models.updateKnowledgeCard(
+    snapshotSource.id,
+    knowledgeCardInputSchema.parse({ ...snapshotSource, title: "Private QA revision awaiting review" }),
+    { id: author.id, name: author.name, isAdmin: false },
+    snapshotSource.updatedAt,
+  );
+  assert.ok(snapshotHead?.approvedSnapshot);
+  assert.equal(snapshotHead.status, "pending");
+  const snapshotArticle = await submitArticle([snapshotHead]);
+  beforeApprovalWrite = async operation => {
+    const guard = operation.input.TransactItems?.find(item => item.ConditionCheck?.Key?.id === snapshotHead.id)?.ConditionCheck;
+    assert.match(guard?.ConditionExpression ?? "", /approvedSnapshot\.updatedAt/);
+    assert.equal(guard?.ExpressionAttributeValues?.[":sourceHead"], snapshotHead.updatedAt);
+    assert.equal(guard?.ExpressionAttributeValues?.[":publishedSnapshot"], snapshotSource.updatedAt);
+  };
+  try {
+    await approveArticle(snapshotArticle);
+  } finally {
+    beforeApprovalWrite = undefined;
+  }
+  const publishedSnapshotArticle = await models.getArticleById(snapshotArticle.id);
+  assert.equal(publishedSnapshotArticle?.sourceCardTitles[0], snapshotSource.title);
+  assert.equal(publishedSnapshotArticle?.sourceVersions?.[0]?.versionId, getCardVersionId(snapshotSource));
+
+  phase = "article-transaction-ceiling";
+  const manySources = [changed];
+  for (let start = 1; start < 22; start += 5) {
+    manySources.push(...await Promise.all(
+      Array.from({ length: Math.min(5, 22 - start) }, (_, offset) => createSource(`ceiling-${start + offset}`)),
+    ));
+  }
+  const manySourcesArticle = await submitArticle(manySources);
+  beforeApprovalWrite = async operation => {
+    assert.equal(operation.input.TransactItems?.length, 25);
+    assert.equal(operation.input.TransactItems?.filter(item => item.ConditionCheck?.TableName === TableName.KNOWLEDGE_CARDS).length, 22);
+  };
+  try {
+    await approveArticle(manySourcesArticle);
+  } finally {
+    beforeApprovalWrite = undefined;
+  }
+  assert.equal((await models.getArticleById(manySourcesArticle.id))?.sourceCardIds.length, 22);
+
+  phase = "article-corpus-contradiction";
+  const corpusCampus = structuredClone(knowledgeSeedCards.find(item => item.type === "campus")!);
+  assert.equal(corpusCampus.type, "campus");
+  corpusCampus.campusMetrics[0].value = "160 000 кв. м";
+  await models.createKnowledgeCard(knowledgeCardInputSchema.parse({
+    ...corpusCampus, title: "QA corpus campus passport", ownerIds: [],
+  }), { status: "approved" });
+  for (const pins of [false, true]) {
+    const hiddenContradiction = await submitArticle([changed], {
+      lead: "Общая площадь объектов кампуса — 150 000 кв. м.", pins,
+    });
+    await assert.rejects(approveArticle(hiddenContradiction), { status: 422 });
+    assert.equal(await models.getArticleById(hiddenContradiction.id), null);
+  }
+
+  phase = "campus-stakeholder-cas";
+  const { POST: moderate } = await import("../app/api/knowledge/cards/[id]/moderation/route");
+  const { NextRequest } = await import("next/server");
+  const { SESSION_COOKIE, signSessionToken } = await import("../lib/auth-server");
+  const { createRequestStoreForAPI } = await import("next/dist/server/async-storage/request-store");
+  const { workAsyncStorage } = await import("next/dist/server/app-render/work-async-storage.external");
+  const { workUnitAsyncStorage } = await import("next/dist/server/app-render/work-unit-async-storage.external");
+  const campus = await models.createKnowledgeCard(
+    knowledgeCardInputSchema.parse({ ...knowledgeSeedCards.find(item => item.type === "campus")!,
+      title: "QA campus passport", ownerIds: [] }),
+    { status: "pending", submittedBy: reviewer.id, submittedByName: reviewer.name },
+  );
+  const moderationPath = `/api/knowledge/cards/${campus.id}/moderation`;
+  const campusDecision = (profile: string, action: "approve" | "confirm-stakeholder", version?: string) => {
+    const headers = new Headers({
+      origin: "https://release-storage-qa.invalid",
+      "Content-Type": "application/json",
+      cookie: `${SESSION_COOKIE}=${signSessionToken(people.account(profile).id)}`,
+    });
+    if (version) headers.set("If-Match", version);
+    const request = new NextRequest(`https://release-storage-qa.invalid${moderationPath}`, {
+      method: "POST", headers, body: JSON.stringify({ action }),
+    });
+    const store = createRequestStoreForAPI(request, request.nextUrl, {
+      tags: [], expirationsByCacheKind: new Map(),
+    }, undefined, undefined, undefined);
+    return workAsyncStorage.run({} as NonNullable<ReturnType<typeof workAsyncStorage.getStore>>, () =>
+      workUnitAsyncStorage.run(store, () => moderate(request, { params: Promise.resolve({ id: campus.id }) })));
+  };
+  assert.equal((await campusDecision("demo-pr-susu", "confirm-stakeholder", campus.updatedAt)).status, 403);
+  assert.equal((await campusDecision("demo-ministry", "approve", campus.updatedAt)).status, 403);
+  assert.equal((await campusDecision("demo-admin", "approve", campus.updatedAt)).status, 409);
+  assert.equal((await campusDecision("demo-rio", "confirm-stakeholder")).status, 428);
+  assert.deepEqual((await models.getKnowledgeCardById(campus.id))?.stakeholderApprovals, undefined);
+  assert.equal((await campusDecision("demo-ministry", "confirm-stakeholder", campus.updatedAt)).status, 200);
+  const firstPass = await models.getKnowledgeCardById(campus.id);
+  assert.ok(firstPass?.stakeholderApprovals?.ministry);
+  const editedCampus = await models.updateKnowledgeCard(
+    campus.id, knowledgeCardInputSchema.parse({ ...firstPass, title: "QA revised campus passport" }),
+    { id: reviewer.id, name: reviewer.name, isAdmin: true }, firstPass.updatedAt,
+  );
+  assert.ok(editedCampus);
+  assert.deepEqual(editedCampus.stakeholderApprovals, {});
+  assert.equal((await campusDecision("demo-chkk", "confirm-stakeholder", firstPass.updatedAt)).status, 409);
+  const concurrentCampus = await Promise.all(["demo-ministry", "demo-chkk"].map(profile =>
+    campusDecision(profile, "confirm-stakeholder", editedCampus.updatedAt)));
+  assert.deepEqual(concurrentCampus.map(result => result.status).sort(), [200, 409]);
+  let candidate = await models.getKnowledgeCardById(campus.id);
+  assert.ok(candidate?.stakeholderApprovals);
+  for (const [profile, role] of [["demo-ministry", "ministry"], ["demo-chkk", "chkk"], ["demo-rio", "rio"]] as const) {
+    if (!candidate.stakeholderApprovals?.[role]) {
+      assert.equal((await campusDecision(profile, "confirm-stakeholder", candidate.updatedAt)).status, 200);
+      candidate = await models.getKnowledgeCardById(campus.id);
+      assert.ok(candidate);
+    }
+    assert.equal(candidate.stakeholderApprovals?.[role]?.actorId, people.account(profile).id);
+    assert.equal(candidate.stakeholderApprovals?.[role]?.revisionId, getCardVersionId({ ...candidate, approvedSnapshot: undefined }));
+  }
+  assert.equal((await campusDecision("demo-admin", "approve", candidate.updatedAt)).status, 200);
+  assert.equal((await models.getKnowledgeCardById(campus.id))?.status, "approved");
+
+  phase = "nested-snapshot-disk-registry";
+  const publicSnapshot = snapshotHead.approvedSnapshot;
+  const nestedPending = {
+    ...createPendingDiskSync(publicSnapshot.diskSync),
+    attemptId: randomUUID(), sourceUpdatedAt: publicSnapshot.updatedAt, lastAttemptAt: timestamp,
+  };
+  const checkedSignal = () => AbortSignal.timeout(5_000);
+  const startNested = await models.setKnowledgeSnapshotDiskSync(
+    snapshotHead, publicSnapshot, nestedPending, { previous: publicSnapshot.diskSync }, checkedSignal(),
+  );
+  assert.equal(startNested?.approvedSnapshot?.diskSync?.attemptId, nestedPending.attemptId);
+  assert.equal(startNested?.diskSync?.attemptId, snapshotHead.diskSync?.attemptId);
+  const { diskRegistryId, EMPTY_DISK_REGISTRY_FINGERPRINT } = await import("../lib/yandex-disk");
+  const { confirmEmptyDiskRegistry } = await import("../lib/disk-sync-service");
+  const sequenceFolder = ["QA_Сводки", randomUUID()];
+  const scopedRegistry = {
+    ...summary, id: diskRegistryId("cards", sequenceFolder), entityId: publicSnapshot.id,
+    versionId: randomUUID(), sequence: 1, pendingRows: 0,
+    summaryPath: [...sequenceFolder, "synthetic.csv"].join("/"),
+  };
+  const nestedSynced = {
+    ...nestedPending, ...synced, attemptId: nestedPending.attemptId,
+    sourceUpdatedAt: publicSnapshot.updatedAt, summaryPath: scopedRegistry.summaryPath,
+    filePath: [...sequenceFolder, "synthetic.md"].join("/"),
+  };
+  await assert.rejects(models.setKnowledgeSnapshotDiskSync(
+    { ...snapshotHead, updatedAt: "2000-01-01T00:00:00.000Z" }, publicSnapshot, nestedSynced,
+    nestedPending.attemptId, checkedSignal(), { next: scopedRegistry },
+  ), { name: "ConditionalCheckFailedException" });
+  assert.equal(await models.getDiskRegistry(scopedRegistry.id, checkedSignal()), null);
+  const nestedCommit = await models.setKnowledgeSnapshotDiskSync(
+    snapshotHead, publicSnapshot, nestedSynced, nestedPending.attemptId, checkedSignal(), { next: scopedRegistry },
+  );
+  assert.equal(nestedCommit?.status, "pending");
+  assert.equal(nestedCommit?.approvedSnapshot?.diskSync?.status, "synced");
+  assert.equal(nestedCommit?.diskSync?.status, snapshotHead.diskSync?.status);
+  assert.deepEqual(await models.getDiskRegistry(scopedRegistry.id, checkedSignal()), scopedRegistry);
+
+  phase = "disk-receipt-sequence-cas";
+  const receiptAt = new Date().toISOString();
+  assert.ok(await models.claimDiskRegistryReceipt(scopedRegistry, receiptAt, checkedSignal()));
+  await assert.rejects(models.claimDiskRegistryReceipt(scopedRegistry, receiptAt, checkedSignal()), {
+    name: "ConditionalCheckFailedException",
+  });
+  await assert.rejects(models.finishDiskRegistryReceipt(
+    scopedRegistry, "2000-01-01T00:00:00.000Z", { path: "synthetic-ineligible.md" }, checkedSignal(),
+  ), { name: "ConditionalCheckFailedException" });
+  const receiptPath = [...sequenceFolder, "synthetic-confirmation.md"].join("/");
+  await models.finishDiskRegistryReceipt(scopedRegistry, receiptAt, { path: receiptPath }, checkedSignal());
+  const acknowledged = await models.getDiskRegistry(scopedRegistry.id, checkedSignal());
+  assert.equal(acknowledged?.receiptPath, receiptPath);
+  assert.equal(acknowledged?.sequence, 1);
+
+  phase = "disk-empty-conditional-replacement";
+  let observedNonempty = false;
+  assert.equal(await confirmEmptyDiskRegistry(scopedRegistry, async () => {
+    observedNonempty = true;
+    return false;
+  }), false);
+  assert.ok(observedNonempty);
+  assert.deepEqual(await models.getDiskRegistry(scopedRegistry.id, checkedSignal()), acknowledged);
+  const emptyRegistry = {
+    ...scopedRegistry, entityId: "", versionId: randomUUID(), sequence: 2,
+    fingerprint: EMPTY_DISK_REGISTRY_FINGERPRINT, summaryPath: [...sequenceFolder, "synthetic-empty.csv"].join("/"),
+  };
+  await assert.rejects(models.replaceDiskRegistry({ next: emptyRegistry, expectedVersionId: randomUUID() }, checkedSignal()), {
+    name: "ConditionalCheckFailedException",
+  });
+  await models.replaceDiskRegistry({ next: emptyRegistry, expectedVersionId: scopedRegistry.versionId }, checkedSignal());
+  await assert.rejects(models.finishDiskRegistryReceipt(scopedRegistry, receiptAt, { path: receiptPath }, checkedSignal()), {
+    name: "ConditionalCheckFailedException",
+  });
+  assert.deepEqual(await models.getDiskRegistry(scopedRegistry.id, checkedSignal()), emptyRegistry);
+
   phase = "image-qa-marker";
   const { articleSeed } = await import("../lib/articles");
   const marker = "qa-marker-" + randomUUID();
@@ -550,6 +837,7 @@ async function main() {
   console.log(
     JSON.stringify({
       status: "passed",
+      mode: endpoint.protocol === "http:" ? "local-dynamodb" : "https-document-api",
       scope: prefix,
       tables: schemas.length,
       createdTables,
@@ -568,6 +856,16 @@ async function main() {
         "immutable-events",
         "atomic-disk-registry",
         "stale-disk-registry",
+        "namespace-guard-conditional-check",
+        "article-source-commit",
+        "article-source-commit-race",
+        "article-approved-snapshot-condition",
+        "article-transaction-ceiling-25-actions",
+        "article-corpus-contradiction",
+        "campus-stakeholder-cas",
+        "nested-snapshot-disk-registry",
+        "disk-receipt-sequence-cas",
+        "disk-empty-conditional-replacement",
         "image-qa-marker",
       ],
     })
@@ -598,7 +896,7 @@ main()
       error instanceof Error && types.has(error.name)
         ? error.name
         : "UnexpectedError";
-    console.error(
+    reportError(
       JSON.stringify({
         status: "error",
         operation: "isolated-storage-acceptance",

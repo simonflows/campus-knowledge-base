@@ -169,11 +169,18 @@ module.exports = async function runRequestBrowserChecks(page, credentials) {
     );
     const candidate = (await (await coordinator.request.get(base + "/api/knowledge/cards")).json()).find(card => card.id === final.candidateCardId);
     check(candidate && candidate.readinessStage === "Не уточнено" && candidate.contour === "не уточнён", "An answer does not invent project stage or contour");
+    const recipientSession = await recipient.request.get(base + "/api/auth/session");
+    check(recipientSession.status() === 200, "Read the synthetic recipient session");
+    const recipientId = (await recipientSession.json()).user?.id;
+    check(recipientId && candidate.ownerIds?.length === 1 && candidate.ownerIds[0] === recipientId, "The candidate is assigned to the designated receiving owner");
     const prematureDecision = await coordinator.request.post(base + "/api/knowledge/cards/" + final.candidateCardId + "/moderation", { headers: { "If-Match": candidate.updatedAt }, data: { action: "approve" } });
     check(prematureDecision.status() === 409, "Unknown project metadata must be completed before approval");
     const completedResponse = await coordinator.request.put(base + "/api/knowledge/cards/" + final.candidateCardId, { headers: { "If-Match": candidate.updatedAt }, data: { ...candidate, readinessStage: "Идея", contour: "собственный проект вуза" } });
     check(completedResponse.status() === 200, "Complete synthetic project metadata");
     const completed = await completedResponse.json();
+    const moderationPath = base + "/api/knowledge/cards/" + final.candidateCardId + "/moderation";
+    check((await coordinator.request.post(moderationPath, { data: { action: "approve" } })).status() === 428, "Publication requires the current If-Match");
+    check((await coordinator.request.post(moderationPath, { headers: { "If-Match": candidate.updatedAt }, data: { action: "approve" } })).status() === 409, "Publication refuses an older proposal version");
     const decision = await coordinator.request.post(base + "/api/knowledge/cards/" + final.candidateCardId + "/moderation", { headers: { "If-Match": completed.updatedAt }, data: { action: "approve" } });
     check(decision.status() === 200, "Coordinator approves candidate");
     const approved = (await (await author.request.get(base + "/api/requests")).json()).items.find(row => row.id === item.id);

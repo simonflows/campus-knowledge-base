@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 import {
   areCardOwnerIdsAssignable,
+  canCreateOrganizationCard,
   canEditCard,
+  missingJointOwnerUniversityIds,
   resolveLegacyCardOwnerIds,
   sameCardOwnerScope,
   visibleKnowledgeCard,
@@ -10,7 +12,7 @@ import {
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
-import { folderIds, getCardStatus } from "@/lib/knowledge";
+import { folderIds, getApprovedVersion, getCardStatus, getLegacyCustomDraftUniversityId, getRequiredUniversityApprovals } from "@/lib/knowledge";
 import { sessionDirectory } from "@/lib/pilot-auth";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
@@ -20,6 +22,7 @@ import {
 } from "@/lib/models";
 import {
   buildCustomFieldValuesSchema,
+  canonicalKnowledgeFolder,
   knowledgeCardInputSchema,
 } from "@/lib/validation/knowledge";
 
@@ -80,7 +83,15 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const parsed = knowledgeCardInputSchema.safeParse(body);
+  const input = body && typeof body === "object"
+    ? {
+        ...body,
+        organizationScope: user.role === "admin" && "organizationScope" in body
+          ? body.organizationScope
+          : current.organizationScope,
+      }
+    : body;
+  const parsed = knowledgeCardInputSchema.safeParse(input);
 
   if (!parsed.success) {
     const hasPlacementError = parsed.error.issues.some(
@@ -124,7 +135,27 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     );
   }
 
+  if (cardInput.organizationScope && !canCreateOrganizationCard(cardInput.organizationScope, cardInput)) {
+    return NextResponse.json({ error: "Этот тип карточки находится за пределами ответственности организации" }, { status: 400 });
+  }
+  if (current.type === "laboratory" && getRequiredUniversityApprovals(current).length && cardInput.organizationScope) {
+    return NextResponse.json({ error: "Совместная лаборатория сохраняет ответственность вузов. Её нельзя перенести в зону отдельной организации." }, { status: 409 });
+  }
+  const canonicalFolder = user.role !== "admin" && getLegacyCustomDraftUniversityId(current)
+    ? current.folderId
+    : canonicalKnowledgeFolder(cardInput);
+  if (!canonicalFolder) {
+    return NextResponse.json({ error: "Выберите папку из дерева базы знаний" }, { status: 400 });
+  }
+  cardInput = { ...cardInput, folderId: canonicalFolder };
+
   if (cardInput.type === "custom") {
+    if (current.type === "custom") {
+      cardInput = {
+        ...cardInput,
+        universityId: user.role === "admin" ? cardInput.universityId ?? current.universityId : current.universityId,
+      };
+    }
     let typeDef;
     try {
       typeDef = await getCardTypeById(cardInput.customTypeId);
@@ -137,6 +168,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         { error: "Пользовательский тип карточки не найден" },
         { status: 400 }
       );
+    }
+
+    const construction = typeDef.organizationScope === "chkk";
+    if (construction ? user.role !== "admin" && user.role !== "chkk" : cardInput.organizationScope === "chkk") {
+      return NextResponse.json({ error: "Изменение зоны доступа через карточку недоступно." }, { status: 403 });
     }
 
     const customFields = buildCustomFieldValuesSchema(typeDef).safeParse(
@@ -155,7 +191,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
     cardInput = {
       ...cardInput,
-      folderId: folderIds.customType(typeDef.id),
+      ...(construction ? { organizationScope: "chkk", folderId: folderIds.chkkParameters, universityId: undefined } : {}),
       customFields: customFields.data,
     };
   }
@@ -165,7 +201,6 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       ...cardInput,
       owners: current.owners,
       ownerIds: current.ownerIds,
-      folderId: current.folderId,
     };
     if (!sameCardOwnerScope(current, cardInput)) {
       return NextResponse.json(
@@ -175,14 +210,27 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     }
   } else {
     const directory = sessionDirectory();
+    const assignment = { ...cardInput, requiredApprovalUniversityIds: current.requiredApprovalUniversityIds };
+    const published = getApprovedVersion(current);
+    const proposedUniversities = cardInput.type === "project" && cardInput.isJoint
+      ? cardInput.participantUniversityIds : [];
+    if (published?.type === "project") {
+      const removedUniversities = getRequiredUniversityApprovals(published).filter(id => !proposedUniversities.includes(id));
+      if (removedUniversities.length &&
+          missingJointOwnerUniversityIds(published, directory).some(id => removedUniversities.includes(id))) {
+        return NextResponse.json({
+          error: "Перед изменением состава назначьте руководителей от выбывающих вузов в утверждённой карточке.",
+        }, { status: 409 });
+      }
+    }
     const changedScope = !sameCardOwnerScope(current, cardInput);
     const ownerIds =
-      cardInput.ownerIds ?? current.ownerIds ?? resolveLegacyCardOwnerIds(cardInput, directory) ??
+      cardInput.ownerIds ?? current.ownerIds ?? resolveLegacyCardOwnerIds(assignment, directory) ??
       (changedScope ? [] : undefined);
     if (
       ownerIds !== undefined &&
       (cardInput.ownerIds !== undefined || changedScope) &&
-      !areCardOwnerIdsAssignable(cardInput, ownerIds, directory)
+      !areCardOwnerIdsAssignable(assignment, ownerIds, directory)
     ) {
       return NextResponse.json(
         { error: "Укажите действующих владельцев из этого раздела карточек" },

@@ -37,7 +37,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import { toast } from "sonner";
-import { FlashAssistHint } from "@/components/flash-assist-hint";
+import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/canon-ai-review";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -94,6 +94,7 @@ type Props = {
   initialArticleId?: string;
 };
 type SelectedFragment = { chunkId?: string; start: number; end: number };
+type AssistSourceVersion = { cardId: string; versionId: string; title: string };
 type EditorAssistPreview = {
   documentId: string;
   revisionId: string;
@@ -101,7 +102,30 @@ type EditorAssistPreview = {
   channel: string;
   selection: SelectedFragment | null;
   suggestion: EditorAssistSuggestion;
+  sourceVersions: AssistSourceVersion[];
+  staleSources: AssistSourceVersion[];
 };
+
+function AssistSources({ sourceVersions, staleSources }: Pick<EditorAssistPreview, "sourceVersions" | "staleSources">) {
+  const stale = new Set(staleSources.map(source => source.cardId));
+  return (
+    <div className="space-y-2 pt-1 [overflow-wrap:anywhere]">
+      {!!stale.size && <p>Некоторые карточки обновились после фиксации версии. Версии, прикреплённые к материалу, сохранены.</p>}
+      {sourceVersions.length > 0 && (
+        <ul className="space-y-1">
+          {sourceVersions.map(({ cardId, versionId, title }) => (
+            <li key={cardId}>
+              <Link href={`/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(versionId)}`}
+                prefetch={false} className="text-primary underline underline-offset-2">
+                {title} · актуальная версия
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 async function jsonRequest(url: string, init?: RequestInit) {
   const response = await fetch(url, {
     ...init,
@@ -269,13 +293,15 @@ function EditorSession({
     recoveryStore.getSnapshot,
     getServerRecoveries
   );
-  const [check, setCheck] = useState<FactCheckResult | null>(null),
+  const [check, setCheck] = useState<(FactCheckResult & { ai?: FactAiReview }) | null>(null),
     [channel, setChannel] = useState("Telegram"),
-    [provider, setProvider] = useState("canonical");
+    [provider, setProvider] = useState(flashAssistAvailable ? "auto" : "canonical");
   const checkRequest = useRef<AbortController | null>(null);
   const editorAssistRequest = useRef<AbortController | null>(null);
   const [editorAssistBusy, setEditorAssistBusy] = useState(false);
   const [editorAssistPreview, setEditorAssistPreview] = useState<EditorAssistPreview | null>(null);
+  const [editorAssistIssue, setEditorAssistIssue] = useState("");
+  const [useAiCheck, setUseAiCheck] = useState(true);
   const [selectedFragment, setSelectedFragment] = useState<SelectedFragment | null>(null);
   const pendingSave = useRef<Promise<EditorialDocument | null> | null>(null);
   const active = useRef(true);
@@ -376,6 +402,7 @@ function EditorSession({
     checkRequest.current?.abort();
     editorAssistRequest.current?.abort();
     setEditorAssistPreview(null);
+    setEditorAssistIssue("");
     setSelectedFragment(null);
     contentRef.current = next;
     setContent(next);
@@ -702,7 +729,13 @@ function EditorSession({
           query,
         })
       );
-      toast.success("Текст добавлен в личный черновик");
+      if (provider !== "canonical" && result.providerMeta?.provider === "canonical") {
+        toast("Черновик собран по карточкам", {
+          description: "Использована подготовка по структурированным данным Канона.",
+        });
+      } else {
+        toast.success("Текст добавлен в личный черновик");
+      }
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -766,7 +799,11 @@ function EditorSession({
       const result = await jsonRequest("/api/fact-check", {
         method: "POST",
         signal: controller.signal,
-        body: JSON.stringify({ text: editorialText(content), mode: "check" }),
+        body: JSON.stringify({
+          text: editorialText(content),
+          mode: "check",
+          ...(flashAssistAvailable && useAiCheck && { useAi: true }),
+        }),
       });
       if (active.current && !controller.signal.aborted) setCheck(result);
     } catch (e) {
@@ -815,6 +852,7 @@ function EditorSession({
     editorAssistRequest.current = controller;
     setEditorAssistBusy(true);
     setEditorAssistPreview(null);
+    setEditorAssistIssue("");
     try {
       if (!(await flush()) || controller.signal.aborted || !active.current ||
           fingerprint !== JSON.stringify(contentRef.current)) return;
@@ -832,16 +870,21 @@ function EditorSession({
           fingerprint !== JSON.stringify(contentRef.current)) return;
       if (payload.status !== "ready") {
         const messages: Record<string, string> = {
-          busy: "Flash занят. Повторите чуть позже.",
-          unavailable: "Flash сейчас недоступен.",
+          busy: "ИИ занят. Повторите чуть позже.",
+          unavailable: "ИИ сейчас недоступен. Редактирование остаётся доступным.",
           "too-long": "Выделите более короткий фрагмент или уменьшите объём материала.",
-          "sources-required": "Прикрепите утверждённые версии всех источников.",
+          "sources-required": "Прикрепите карточки с доступными утверждёнными версиями.",
         };
-        toast.error(messages[payload.status] || "Flash не предложил правку, которую удалось сверить с источниками.");
+        setEditorAssistIssue(payload.sourcesChanged
+          ? "Карточки обновились во время подготовки предложения. Повторите запрос. Версии в материале сохранены."
+          : messages[payload.status] || "ИИ не предложил правку, которую удалось сверить с источниками.");
         return;
       }
       setEditorAssistPreview({ documentId: current.id, revisionId: current.revisionId, fingerprint, channel, selection,
-        suggestion: payload.suggestion });
+        suggestion: payload.suggestion,
+        sourceVersions: payload.sourceVersions ?? [],
+        staleSources: payload.staleSources ?? [],
+      });
     } catch (error) {
       if (!controller.signal.aborted && active.current) toast.error((error as Error).message);
     } finally {
@@ -1343,6 +1386,12 @@ function EditorSession({
                           Подготовить текст
                         </Button>
                       </div>
+                      {provider !== "canonical" && (
+                        <p className="desk-footnote">
+                          Тема запроса и данные утверждённых источников передаются в Yandex AI Studio.
+                          Можно выбрать подготовку по проверенным фактам в Каноне.
+                        </p>
+                      )}
                     </div>
                   </details>
                   <FieldGroup>
@@ -1602,6 +1651,9 @@ function EditorSession({
                         Источники ещё не приложены.
                       </p>
                     ) : null}
+                    {flashAssistAvailable && (
+                      <CanonAiOption kind="fact" checked={useAiCheck} disabled={busy} onChange={setUseAiCheck} />
+                    )}
                     <Button
                       variant="outline"
                       disabled={busy}
@@ -1692,6 +1744,7 @@ function EditorSession({
                             onChange={(e) => {
                               editorAssistRequest.current?.abort();
                               setEditorAssistPreview(null);
+                              setEditorAssistIssue("");
                               setChannel(e.target.value);
                             }}
                           />
@@ -1707,24 +1760,26 @@ function EditorSession({
                         {flashAssistAvailable && (
                           <>
                             <p className="desk-footnote">
-                              Flash отправит текст и закреплённые версии источников в AI Studio. Предложение можно проверить перед применением.
+                              Текст и актуальные утверждённые карточки будут переданы в Yandex AI Studio. Предложение можно проверить перед применением.
                             </p>
                             <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !selectedFragment}
                               onClick={() => void requestEditorialAssist("rewrite")}>
-                              <Sparkles data-icon="inline-start" /> Переписать выделенное с Flash
+                              <Sparkles data-icon="inline-start" /> Переписать выделенное с ИИ
                             </Button>
                             <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !channel.trim()}
                               onClick={() => void requestEditorialAssist("variant")}>
-                              <Sparkles data-icon="inline-start" /> Подготовить вариант с Flash
+                              <Sparkles data-icon="inline-start" /> Подготовить вариант с ИИ
                             </Button>
-                            {editorAssistBusy && <p role="status" className="text-sm">Flash готовит предложение…</p>}
+                            {editorAssistBusy && <p role="status" className="text-sm">ИИ готовит предложение…</p>}
+                            {editorAssistIssue && <p role="status" className="text-sm">{editorAssistIssue}</p>}
                             {editorAssistPreview && (
                               <Alert>
-                                <AlertTitle>Предложение Flash</AlertTitle>
+                                <AlertTitle>Предложение ИИ</AlertTitle>
                                 <AlertDescription>
                                   <p className="whitespace-pre-wrap">{editorAssistPreview.suggestion.action === "rewrite"
                                     ? editorAssistPreview.suggestion.text
                                     : [editorAssistPreview.suggestion.title, editorAssistPreview.suggestion.lead, editorAssistPreview.suggestion.body].join("\n\n")}</p>
+                                  <AssistSources sourceVersions={editorAssistPreview.sourceVersions} staleSources={editorAssistPreview.staleSources} />
                                   <Button size="sm" variant="outline" onClick={acceptEditorialAssist}>
                                     {editorAssistPreview.suggestion.action === "rewrite" ? "Применить к выделенному" : "Создать черновик варианта"}
                                   </Button>
@@ -1759,12 +1814,7 @@ function EditorSession({
                         </div>
                       </AlertDescription>
                     </Alert>
-                    {flashAssistAvailable && surface === "write" ? (
-                      <FlashAssistHint
-                        kind="fact"
-                        text={editorialText(content)}
-                      />
-                    ) : null}
+                    {check.ai && <CanonAiReview review={check.ai} />}
                   </div>
                 ) : null}
               </div>

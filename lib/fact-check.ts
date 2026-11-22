@@ -16,6 +16,7 @@ import {
   type ProjectCard,
 } from "./knowledge";
 import { universities } from "./data";
+import { sameKnowledgeWord, tokenizeKnowledgeText } from "./knowledge-query";
 
 export const FACT_CHECK_CHECKPOINTS = {
   campus: "Общие параметры кампуса",
@@ -231,6 +232,7 @@ function isCardReferenced(
 }
 
 function isSentenceBoundary(text: string, index: number): boolean {
+  if (text[index] === "\n" || text[index] === "\r") return true;
   if (
     !/[.!?]/.test(text[index]) ||
     (index + 1 < text.length && !/\s/.test(text[index + 1]))
@@ -238,7 +240,7 @@ function isSentenceBoundary(text: string, index: number): boolean {
     return false;
   if (
     text[index] === "." &&
-    /(?:тыс|кв|г|гг|гост|корп|уч|млн|млрд|авг|сент|эт|студ)\.$/i.test(
+    /(?:тыс|кв|г|гг|гост|корп|уч|млн|млрд|авг|сент|эт|студ|им|пр|ул|лаб|(?<![а-яё])[а-яё])\.$/i.test(
       text.slice(Math.max(0, index - 8), index + 1)
     )
   )
@@ -246,7 +248,7 @@ function isSentenceBoundary(text: string, index: number): boolean {
   return true;
 }
 
-function sentenceAt(text: string, index: number): string {
+function sentenceAt(text: string, index: number, ellipsize = true): string {
   let start = 0;
   let end = text.length;
 
@@ -266,17 +268,9 @@ function sentenceAt(text: string, index: number): string {
 
   const sentence = text.slice(start, end).trim();
 
-  if (sentence.length <= 280) return sentence;
+  if (!ellipsize || sentence.length <= 280) return sentence;
 
   return `${sentence.slice(0, 277).trimEnd()}…`;
-}
-
-function quoteFor(text: string, pattern: RegExp): string | null {
-  const match = pattern.exec(text);
-
-  if (!match || match.index === undefined) return null;
-
-  return sentenceAt(text, match.index);
 }
 
 function sourceFromCard(card: KnowledgeCard) {
@@ -458,49 +452,307 @@ const singleAuthorPatterns: RegExp[] = [
   /принадлежит\s+одному\s+вуз[а-яё]*/i,
 ];
 
+const authorVerb =
+  /(?:разработ[а-яё]*|созда[а-яё]*|сделан[а-яё]*|принадлеж[а-яё]*|автор[а-яё]*)/iu;
+const soleNamedAuthorVerb =
+  /(?:разработал[аи]?|создал[аи]?|разработан[а-яё]*|создан[а-яё]*|принадлежит)/iu;
 const activePlacementPattern =
-  /(?:уже|сейчас|сегодня)\s+(?:работает|работают|работала|работал|действует|функционирует|запущен[а-яё]*|открыт[а-яё]*)|функционирует|введен[а-яё]*\s+в\s+эксплуатацию|открыт[а-яё]*\s+в\s+(?:унк|учебно)/i;
-
+  /(?:работа(?:ет|ют|л[аи]?)|действу(?:ет|ют)|функциониру[а-яё]*|введ[её]н[а-яё]*\s+в\s+эксплуатацию|открыт(?:а|ы|о|ый|ых|ая)?|запущен[а-яё]*)(?![\p{L}])/iu;
 const campusPlacementPattern =
-  /(?:в|на)\s+(?:новом\s+)?(?:унк|учебно[- ]научн[а-яё]*\s+корпус[а-яё]*|кампус[а-яё]*)/i;
+  /(?:в|на)\s+(?:новом\s+)?(?:унк(?![а-яё])|учебно[- ]научн[а-яё]*\s+(?:корпус[а-яё]*|комплекс[а-яё]*)|кампус[а-яё]*)/iu;
+const futurePlacement =
+  /(?:планиру[а-яё]*|до\s+(?:завершения|открытия|ввода)|после\s+(?:ввода|открытия)|буд(?:ет|ут))(?![\p{L}])/iu;
+const plannedOpening =
+  /планиру[а-яё]*\s+(?:к\s+открытию|открытие|открыть)|откроется|(?:открытие|ввод)\s+запланирован[а-яё]*/iu;
+const previousSubject =
+  /^\s*(?:он[аи]?|эт(?:от|а|о|и)\s+(?:проект|объект|лаборатор[а-яё]*|тренаж[её]р|робот))\s/iu;
+const statementSegmenter = new Intl.Segmenter("ru", {
+  granularity: "sentence",
+});
+const abbreviationDot =
+  /(?<![\p{L}\p{N}])(?:им|г|гг|ул|пр|корп|тыс|млн|млрд|кв|лаб|гост|эт|[А-ЯA-Z])\.(?=\s|[)])|(?<=ВЭБ)\.(?=РФ)/gu;
 
-function isContourSentence(sentence: string): boolean {
-  return (
-    /контур[а-яё]*/i.test(sentence) ||
-    /(?:в|на)\s+(?:рамках\s+|программе\s+)?(?:пиш|умноц)(?![а-яё])/i.test(
-      sentence
-    ) ||
-    /передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*/i.test(sentence) ||
-    /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(
-      sentence
-    )
+export function factCheckSentenceRanges(line: string) {
+  const masked = line.replace(
+    abbreviationDot,
+    (value) => value.slice(0, -1) + "·"
+  );
+  return Array.from(
+    statementSegmenter.segment(masked),
+    ({ index, segment }) => ({
+      index,
+      text: line.slice(index, index + segment.length),
+    })
   );
 }
 
-function contourInSentence(sentence: string): string | null {
-  if (
-    /(?:пиш|передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*)/i.test(sentence)
-  ) {
-    return "ПИШ";
-  }
+/** Respect paragraph boundaries, then split the independent sides of a contrast. */
+export function factCheckStatements(text: string): string[] {
+  return text.split(/[\r\n]/u).flatMap((line) =>
+    factCheckSentenceRanges(line)
+      .map((sentence) => sentence.text)
+      .flatMap((sentence) =>
+        sentence.split(/;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu)
+      )
+      .map((statement) => statement.trim())
+      .filter(Boolean)
+  );
+}
 
-  if (/(?:умноц|межвузовск[а-яё]*\s+научно)/i.test(sentence)) {
-    return "УМНОЦ";
-  }
+function locallyNegated(claim: string, index: number): boolean {
+  const prefix = claim.slice(Math.max(0, index - 72), index);
+  return /(?:^|[^\p{L}])(?:не(?!\s+только)|нельзя|запрещено)(?:\s+[\p{L}-]+){0,6}\s*[«„"']?\s*$/iu.test(
+    prefix
+  );
+}
 
-  if (
-    /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/i.test(
-      sentence
-    )
-  ) {
-    return "собственный проект вуза";
-  }
+function affirmed(claim: string, pattern: RegExp): boolean {
+  return [...claim.matchAll(new RegExp(pattern.source, "giu"))].some(
+    (match) => !locallyNegated(claim, match.index)
+  );
+}
 
-  if (/кампус[а-яё]*/i.test(sentence)) {
-    return "кампус";
-  }
+const contourClaims: Array<{
+  contour: ProjectCard["contour"];
+  wording: RegExp;
+}> = [
+  {
+    contour: "ПИШ",
+    wording:
+      /(?<![\p{L}\p{N}])пиш(?![\p{L}\p{N}])|передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*/iu,
+  },
+  {
+    contour: "УМНОЦ",
+    wording:
+      /(?<![\p{L}\p{N}])умноц(?![\p{L}\p{N}])|межвузовск[а-яё]*\s+научно[- ]образовательн[а-яё]*/iu,
+  },
+  {
+    contour: "собственный проект вуза",
+    wording: /собственн[а-яё]*\s+(?:проект[а-яё]*\s+вуза|инициатив[а-яё]*)/iu,
+  },
+  {
+    contour: "кампус",
+    wording: /(?:контур[а-яё]*|в\s+рамках|продукт[а-яё]*)\s+«?кампус[а-яё]*/iu,
+  },
+];
+const contourCue =
+  /контур|относ[иия][а-яё]*\s+к|проект[а-яё]*\s+(?:пиш|умноц)|в\s+(?:рамках|пиш|умноц)|контекст[а-яё]*\s+программ|передов[а-яё]*\s+инженерн[а-яё]*\s+школ[а-яё]*|собственн[а-яё]*\s+проект|продукт[а-яё]*\s+кампуса/iu;
 
-  return null;
+function projectTitle(card: KnowledgeCard) {
+  return card.title.replace(/\s*\([A-ZА-Я0-9\s._-]{3,32}\)\s*$/u, "").trim();
+}
+
+function scopedCards<T extends KnowledgeCard>(
+  statement: string,
+  candidates: T[]
+): T[] {
+  const text = " " + normalize(statement) + " ";
+  const exact = candidates.filter((card) =>
+    [card.id, projectTitle(card)].some((part) => {
+      const name = normalize(part);
+      return name.length >= 5 && text.includes(" " + name + " ");
+    })
+  );
+  if (exact.length) return exact;
+  const roots = new Set(tokenRoots(statement));
+  return candidates.filter(
+    (card) =>
+      distinctiveTermMatches(projectTitle(card), roots) ||
+      (card.type === "laboratory" &&
+        card.equipment.some((equipment) => {
+          const names =
+            equipment.match(
+              /(?<![\p{L}\p{N}])(?=[A-Za-z0-9-]*[A-Z])[A-Z0-9][A-Z0-9-]{2,}(?![\p{L}\p{N}])/gu
+            ) ?? [];
+          return names.some((name) =>
+            text.includes(" " + normalize(name) + " ")
+          );
+        })) ||
+      (isVrLaboratory(card) &&
+        /vr[\s-]+лаборатор|лаборатор[а-яё]*[\s-]+[^.!?]{0,30}\bvr\b/iu.test(
+          statement
+        ))
+  );
+}
+
+function uniqueScopedCard<T extends KnowledgeCard>(
+  statement: string,
+  candidates: T[]
+): T | undefined {
+  const scoped = scopedCards(statement, candidates);
+  return scoped.length === 1 ? scoped[0] : undefined;
+}
+
+function collectScopedFindings(
+  statements: string[],
+  projects: ProjectCard[],
+  labs: LaboratoryCard[]
+): FactCheckFinding[] {
+  const findings: FactCheckFinding[] = [];
+  const scoped = new Map<
+    string,
+    { project?: ProjectCard; lab?: LaboratoryCard }
+  >();
+  let previousProject: ProjectCard | undefined;
+  let previousLab: LaboratoryCard | undefined;
+  for (const [index, statement] of statements.entries()) {
+    const anaphora = previousSubject.test(statement);
+    let scope = scoped.get(statement);
+    if (!scope) {
+      const auditedRobot = /робот[а-яё]*\s+куки(?![\p{L}])/iu.test(statement)
+        ? labs.find((card) => card.id === "lab-midis-kuka")
+        : undefined;
+      scope = {
+        project: uniqueScopedCard(statement, projects),
+        lab: uniqueScopedCard(statement, labs) ?? auditedRobot,
+      };
+      scoped.set(statement, scope);
+    }
+    const project = scope.project ?? (anaphora ? previousProject : undefined);
+    const lab = scope.lab ?? (anaphora ? previousLab : undefined);
+    previousProject = project;
+    previousLab = lab;
+
+    const sole =
+      singleAuthorPatterns.some((pattern) => affirmed(statement, pattern)) &&
+      affirmed(statement, authorVerb);
+    const directlyLinked = statements[index + 1] ?? "";
+    const linkedProject =
+      !project &&
+      lab &&
+      sole &&
+      /(?:здесь|в этой лаборатории)\s+(?:созда|разработ)[а-яё]+/iu.test(
+        directlyLinked
+      )
+        ? uniqueScopedCard(directlyLinked, projects)
+        : undefined;
+    const authorProject = project ?? linkedProject;
+    if (authorProject) {
+      const participants =
+        authorProject.participantUniversityIds.map(getUniversityName);
+      const mentionsSingleAuthor =
+        authorProject.isJoint &&
+        authorProject.participantUniversityIds.filter((id) =>
+          universityMentioned(id, statement)
+        ).length === 1 &&
+        affirmed(statement, soleNamedAuthorVerb) &&
+        !/совместн|соисполн|вместе/iu.test(statement);
+      if (
+        (sole || mentionsSingleAuthor) &&
+        (authorProject.isJoint || authorProject.coExecutors.length > 0)
+      ) {
+        const names = authorProject.isJoint
+          ? participants.join(" и ")
+          : authorProject.coExecutors.join(", ");
+        findings.push(
+          createFinding({
+            level: "red",
+            checkpoint: "authorship",
+            title: authorProject.isJoint
+              ? "Совместный проект приписан одному вузу"
+              : "Не указаны соисполнители проекта",
+            quote: linkedProject ? statement + " " + directlyLinked : statement,
+            explanation:
+              "В утверждённой карточке «" +
+              authorProject.title +
+              "» указаны соисполнители: " +
+              names +
+              ".",
+            suggestion:
+              "Укажите роли соисполнителей. Инициатор — " +
+              getUniversityName(authorProject.initiatorUniversityId) +
+              ".",
+            ...sourceFromCard(authorProject),
+          })
+        );
+      }
+    }
+
+    if (project && contourCue.test(statement)) {
+      for (const { contour, wording } of contourClaims) {
+        for (const match of statement.matchAll(
+          new RegExp(wording.source, "giu")
+        )) {
+          const negative = locallyNegated(statement, match.index);
+          if (negative !== (contour === project.contour)) continue;
+          findings.push(
+            createFinding({
+              level: "red",
+              checkpoint: "contour",
+              title: "Утверждение о контуре противоречит карточке",
+              quote: statement,
+              explanation:
+                "В действующей карточке проекта указан контур «" +
+                project.contour +
+                "».",
+              suggestion:
+                "Укажите контур «" +
+                project.contour +
+                "» и отделите участие в других программах.",
+              ...sourceFromCard(project),
+            })
+          );
+        }
+      }
+    }
+
+    if (
+      lab &&
+      (activePlacementPattern.test(statement) || plannedOpening.test(statement))
+    ) {
+      const activeHere =
+        affirmed(statement, activePlacementPattern) &&
+        !futurePlacement.test(statement);
+      const campusHere = affirmed(statement, campusPlacementPattern);
+      const currentLocations = lab.placementDetails
+        .split(/;|,\s*(?=план)/iu)
+        .filter((part) => !futurePlacement.test(part));
+      const previouslyActive = currentLocations.some((part) =>
+        affirmed(part, activePlacementPattern)
+      );
+      const currentCampus = currentLocations.some((part) =>
+        affirmed(part, campusPlacementPattern)
+      );
+      const years = (value: string) => [
+        ...new Set(value.match(/\b(?:19|20|21)\d{2}\b/gu) ?? []),
+      ];
+      const dates = years(statement);
+      const plannedDates = years(
+        lab.placementDetails
+          .split(/;|,\s*(?=план)/iu)
+          .filter((part) => futurePlacement.test(part))
+          .join(" ")
+      );
+      const wrongOpening =
+        affirmed(statement, plannedOpening) &&
+        dates.length === 1 &&
+        plannedDates.length === 1 &&
+        dates[0] !== plannedDates[0];
+      const contradicts =
+        activeHere &&
+        ((lab.placementStatus === "planned" &&
+          (campusHere || !previouslyActive)) ||
+          (lab.placementStatus === "active" && campusHere && !currentCampus));
+      if (contradicts || wrongOpening) {
+        const details =
+          lab.placementDetails.trim() ||
+          placementStatusLabels[lab.placementStatus];
+        findings.push(
+          createFinding({
+            level: "red",
+            checkpoint: "placement",
+            title: "Статус или площадка лаборатории противоречит карточке",
+            quote: statement,
+            explanation:
+              "В действующей карточке «" + lab.title + "»: " + details + ".",
+            suggestion: "Укажите размещение по карточке: " + details + ".",
+            ...sourceFromCard(lab),
+          })
+        );
+      }
+    }
+  }
+  return findings;
 }
 
 function universityMentioned(universityId: string, draft: string): boolean {
@@ -578,6 +830,49 @@ function sameUnit(unit: string, claim: string): boolean {
   return roots.length > 0 && roots.every((root) => claimRoots.has(root));
 }
 
+const universityMetricWords = new Set(
+  "в за с к по на год года году факт фактический план фактически получил получила получили выделено выделены предоставлено составляет составило насчитывается было будет будут предусмотрено планирует запланировано".split(
+    " "
+  )
+);
+
+function namesUniversityMetric(
+  item: UniversityCard["structuredMetrics"][number],
+  claim: string,
+  universityId: string
+): boolean {
+  const words = tokenizeKnowledgeText(claim).filter(
+    (word) => !/^\d/u.test(word)
+  );
+  const label = tokenizeKnowledgeText(item.label);
+  const unit = tokenizeKnowledgeText(item.unit);
+  const names = tokenizeKnowledgeText(
+    getUniversityName(universityId) + " " + getUniversityFullName(universityId)
+  );
+  const inSet = (word: string, values: string[]) =>
+    values.some((value) => sameKnowledgeWord(word, value));
+  const quota =
+    label.includes("квота") &&
+    words.some((word) =>
+      /^(?:получил[аи]?|выделен[оы]?|предоставлено|планирует)$/u.test(word)
+    );
+  const labelDefined = label.every(
+    (word) =>
+      inSet(word, unit) || inSet(word, words) || (quota && word === "квота")
+  );
+  return (
+    labelDefined &&
+    words.every(
+      (word) =>
+        universityMetricWords.has(word) ||
+        inSet(word, names) ||
+        inSet(word, label) ||
+        inSet(word, unit) ||
+        (quota && sameKnowledgeWord(word, "кампус"))
+    )
+  );
+}
+
 type FindingInput = Omit<FactCheckFinding, "id" | "checkpointLabel">;
 
 function normalizeQuoteForCompare(value: string): string {
@@ -619,6 +914,93 @@ function buildCheckpointSummaries(
   );
 }
 
+function evidenceKey(text: string): string {
+  return text
+    .normalize("NFC")
+    .toLowerCase()
+    .replaceAll("ё", "е")
+    .replace(/\[[a-z0-9._-]+\]/giu, "")
+    .replace(/[«»„“”"]/gu, "")
+    .replace(/\s[—–]\s/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/[.;:!?]+$/u, "")
+    .trim();
+}
+
+function cardEvidenceStatements(card: KnowledgeCard): string[] {
+  const text = [card.title, projectTitle(card), card.referenceDescription];
+  if (card.type === "project") {
+    text.push(
+      ...card.confirmedFigures,
+      ...card.confirmedFigures.map((figure) => card.title + ": " + figure),
+      card.sphere
+    );
+  } else if (card.type === "laboratory") {
+    text.push(
+      placementStatusLabels[card.placementStatus],
+      card.placementDetails,
+      ...card.confirmedIndicators,
+      ...card.workDirections,
+      ...card.equipment
+    );
+  } else if (card.type === "campus") {
+    text.push(
+      ...card.campusMetrics.flatMap((item) => [
+        item.label + ": " + item.value,
+        item.note,
+      ])
+    );
+    text.push(
+      ...card.legalEntities.map((item) => item.name + " — " + item.role)
+    );
+    text.push(...card.tariffs.map((item) => item.label + " — " + item.value));
+  }
+  return [...text, ...text.flatMap(factCheckStatements)];
+}
+
+const claimVerb =
+  /(?<![\p{L}])(?:\p{L}{3,}(?:ается|яется|уются|иваются|ются|ется|ится|ают|яют|уют|яет|ает|или|али|ели|яла|ила|ала|овал[аи]?|ил[аи]?|ён[аыо]|ен[аыо])|создал[аи]?|получил[аи]?|стал[аи]?|был[аио]?|есть)(?![\p{L}])/iu;
+const referenceLead =
+  /^(?:по данным|согласно) (?:официальной |утвержденной )?карточк[а-я]*\s*[,—:]?\s*/iu;
+const editorialHeading =
+  /^(?:(?:кто|что|где|когда|как|где|зачем|почему|в чем)\s+[^.,;!?]+[?]?$|(?:нельзя|не следует|запрещено)(?![\p{L}]))/iu;
+
+function uncoveredStatements(
+  statements: string[],
+  cards: KnowledgeCard[],
+  covered: Set<string>
+): FactCheckFinding[] {
+  const candidates = [...new Set(statements)].filter(
+    (statement) =>
+      !statement.endsWith("?") &&
+      !editorialHeading.test(statement) &&
+      claimVerb.test(statement) &&
+      !covered.has(evidenceKey(statement))
+  );
+  if (!candidates.length) return [];
+  const references = new Set(
+    cards.flatMap(cardEvidenceStatements).map(evidenceKey)
+  );
+  return candidates.flatMap((statement) => {
+    const key = evidenceKey(statement).replace(referenceLead, "");
+    if (references.has(key)) return [];
+    return [
+      createFinding({
+        level: "yellow",
+        checkpoint: /\d/u.test(statement) ? "figures" : "names",
+        title: "Утверждение требует подтверждения",
+        quote: statement,
+        explanation:
+          "Для этого утверждения нужна отдельная опора в утверждённой карточке.",
+        suggestion:
+          "Найдите подтверждение именно этого утверждения или уточните его у владельца карточки.",
+        ...noSource,
+      }),
+    ];
+  });
+}
+
 export function checkFactText(
   draft: string,
   cards: KnowledgeCard[]
@@ -627,12 +1009,14 @@ export function checkFactText(
     .map(getApprovedVersion)
     .filter((card): card is KnowledgeCard => card !== null);
   const findings: FactCheckFinding[] = [];
+  const confirmedFigures = new Set<string>();
   const normalizedDraft = normalize(draft);
+  const draftEvidenceKey = evidenceKey(draft);
   const draftRoots = new Set(tokenRoots(draft));
   const exactDescriptionCard = cards.find(
     (card) =>
-      normalize(card.referenceDescription).length > 40 &&
-      normalize(card.referenceDescription) === normalizedDraft
+      draftEvidenceKey.length > 40 &&
+      evidenceKey(card.referenceDescription) === draftEvidenceKey
   );
   const referencedCards = cards.filter((card) =>
     isCardReferenced(card, draftRoots, normalizedDraft)
@@ -655,194 +1039,14 @@ export function checkFactText(
   const primaryProject =
     referencedProjects.find((card) => card.isJoint) ?? referencedProjects[0];
 
-  referencedProjects.forEach((project) => {
-    const patternMatch = singleAuthorPatterns
-      .map((pattern) => quoteFor(draft, pattern))
-      .find((quote): quote is string => Boolean(quote));
-
-    if (project.isJoint) {
-      const participantNames = project.participantUniversityIds
-        .map((universityId) => getUniversityName(universityId))
-        .join(" и ");
-
-      const namedParticipants = project.participantUniversityIds.filter(
-        (universityId) => universityMentioned(universityId, draft)
-      );
-      const attributiveVerb = /(?:разраб|созда|сделан|принадлеж|автор)/i.test(
-        draft
-      );
-      const singleNamedAuthor =
-        namedParticipants.length === 1 && attributiveVerb
-          ? sentenceAt(draft, draft.search(/(?:разраб|созда|принадлеж)/i))
-          : null;
-
-      if (!patternMatch && !singleNamedAuthor) return;
-
-      findings.push(
-        createFinding({
-          level: "red",
-          checkpoint: "authorship",
-          title: "Совместный проект приписан одному вузу",
-          quote: patternMatch ?? singleNamedAuthor ?? "",
-          explanation:
-            "«" +
-            project.title +
-            "» — совместная разработка " +
-            participantNames +
-            ". Карточка прямо запрещает приписывать результат одному вузу или партнёру.",
-          suggestion:
-            "Укажите оба вуза и их роли: инициатор — " +
-            getUniversityName(project.initiatorUniversityId) +
-            ", соисполнитель — " +
-            (project.coExecutors.join(", ") || "нет") +
-            ". Например: «Совместный проект " +
-            participantNames +
-            "».",
-          ...sourceFromCard(project),
-        })
-      );
-
-      return;
-    }
-
-    if (project.coExecutors.length > 0 && patternMatch) {
-      findings.push(
-        createFinding({
-          level: "red",
-          checkpoint: "authorship",
-          title: "Не указаны соисполнители проекта",
-          quote: patternMatch,
-          explanation:
-            "У проекта «" +
-            project.title +
-            "» в карточке указаны соисполнители: " +
-            project.coExecutors.join(", ") +
-            ". Приписывать результат только инициатору нельзя.",
-          suggestion:
-            "Добавьте соисполнителей: " +
-            project.coExecutors.join(", ") +
-            ", и укажите вклад каждой стороны.",
-          ...sourceFromCard(project),
-        })
-      );
-    }
-  });
-
-  referencedLabs.forEach((lab) => {
-    const activeSentence = activePlacementPattern.test(draft)
-      ? (quoteFor(draft, activePlacementPattern) ??
-        sentenceAt(draft, draft.search(activePlacementPattern)))
-      : null;
-
-    if (
-      lab.placementStatus === "planned" &&
-      activeSentence &&
-      !/(?:нельзя\s+(?:писать|описывать|утверждать)|планируется\s+к\s+открытию|до\s+завершения|до\s+открытия)/i.test(
-        activeSentence
-      )
-    ) {
-      findings.push(
-        createFinding({
-          level: "red",
-          checkpoint: "placement",
-          title: "Лаборатория выдана за уже работающую",
-          quote: activeSentence,
-          explanation:
-            "В карточке статус «" +
-            placementStatusLabels[lab.placementStatus] +
-            "». " +
-            lab.placementDetails +
-            ". Писать, что объект уже работает в УНК кампуса, нельзя.",
-          suggestion:
-            "Замените утверждение на «планируется к открытию в УНК кампуса в 2027 году» и не указывайте действующий адрес до ввода объекта.",
-          ...sourceFromCard(lab),
-        })
-      );
-    }
-
-    const campusSentence = campusPlacementPattern.test(draft)
-      ? (quoteFor(draft, campusPlacementPattern) ??
-        sentenceAt(draft, draft.search(campusPlacementPattern)))
-      : null;
-
-    if (
-      lab.placementStatus === "active" &&
-      campusSentence &&
-      !/(?:будущ[а-яё]*|планир[а-яё]*|нов[а-яё]*\s+лаборатор[а-яё]*|совместн[а-яё]*\s+с\s+гк|в\s+2027|нельзя\s+(?:утверждать|писать|описывать))/i.test(
-        campusSentence
-      )
-    ) {
-      findings.push(
-        createFinding({
-          level: "red",
-          checkpoint: "placement",
-          title: "Лаборатория перенесена в УНК кампуса",
-          quote: campusSentence,
-          explanation:
-            "В карточке статус «" +
-            placementStatusLabels[lab.placementStatus] +
-            "»: " +
-            lab.placementDetails +
-            ".",
-          suggestion:
-            "Укажите фактическую площадку вуза из карточки и не переносите лабораторию в УНК кампуса.",
-          ...sourceFromCard(lab),
-        })
-      );
-    }
-  });
-
-  const contourSentences = draft
-    .split(/(?<=[.!?])\s+|\n+/)
-    .filter((sentence) => isContourSentence(sentence));
-
-  referencedProjects.forEach((project) => {
-    contourSentences.forEach((sentence) => {
-      const intendedContour = contourInSentence(sentence);
-
-      if (!intendedContour || intendedContour === project.contour) return;
-
-      const sentenceRoots = new Set(tokenRoots(sentence));
-      const normalizedSentence = normalize(sentence);
-      const matchingProjectsInSentence = referencedProjects.filter(
-        (candidate) =>
-          termMatches(candidate.title, sentenceRoots) ||
-          normalizedSentence.includes(
-            normalize(candidate.title.replace(/\([^)]*\)/g, "").trim())
-          )
-      );
-
-      // Если в предложении явно названы конкретные проекты, проверяем контур только для них
-      if (
-        matchingProjectsInSentence.length > 0 &&
-        !matchingProjectsInSentence.some(
-          (candidate) => candidate.id === project.id
-        )
-      ) {
-        return;
-      }
-
-      findings.push(
-        createFinding({
-          level: "red",
-          checkpoint: "contour",
-          title: "Проект отнесён к чужому контуру",
-          quote: sentenceAt(draft, draft.indexOf(sentence)),
-          explanation:
-            "В карточке проекта контур — «" +
-            project.contour +
-            "», а в черновике указан «" +
-            intendedContour +
-            "».",
-          suggestion:
-            "Исправьте контур на «" +
-            project.contour +
-            "»: контуры кампуса, ПИШ, УМНОЦ и собственных проектов вузов не смешиваются.",
-          ...sourceFromCard(project),
-        })
-      );
-    });
-  });
+  const statements = factCheckStatements(draft);
+  const projectCards = cards.filter(
+    (card): card is ProjectCard => card.type === "project"
+  );
+  const labCards = cards.filter(
+    (card): card is LaboratoryCard => card.type === "laboratory"
+  );
+  findings.push(...collectScopedFindings(statements, projectCards, labCards));
 
   if (campusCard) {
     const areaRegex =
@@ -1106,9 +1310,13 @@ export function checkFactText(
       ? "plan"
       : "actual";
 
+    let sameNumberDifferentClaim = false;
     if (universityCard) {
       const candidates = universityCard.structuredMetrics.filter(
-        (metric) => metric.year === year && sameUnit(metric.unit, unit)
+        (metric) =>
+          metric.year === year &&
+          sameUnit(metric.unit, unit) &&
+          namesUniversityMetric(metric, clause, universityCard.universityId)
       );
       const samePeriod = candidates.filter((metric) => metric.kind === kind);
       const metric =
@@ -1138,27 +1346,37 @@ export function checkFactText(
         continue;
       }
     } else if (sourceCard) {
-      // Legacy free-text figures can support only the matching unit in this entity.
-      const sources = [
-        sourceCard.referenceDescription,
-        ...(sourceCard.type === "project"
-          ? sourceCard.confirmedFigures
-          : sourceCard.type === "laboratory"
-            ? sourceCard.confirmedIndicators
-            : sourceCard.type === "campus"
-              ? sourceCard.campusMetrics.flatMap((metric) => [
-                  metric.value,
-                  metric.note,
-                ])
-              : []),
-      ];
-      const confirmed = sources.some((source) =>
+      const sources = cardEvidenceStatements(sourceCard);
+      const fullStatement = evidenceKey(
+        sentenceAt(draft, figureMatch.index, false)
+      );
+      if (
+        exactDescriptionCard?.id === sourceCard.id ||
+        sources.some((source) => evidenceKey(source) === fullStatement)
+      ) {
+        confirmedFigures.add(fullStatement);
+        continue;
+      }
+      if (
+        sourceCard.type === "campus" &&
+        sameUnit("мест", unit) &&
+        isOfficialCampusMeasure(
+          sourceCard,
+          "places",
+          value,
+          campusMeasureContext(draft, figureMatch.index)
+        )
+      ) {
+        // This typed rule covers the magnitude and its scope. The surrounding
+        // sentence still needs evidence for any additional statement.
+        continue;
+      }
+      sameNumberDifferentClaim = sources.some((source) =>
         Array.from(source.matchAll(new RegExp(figureRegex.source, "gi"))).some(
           (match) =>
             sameUnit(unit, match[3] ?? "") && parseNumeric(match[1]) === value
         )
       );
-      if (confirmed) continue;
       // A direct contradiction already owns this numeric claim.
       if (
         findings.some(
@@ -1175,12 +1393,15 @@ export function checkFactText(
       createFinding({
         level: "yellow",
         checkpoint: "figures",
-        title: "Цифра не подтверждена официальными данными",
+        title: sameNumberDifferentClaim
+          ? "Утверждение требует подтверждения"
+          : "Цифра не подтверждена официальными данными",
         quote,
-        explanation:
-          "Метрики «" +
-          figureMatch[0].trim() +
-          "» нет в подтверждённых показателях этой сущности за указанный период. Число из другой карточки не является подтверждением.",
+        explanation: sameNumberDifferentClaim
+          ? "В карточке встречается такое число. Период, статус или связь с другими сведениями в этой формулировке требуют отдельного подтверждения."
+          : "Метрики «" +
+            figureMatch[0].trim() +
+            "» нет в подтверждённых показателях этой сущности за указанный период. Число из другой карточки не является подтверждением.",
         suggestion: universityIds.length
           ? "Укажите вуз, год и статус факт/план; добавьте показатель с документом в паспорт этого вуза."
           : "Уточните сущность, период и единицу измерения; добавьте официальный источник.",
@@ -1190,24 +1411,23 @@ export function checkFactText(
   }
 
   for (const rule of AUDIT_STOP_RULES) {
+    // The current approved object determines placement and participants.
+    // The archived examples contain specific dates and generic pronouns.
+    if (
+      rule.category === "placement_status" ||
+      rule.category === "coauthorship" ||
+      rule.id === "RULE-CONTOUR-PISH-MIXUP"
+    )
+      continue;
     const match = rule.pattern.exec(draft);
     if (!match || match.index === undefined) continue;
-
-    // Если в документе целиком явно указаны оба соавтора (МИДиС и ЮУГМУ)
-    // и не сработало прямое утверждение о единоличном авторстве, не штрафуем за повтор названия проекта в следующих разделах.
-    if (
-      rule.id === "RULE-COOP-TRAUMA" &&
-      !/полностью\s+разработан|разработал\s+артур/i.test(match[0]) &&
-      /мидис/i.test(draft) &&
-      /юугму/i.test(draft)
-    ) {
-      continue;
-    }
 
     const checkpoint = AUDIT_CATEGORY_TO_CHECKPOINT[rule.category];
     const targetCard = cards.find((card) => card.id === rule.sourceCardId);
     if (!targetCard) continue;
     const matchQuote = sentenceAt(draft, match.index);
+    const quoteIndex = matchQuote.indexOf(match[0]);
+    if (quoteIndex >= 0 && locallyNegated(matchQuote, quoteIndex)) continue;
 
     if (
       rule.id === "RULE-245-PRODUCTS-5REGIONS" &&
@@ -1322,14 +1542,20 @@ export function checkFactText(
     }
   }
 
+  if (!exactDescriptionCard) {
+    for (const finding of findings) {
+      if (finding.level !== "green" || finding.checkpoint === "figures") {
+        confirmedFigures.add(evidenceKey(finding.quote));
+        for (const statement of factCheckStatements(finding.quote))
+          confirmedFigures.add(evidenceKey(statement));
+      }
+    }
+    findings.push(...uncoveredStatements(statements, cards, confirmedFigures));
+  }
+
   if (findings.length === 0) {
-    const exactCard = cards.find(
-      (card) =>
-        normalize(card.referenceDescription).length > 40 &&
-        normalize(card.referenceDescription) === normalizedDraft
-    );
     findings.push(
-      exactCard
+      exactDescriptionCard
         ? createFinding({
             level: "green",
             checkpoint: "names",
@@ -1338,7 +1564,7 @@ export function checkFactText(
             explanation:
               "Текст полностью совпадает с утверждённым описанием карточки.",
             suggestion: "Сохраните ссылку на официальную карточку.",
-            ...sourceFromCard(exactCard),
+            ...sourceFromCard(exactDescriptionCard),
           })
         : createFinding({
             level: "yellow",
@@ -1394,23 +1620,80 @@ export function checkFactText(
   };
 }
 
-function pickParticipants(project: ProjectCard): string[] {
-  if (project.isJoint) {
-    return Array.from(
-      new Set(
-        project.participantUniversityIds.map((universityId) =>
-          getUniversityName(universityId)
-        )
-      )
-    );
-  }
+function rewriteSection(
+  id: string,
+  heading: string,
+  fields: string[],
+  level: 2 | 3 = 2
+): CanonicalRewriteSection {
+  return {
+    id,
+    heading,
+    level,
+    chunks: fields
+      .filter((field) => field.trim())
+      .map((content, index) => ({
+        id: id + "-" + (index + 1),
+        content,
+      })),
+  };
+}
 
-  return Array.from(
-    new Set([
-      getUniversityName(project.initiatorUniversityId),
-      ...project.coExecutors,
-    ])
+function campusMetricSection(campus: CampusCard) {
+  return rewriteSection(
+    "campus-metrics",
+    "Параметры кампуса",
+    campus.campusMetrics.map((metric) =>
+      [metric.label + ": " + metric.value, metric.note]
+        .filter(Boolean)
+        .join("\n")
+    )
   );
+}
+
+function buildScopedRewrite(
+  title: string,
+  description: string,
+  sections: CanonicalRewriteSection[],
+  sourceCards: KnowledgeCard[]
+): CanonicalRewrite {
+  let lead = "";
+  for (const statement of description
+    .split(/[\r\n]/u)
+    .flatMap(factCheckSentenceRanges)
+    .map(({ text }) => text.trim())
+    .filter(Boolean)) {
+    const next = lead ? lead + " " + statement : statement;
+    if (next.length > 1_000) break;
+    lead = next;
+  }
+  if (!lead) lead = title;
+  const nonemptySections = sections.filter(
+    (section) => section.chunks.length > 0
+  );
+  return {
+    title,
+    lead,
+    sections: nonemptySections,
+    sourceCardIds: sourceCards.map((card) => card.id),
+    sourceCardTitles: sourceCards.map((card) => card.title),
+    plainText: [
+      title,
+      lead,
+      ...nonemptySections.flatMap((section) => [
+        section.heading,
+        ...section.chunks.map((chunk) => chunk.content),
+      ]),
+    ].join("\n\n"),
+  };
+}
+
+function labPlacementSection(lab: LaboratoryCard) {
+  return rewriteSection("lab-status", "Площадка и статус лаборатории", [
+    lab.title,
+    placementStatusLabels[lab.placementStatus],
+    lab.placementDetails,
+  ]);
 }
 
 function buildProjectRewrite(
@@ -1418,235 +1701,79 @@ function buildProjectRewrite(
   lab: LaboratoryCard | null,
   campus: CampusCard | null
 ): CanonicalRewrite {
-  const initiatorName = getUniversityName(project.initiatorUniversityId);
-  const participants = pickParticipants(project);
-  const isJoint = project.isJoint;
-  const title = isJoint
-    ? `${project.title}: совместный проект ${participants.join(" и ")}`
-    : `${project.title}: ${project.sphere}`;
-
-  const lead = [
-    project.referenceDescription,
-    `Контур проекта «${project.title}» — «${project.contour}».`,
-    `В карточке подтверждены: ${project.confirmedFigures.join("; ")}.`,
-  ].join(" ");
-
-  const sections: CanonicalRewriteSection[] = [
-    {
-      id: "participants",
-      heading: "Кто участвует",
-      level: 2,
-      chunks: [
-        {
-          id: "participants-1",
-          content: isJoint
-            ? `Инициатор проекта — ${initiatorName}. Совместная разработка ${participants.join(" и ")}. Индустриальный партнёр — ${project.industrialPartner}. Проект хранится одной карточкой в разделе «02_Совместные_проекты»: нельзя закреплять результат за одним участником.`
-            : `Инициатор проекта — ${initiatorName}. Соисполнители — ${project.coExecutors.join(", ") || "нет"}. Индустриальный партнёр — ${project.industrialPartner}.`,
-        },
-      ],
-    },
-    {
-      id: "result",
-      heading: "Что создано и в каком контуре",
-      level: 2,
-      chunks: [
-        {
-          id: "result-1",
-          content: isJoint
-            ? `Совместный проект ${participants.join(" и ")} «${project.title}» находится на стадии «${project.readinessStage}» и развивается в контуре «${project.contour}». Подтверждённые результаты: ${project.confirmedFigures.join("; ")}.`
-            : `Проект «${project.title}» находится на стадии «${project.readinessStage}» и развивается в контуре «${project.contour}». Подтверждённые результаты: ${project.confirmedFigures.join("; ")}.`,
-        },
-      ],
-    },
-  ];
-
-  if (lab) {
-    sections.push({
-      id: "lab-status",
-      heading: "Статус лаборатории",
-      level: 2,
-      chunks: [
-        {
-          id: "lab-status-1",
-          content: `${lab.title} (${lab.affiliation}) — ${placementStatusLabels[lab.placementStatus].toLowerCase()}. ${lab.placementDetails}. Партнёр — ${lab.partner}, руководитель — ${lab.head}.${
-            lab.placementStatus === "planned"
-              ? " До открытия объект нельзя описывать как действующую площадку в УНК кампуса."
-              : ""
-          }`,
-        },
-      ],
-    });
-  }
-
-  if (campus) {
-    sections.push({
-      id: "campus",
-      heading: "Параметры кампуса",
-      level: 2,
-      chunks: [
-        {
-          id: "campus-1",
-          content: `Кампус «Южный Урал»: ${campus.campusMetrics
-            .map((metric) => `${metric.label.toLowerCase()} — ${metric.value}`)
-            .join("; ")}.`,
-        },
-      ],
-    });
-  }
-
-  const sourceCards: KnowledgeCard[] = [
-    project,
-    ...(lab ? [lab] : []),
-    ...(campus ? [campus] : []),
-  ];
-  const plainText = [
-    title,
-    lead,
-    ...sections.flatMap((section) => [
-      section.heading,
-      ...section.chunks.map((chunk) => chunk.content),
+  const participants = project.isJoint
+    ? project.participantUniversityIds.map(getUniversityName)
+    : [
+        getUniversityName(project.initiatorUniversityId),
+        ...project.coExecutors,
+      ];
+  const sections = [
+    rewriteSection("participants", "Вузы и партнёры", [
+      "Инициатор: " + getUniversityName(project.initiatorUniversityId),
+      "Участники: " + [...new Set(participants)].join(", "),
+      project.industrialPartner
+        ? "Индустриальный партнёр: " + project.industrialPartner
+        : "",
     ]),
-  ].join("\n\n");
-
-  return {
-    title,
-    lead,
+    rewriteSection("result", "Стадия и результаты проекта", [
+      "Контур: " + project.contour,
+      "Стадия готовности: " + project.readinessStage,
+      ...project.confirmedFigures.map(
+        (figure) => project.title + ": " + figure
+      ),
+    ]),
+    ...(lab ? [labPlacementSection(lab)] : []),
+    ...(campus ? [campusMetricSection(campus)] : []),
+  ];
+  return buildScopedRewrite(
+    project.title,
+    project.referenceDescription,
     sections,
-    sourceCardIds: sourceCards.map((card) => card.id),
-    sourceCardTitles: sourceCards.map((card) => card.title),
-    plainText,
-  };
+    [project, ...(lab ? [lab] : []), ...(campus ? [campus] : [])]
+  );
 }
 
 function buildLabRewrite(
   lab: LaboratoryCard,
   campus: CampusCard | null
 ): CanonicalRewrite {
-  const title = `${lab.title}: ${lab.affiliation}`;
-  const lead = `${lab.referenceDescription} Статус размещения — ${placementStatusLabels[lab.placementStatus].toLowerCase()}: ${lab.placementDetails}.`;
-  const sections: CanonicalRewriteSection[] = [
-    {
-      id: "lab-status",
-      heading: "Статус и площадка",
-      level: 2,
-      chunks: [
-        {
-          id: "lab-status-1",
-          content: `${lab.title} (${lab.affiliation}) — ${placementStatusLabels[lab.placementStatus].toLowerCase()}. ${lab.placementDetails}.`,
-        },
-      ],
-    },
-    {
-      id: "lab-directions",
-      heading: "Направления работы",
-      level: 2,
-      chunks: [
-        {
-          id: "lab-directions-1",
-          content: `Направления: ${lab.workDirections.join("; ")}. Оборудование: ${lab.equipment.join("; ")}.`,
-        },
-        {
-          id: "lab-directions-2",
-          content: `Партнёр — ${lab.partner}, руководитель — ${lab.head}. Подтверждённые показатели: ${lab.confirmedIndicators.join("; ")}.`,
-        },
-      ],
-    },
+  const sections = [
+    labPlacementSection(lab),
+    rewriteSection(
+      "lab-directions",
+      "Направления работы и оборудование",
+      [...lab.workDirections, ...lab.equipment, ...lab.confirmedIndicators],
+      3
+    ),
+    ...(campus ? [campusMetricSection(campus)] : []),
   ];
-
-  if (campus) {
-    sections.push({
-      id: "campus",
-      heading: "Параметры кампуса",
-      level: 2,
-      chunks: [
-        {
-          id: "campus-1",
-          content: `Кампус «Южный Урал»: ${campus.campusMetrics
-            .map((metric) => `${metric.label.toLowerCase()} — ${metric.value}`)
-            .join("; ")}.`,
-        },
-      ],
-    });
-  }
-
-  const sourceCards: KnowledgeCard[] = [lab, ...(campus ? [campus] : [])];
-  const plainText = [
-    title,
-    lead,
-    ...sections.flatMap((section) => [
-      section.heading,
-      ...section.chunks.map((chunk) => chunk.content),
-    ]),
-  ].join("\n\n");
-
-  return {
-    title,
-    lead,
-    sections,
-    sourceCardIds: sourceCards.map((card) => card.id),
-    sourceCardTitles: sourceCards.map((card) => card.title),
-    plainText,
-  };
+  return buildScopedRewrite(lab.title, lab.referenceDescription, sections, [
+    lab,
+    ...(campus ? [campus] : []),
+  ]);
 }
 
 function buildCampusRewrite(campus: CampusCard): CanonicalRewrite {
-  const title =
-    "Межуниверситетский кампус мирового уровня «Южный Урал»: канонические параметры и 7 вузов-резидентов";
-  const lead = campus.referenceDescription;
-  const sections: CanonicalRewriteSection[] = [
-    {
-      id: "campus-metrics",
-      heading: "Площади, инвестиции, этапы и вместимость",
-      level: 2,
-      chunks: [
-        {
-          id: "campus-metrics-1",
-          content: campus.campusMetrics
-            .map(
-              (metric) => `${metric.label}: ${metric.value} (${metric.note})`
-            )
-            .join(". "),
-        },
-        {
-          id: "campus-metrics-2",
-          content: `Тарифы на проживание (ООО «Отельные решения», «Три звезды»): ${campus.tariffs
-            .map((tariff) => `${tariff.label} — ${tariff.value}`)
-            .join("; ")}.`,
-        },
-      ],
-    },
-    {
-      id: "campus-entities",
-      heading: "Участники, юридические лица и стоп-лист",
-      level: 2,
-      chunks: [
-        {
-          id: "campus-entities-1",
-          content: `В проекте кампуса «Южный Урал» участвуют 7 равноправных вузов: ЮУрГУ, ЧелГУ, МИДиС (единственный частный), ЮУГМУ, ЮУрГАУ, МГТУ им. Г. И. Носова и ЮУрГГПУ. Юрлица: ${campus.legalEntities
-            .map((entity) => `${entity.name} — ${entity.role}`)
-            .join("; ")}.`,
-        },
-      ],
-    },
-  ];
-
-  const plainText = [
-    title,
-    lead,
-    ...sections.flatMap((section) => [
-      section.heading,
-      ...section.chunks.map((chunk) => chunk.content),
-    ]),
-  ].join("\n\n");
-
-  return {
-    title,
-    lead,
-    sections,
-    sourceCardIds: [campus.id],
-    sourceCardTitles: [campus.title],
-    plainText,
-  };
+  return buildScopedRewrite(
+    campus.title,
+    campus.referenceDescription,
+    [
+      campusMetricSection(campus),
+      rewriteSection(
+        "campus-entities",
+        "Организации и их роли",
+        campus.legalEntities.map((entity) => entity.name + " — " + entity.role),
+        3
+      ),
+      rewriteSection(
+        "campus-tariffs",
+        "Тарифы",
+        campus.tariffs.map((item) => item.label + " — " + item.value),
+        3
+      ),
+    ],
+    [campus]
+  );
 }
 
 export function buildCanonicalRewrite(

@@ -95,6 +95,7 @@ export type CustomCardField = {
 export type CardTypeDefinition = {
   id: string;
   name: string;
+  organizationScope?: "chkk";
   description: string;
   fields: CustomCardField[];
   createdAt: string;
@@ -107,8 +108,10 @@ export type CardTypeWithStats = CardTypeDefinition & {
 
 export const folderIds = {
   campus: "00_campus",
+  chkkParameters: "00_campus/construction",
   universities: "01_universities",
   joint: "02_joint",
+  rioProjects: "04_rio_projects",
   customRoot: "03_custom",
   customType: (typeId: string) => `03_custom/${typeId}`,
   university: (universityId: string) => `01_universities/${universityId}`,
@@ -141,6 +144,12 @@ export const knowledgeTree: KnowledgeFolderNode[] = [
     description:
       "Единый паспорт кампуса: площади, стоимость, сроки очередей, тарифы, юрлица и стоп-лист частых ошибок",
     kind: "campus",
+    children: [{
+      id: folderIds.chkkParameters,
+      name: "Параметры_ЧКК",
+      description: "Очереди, площади, тарифы и другие сведения об объектах УНК",
+      kind: "subfolder",
+    }],
   },
   {
     id: folderIds.universities,
@@ -169,12 +178,19 @@ export const knowledgeTree: KnowledgeFolderNode[] = [
       "Межвузовские проекты: одна карточка хранится здесь и ссылкой показывается в папках вузов-участников",
     kind: "joint",
   },
+  {
+    id: folderIds.rioProjects,
+    name: "04_Проекты_РИОН",
+    description: "Проекты АНО «РИОН» без отдельного вуза-инициатора",
+    kind: "subfolder",
+  },
 ];
 
 export function buildKnowledgeTree(
   customTypes: CardTypeDefinition[] = []
 ): KnowledgeFolderNode[] {
-  if (customTypes.length === 0) return knowledgeTree;
+  const standardTypes = customTypes.filter(type => type.organizationScope !== "chkk");
+  if (standardTypes.length === 0) return knowledgeTree;
 
   return [
     ...knowledgeTree,
@@ -184,7 +200,7 @@ export function buildKnowledgeTree(
       description:
         "Типы карточек, созданные координатором в конструкторе полей",
       kind: "custom-root",
-      children: customTypes.map((type) => ({
+      children: standardTypes.map((type) => ({
         id: folderIds.customType(type.id),
         name: type.name,
         description: type.description || "Пользовательский тип карточки",
@@ -213,6 +229,11 @@ export const cardStatusLabels: Record<CardStatus, string> = {
 
 export type CardEditRequestStatus = "open" | "resolved";
 
+export const STAKEHOLDER_APPROVAL_ROLES = ["ministry", "rio", "chkk"] as const;
+export type StakeholderApprovalRole = (typeof STAKEHOLDER_APPROVAL_ROLES)[number];
+export type CardOrganizationScope = "rio" | "chkk";
+export type CardApprovalRecord = { revisionId: string; actorId: string; at: string; comment?: string };
+
 export type CardEditRequest = {
   id: string;
   authorId: string;
@@ -222,6 +243,7 @@ export type CardEditRequest = {
   message: string;
   createdAt: string;
   status: CardEditRequestStatus;
+  recipient?: "owner" | "coordinator";
   resolvedBy?: string;
   resolvedAt?: string;
   resolution?: string;
@@ -277,6 +299,10 @@ type KnowledgeCardBase = {
   reviewedAt?: string;
   reviewComment?: string;
   participantApprovals?: string[];
+  participantApprovalRecords?: Record<string, CardApprovalRecord>;
+  requiredApprovalStakeholderRoles?: StakeholderApprovalRole[];
+  stakeholderApprovals?: Partial<Record<StakeholderApprovalRole, CardApprovalRecord>>;
+  organizationScope?: CardOrganizationScope;
   editRequests?: CardEditRequest[];
   approvedSnapshot?: KnowledgeCard;
   requiredApprovalUniversityIds?: string[];
@@ -338,6 +364,7 @@ export type CustomFieldValue = string | number | string[] | null;
 export type CustomCard = KnowledgeCardBase & {
   type: "custom";
   customTypeId: string;
+  universityId?: string;
   customFields: Record<string, CustomFieldValue>;
 };
 
@@ -423,6 +450,12 @@ export function getApprovedVersion(card: KnowledgeCard): KnowledgeCard | null {
     : null;
 }
 
+export function getLegacyCustomDraftUniversityId(card: KnowledgeCard): string | null {
+  if (card.type !== "custom" || card.organizationScope || card.universityId ||
+      card.ownerIds !== undefined || getApprovedVersion(card)) return null;
+  return findFolder(card.folderId)?.universityId ?? null;
+}
+
 function pickFields<T, K extends keyof T>(record: T, fields: K[]): Pick<T, K> {
   return Object.fromEntries(fields.map((key) => [key, record[key]])) as Pick<T, K>;
 }
@@ -433,6 +466,7 @@ export function cardContent(card: KnowledgeCard): KnowledgeCard {
     "id", "title", "folderId", "owners", "referenceDescription", "stopFormula",
     "createdAt", "updatedAt", "status",
   ]);
+  if (card.organizationScope) Object.assign(base, { organizationScope: card.organizationScope });
   if (card.changeReason !== undefined) Object.assign(base, { changeReason: card.changeReason });
   if (card.sources !== undefined) Object.assign(base, { sources: card.sources });
   if (card.verifiedFacts !== undefined) Object.assign(base, { verifiedFacts: card.verifiedFacts });
@@ -453,7 +487,8 @@ export function cardContent(card: KnowledgeCard): KnowledgeCard {
     case "campus":
       return { ...base, ...pickFields(card, ["type", "campusMetrics", "tariffs", "legalEntities", "stopList"]) };
     case "custom":
-      return { ...base, ...pickFields(card, ["type", "customTypeId", "customFields"]) };
+      return { ...base, ...pickFields(card, ["type", "customTypeId", "customFields"]),
+        ...(card.universityId ? { universityId: card.universityId } : {}) };
     case "university":
       return { ...base, ...pickFields(card, ["type", "universityId", "structuredMetrics"]) };
   }
@@ -461,24 +496,47 @@ export function cardContent(card: KnowledgeCard): KnowledgeCard {
 
 export function getPublicApprovedCard(card: KnowledgeCard): KnowledgeCard | null {
   const approved = getApprovedVersion(card);
-  return approved && cardContent({ ...approved, freshness: card.freshness ?? approved.freshness });
+  if (!approved) return null;
+  const visible = cardContent({ ...approved, freshness: card.freshness ?? approved.freshness });
+  // Legacy shared laboratories retain participation as governance metadata.
+  // Keep cardContent unchanged so existing source-version hashes stay valid.
+  if (approved.type === "laboratory" && approved.requiredApprovalUniversityIds?.length) {
+    visible.requiredApprovalUniversityIds = [...approved.requiredApprovalUniversityIds];
+  }
+  return visible;
 }
 
 export function getRequiredUniversityApprovals(card: KnowledgeCard): string[] {
-  return (
-    card.requiredApprovalUniversityIds ??
-    (isJointProject(card) ? card.participantUniversityIds : [])
-  );
+  if ((card.type !== "project" || !isCardApproved(card)) && card.requiredApprovalUniversityIds) {
+    return card.requiredApprovalUniversityIds;
+  }
+  return isJointProject(card) ? card.participantUniversityIds : [];
+}
+
+type StakeholderApprovalScope = { type: KnowledgeCardType; organizationScope?: CardOrganizationScope; isJoint?: boolean; placementStatus?: PlacementStatus };
+
+export function stakeholderApprovalRoles(card: StakeholderApprovalScope): StakeholderApprovalRole[] {
+  if (card.type === "campus") return [...STAKEHOLDER_APPROVAL_ROLES];
+  const roles: StakeholderApprovalRole[] = [];
+  if (card.organizationScope === "rio" || card.isJoint) roles.push("rio");
+  if (card.organizationScope === "chkk" || card.placementStatus === "planned") roles.push("chkk");
+  return roles;
+}
+
+export function getRequiredStakeholderApprovals(card: KnowledgeCard): StakeholderApprovalRole[] {
+  if (!isCardApproved(card) && card.requiredApprovalStakeholderRoles) return card.requiredApprovalStakeholderRoles;
+  return stakeholderApprovalRoles(card);
 }
 
 export function getParticipantApprovals(card: KnowledgeCard): string[] {
+  if (getCardStatus(card) !== "approved") return Object.keys(card.participantApprovalRecords ?? {});
   if (!getRequiredUniversityApprovals(card).length) return [];
 
   return card.participantApprovals ?? [];
 }
 
 export function isJointFullyApproved(card: KnowledgeCard): boolean {
-  const approvals = new Set(card.participantApprovals ?? []);
+  const approvals = new Set(getParticipantApprovals(card));
   return getRequiredUniversityApprovals(card).every((id) => approvals.has(id));
 }
 

@@ -147,12 +147,14 @@ export function KnowledgeTree({
             </span>
           </button>
 
-          <Badge
-            variant="secondary"
-            className="h-5 min-w-5 justify-center px-1.5 text-[10px] text-muted-foreground"
-          >
-            {count}
-          </Badge>
+          {node.name !== "Готовые_статьи" ? (
+            <Badge
+              variant="secondary"
+              className="h-5 min-w-5 justify-center px-1.5 text-[10px] text-muted-foreground"
+            >
+              {count}
+            </Badge>
+          ) : null}
         </div>
 
         {hasChildren && isExpanded ? (

@@ -1,6 +1,11 @@
+import "next/dist/server/node-environment-baseline";
 import assert from "node:assert/strict";
 import { mock } from "node:test";
 import { NextRequest } from "next/server";
+import { workAsyncStorage } from "next/dist/server/app-render/work-async-storage.external";
+import { workUnitAsyncStorage } from "next/dist/server/app-render/work-unit-async-storage.external";
+import { createRequestStoreForAPI } from "next/dist/server/async-storage/request-store";
+import { SESSION_COOKIE, signSessionToken } from "../lib/auth-server";
 import { docClient, resetDbAvailableCache } from "../lib/db";
 import {
   getAllArticles,
@@ -15,6 +20,7 @@ import { POST as analytics } from "../app/api/analytics/route";
 import { GET as articles } from "../app/api/articles/route";
 import { GET as article } from "../app/api/articles/[id]/route";
 import { TABLE_NAMES, TableName } from "../lib/schema";
+import { installPilotFixture } from "./pilot-fixture";
 
 const card = {
   type: "university",
@@ -34,12 +40,28 @@ const manifest = {
   cards: [card],
 };
 
-function request(path: string, body: unknown) {
+function request(path: string, body: unknown, session?: string) {
   return new NextRequest("http://localhost:8080/api/" + path, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: "http://localhost:8080",
+      ...(session && { Cookie: SESSION_COOKIE + "=" + session }),
+    },
     body: JSON.stringify(body),
   });
+}
+
+function checkAnalyticsAvailability(session?: string) {
+  const analyticsRequest = request("analytics", { query: "Тестовый запрос" }, session);
+  const requestStore = createRequestStoreForAPI(
+    analyticsRequest, analyticsRequest.nextUrl, { tags: [], expirationsByCacheKind: new Map() },
+    undefined, undefined, undefined,
+  );
+  return workAsyncStorage.run(
+    { route: "/api/analytics" } as NonNullable<ReturnType<typeof workAsyncStorage.getStore>>,
+    () => workUnitAsyncStorage.run(requestStore, () => analytics(analyticsRequest)),
+  );
 }
 
 async function main() {
@@ -51,6 +73,9 @@ async function main() {
     CAMPUS_PILOT_ACCOUNTS: "",
     DOCUMENT_API_ENDPOINT: "http://127.0.0.1:1",
   });
+  const accounts = installPilotFixture();
+  const staff = signSessionToken(accounts.account("demo-pr-midis").id);
+  assert.ok(staff);
   // Every SDK command is intercepted, including commands from imported routes.
   const transport = mock.method(docClient, "send", async () => {
     throw new Error("Synthetic outage");
@@ -69,13 +94,14 @@ async function main() {
       "Production storage loss must reject data reads"
     );
   }
+  assert.equal((await checkAnalyticsAvailability()).status, 401);
   for (const response of await Promise.all([
     factCheck(
       request("fact-check", {
         text: "Тестовый текст для проверки доступности.",
       })
     ),
-    analytics(request("analytics", { query: "Тестовый запрос" })),
+    checkAnalyticsAvailability(staff),
     articles(),
     article(new Request("http://localhost:8080"), {
       params: Promise.resolve({ id: "test" }),

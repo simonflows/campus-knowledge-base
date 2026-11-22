@@ -322,16 +322,21 @@ test("Видимость редакций, служебных полей и об
   assert.equal(isCardOwner(editor, [editor.ownershipLabel]), true);
 });
 
-test("Вуз, от которого требуется подтверждение, видит редакцию и только свои обращения", () => {
-  const participant = getDemoAccount("demo-pr-csu")!;
+test("Руководитель выбывающего вуза видит редакцию, подлежащую его подтверждению", () => {
+  const participant = toSessionUser(getDemoAccount("demo-owner-csu")!);
+  const pr = toSessionUser(getDemoAccount("demo-pr-csu")!);
   const project = knowledgeSeedCards.find((card): card is ProjectCard => card.type === "project")!;
   const revised: ProjectCard = {
     ...project, status: "pending", owners: ["Автор"], submittedBy: "fixture-owner",
     requiredApprovalUniversityIds: ["csu"], participantUniversityIds: [], isJoint: false,
     participantApprovals: [], reviewComment: "Проверить состав участников",
+    approvedSnapshot: { ...project, isJoint: true, folderId: "02_joint", title: "Предыдущая редакция",
+      participantUniversityIds: ["susu", "csu"], ownerIds: [participant.id] },
   };
   assert.equal(visibleKnowledgeCard(participant, revised)?.title, revised.title);
   assert.equal(canConfirmJointParticipation(participant, revised), true);
+  assert.equal(visibleKnowledgeCard(pr, revised)?.title, revised.approvedSnapshot?.title);
+  assert.equal(canConfirmJointParticipation(pr, revised), false);
   assert.equal(canConfirmJointParticipation(participant, { ...revised, status: "rejected" }), false);
 });
 console.log(`${passed} university fact/lifecycle regressions passed.`);

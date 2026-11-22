@@ -28,7 +28,7 @@ export interface AiExecutionResult {
 export async function runWithAiProvider(
   messages: YandexAiMessage[],
   requested: AiProviderChoice = "auto",
-  options: { temperature?: number; maxTokens?: number } = {}
+  options: { temperature?: number; maxTokens?: number; signal?: AbortSignal } = {}
 ): Promise<AiExecutionResult> {
   const startedAt = Date.now();
 
@@ -36,6 +36,7 @@ export async function runWithAiProvider(
     const text = await callYandexAi(messages, {
       temperature: options.temperature ?? 0.05,
       maxTokens: options.maxTokens ?? 4_000,
+      signal: options.signal,
     });
     return {
       text,

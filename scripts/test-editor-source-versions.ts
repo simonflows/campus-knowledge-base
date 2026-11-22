@@ -98,7 +98,7 @@ test("a single-year generation saves the full passport's immutable version", asy
   assert.deepEqual((pinned.version?.snapshot as UniversityCard).structuredMetrics.map(row => row.year), [2025, 2024]);
 });
 
-test("approval checks pinned numbers even when the current card would confirm the text", async context => {
+test("approval rejects an obsolete pin even when the current card would confirm the text", async context => {
   const { save, table } = database(context);
   const accounts = installPilotFixture();
   const user = accounts.account("demo-pr-midis");
@@ -120,9 +120,11 @@ test("approval checks pinned numbers even when the current card would confirm th
   });
   await assert.rejects(mutateEditorial(draft.id, coordinator, {
     action: "approve", version: submit.document.version, revisionId: draft.revisionId, comment: "",
-  }), { status: 422 });
+  }), { status: 409, message: /Источники обновились.*актуальные карточки/u });
   assert.equal(table(TableName.ARTICLES).size, 0);
-  assert.equal((await getEditorialReadiness(user, draft.id)).approval.status, "submitted");
+  const stillSubmitted = await getEditorialReadiness(user, draft.id);
+  assert.equal(stillSubmitted.approval.status, "submitted");
+  assert.deepEqual(stillSubmitted.sourceVersions, [pin]);
 
   const legacy = await createEditorial(user, { channel: "Оригинал", content: { ...content, sourceVersions: undefined } });
   const legacySubmitted = await mutateEditorial(legacy.id, user, {

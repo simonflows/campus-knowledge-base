@@ -16,7 +16,7 @@ import { getArticleById, getCanonicalKnowledgeCards, getKnowledgeCardById } from
 import { isApprovedArticle, articleSeed, type ReadyArticle } from "./articles";
 import { createPendingDiskSync, observedExportCondition } from "./disk-sync";
 import { readLocalStore } from "./local-store";
-import { getPublicApprovedCard, getUniversityById, type KnowledgeCard } from "./knowledge";
+import { getApprovedVersion, getPublicApprovedCard, getUniversityById, type KnowledgeCard } from "./knowledge";
 import { ensureApprovedCardVersion, getApprovedCardVersion, getCardVersionId } from "./knowledge-versions";
 import {
   EditorialError,
@@ -334,8 +334,8 @@ async function normalizeSources(
     ...(requested !== undefined ? { sourceVersions: requested } : {}),
   };
 }
-export async function getEditorialReviewers(doc: EditorialDocument) {
-  const cards = await getCanonicalKnowledgeCards();
+export async function getEditorialReviewers(doc: EditorialDocument, observedCards?: KnowledgeCard[]) {
+  const cards = observedCards ?? await getCanonicalKnowledgeCards();
   const university = getUniversityById(doc.content.universityId);
   const shared = cards
     .filter((card) => doc.content.sourceCardIds.includes(card.id))
@@ -499,6 +499,7 @@ export async function mutateEditorial(
   let revision: EditorialRevision | undefined;
   let publication: ReadyArticle | undefined;
   let previousPublication: ReadyArticle | null = null;
+  const sourceGuards: NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]> = [];
   let action: EditorialEvent["action"] = "saved";
   if (mutation.action === "save" || mutation.action === "restore") {
     let content: EditorialContent;
@@ -564,17 +565,36 @@ export async function mutateEditorial(
     }
     if (mutation.action === "comment") action = "commented";
     if (mutation.action === "approve") {
-      const allowedReviewers = await getEditorialReviewers(current);
+      const ids = [...new Set(target.content.sourceCardIds)];
+      // YDB Document API allows 25 operations. Approval writes the document, event and article.
+      if (ids.length > 22) throw new EditorialError("Для согласования оставьте не больше 22 используемых карточек.", 422);
+      const rawSources = await Promise.all(ids.map(getKnowledgeCardById));
+      const currentSources = rawSources.flatMap(raw => {
+        if (!raw) return [];
+        const approved = getApprovedVersion(raw);
+        const publicSource = getPublicApprovedCard(raw);
+        if (!approved || !publicSource) return [];
+        sourceGuards.push({
+          ConditionCheck: {
+            TableName: TableName.KNOWLEDGE_CARDS, Key: { id: raw.id },
+            ConditionExpression: approved === raw ? "updatedAt = :sourceHead" :
+              "updatedAt = :sourceHead AND approvedSnapshot.updatedAt = :publishedSnapshot",
+            ExpressionAttributeValues: {
+              ":sourceHead": raw.updatedAt,
+              ...(approved !== raw ? { ":publishedSnapshot": approved.updatedAt } : {}),
+            },
+          },
+        });
+        return [publicSource];
+      });
+      if (!currentSources.length || currentSources.length !== ids.length)
+        throw new EditorialError("Укажите доступные источники официальных данных", 422);
+      const allowedReviewers = await getEditorialReviewers(current, currentSources);
       if (!allowedReviewers.some((reviewer) => reviewer.id === user.id))
         throw new EditorialError(
           "Этот материал требует согласования координатором",
           403
         );
-      const cards = await getCanonicalKnowledgeCards();
-      if (!cards.length)
-        throw new EditorialError("Нет официальных данных для проверки", 409);
-      const ids = target.content.sourceCardIds;
-      const currentSources = cards.filter((c) => ids.includes(c.id));
       const references = target.content.sourceVersions ?? [];
       const pinned = references.length ? new Map((await getEditorialSourceVersions(target.content))
         .flatMap(({ id, version }): [string, KnowledgeCard][] => version ? [[id, version.snapshot]] : []))
@@ -583,17 +603,28 @@ export async function mutateEditorial(
         throw new EditorialError("Закреплённая версия источника недоступна", 422);
       }
       const sources = currentSources.map((card) => pinned.get(card.id) ?? card);
-      if (!sources.length || sources.length !== new Set(ids).size)
-        throw new EditorialError(
-          "Укажите доступные источники официальных данных",
-          422
-        );
-      const check = checkFactText(editorialText(target.content), references.length ? sources : cards);
+      const articleText = editorialText(target.content);
+      const check = checkFactText(articleText, sources);
       if (check.summary.red > 0)
         throw new EditorialError(
           "Согласование заблокировано: исправьте красные замечания фактчека",
           422
         );
+      const currentVersionByCard = new Map(currentSources.map(card => [card.id, getCardVersionId(card)]));
+      if (references.some(({ cardId, versionId }) => currentVersionByCard.get(cardId) !== versionId)) {
+        throw new EditorialError(
+          "Источники обновились. Сверьте текст, переподключите актуальные карточки в источниках редакции и отправьте её на согласование.",
+          409
+        );
+      }
+      // Selected cards provide the evidence. Omitting a card cannot hide a known
+      // contradiction elsewhere in the approved corpus.
+      const corpusCheck = checkFactText(articleText, await getCanonicalKnowledgeCards());
+      if (corpusCheck.findings.some(finding =>
+        finding.level === "red" && (references.length === 0 || Boolean(finding.sourceCardId))
+      )) {
+        throw new EditorialError("Согласование заблокировано: текст расходится с утверждёнными карточками.", 422);
+      }
       next.status = "approved";
       next.approvedRevisionId = target.id;
       action = "approved";
@@ -679,7 +710,7 @@ export async function mutateEditorial(
           ExpressionAttributeValues: { ...observed.ExpressionAttributeValues, ":previousRevision": previousPublication.approval.revisionId },
         }
       : { ConditionExpression: "attribute_not_exists(id)" };
-    writes.push({ Put: { TableName: TableName.ARTICLES, Item: publication, ...condition } });
+    writes.push(...sourceGuards, { Put: { TableName: TableName.ARTICLES, Item: publication, ...condition } });
   }
   try {
     await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
@@ -698,7 +729,9 @@ export async function mutateEditorial(
       ].includes(error.name)
     )
       throw new EditorialError(
-        "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
+        publication
+          ? "Редакция или её источник изменились. Обновите материал и проверьте источники."
+          : "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
         409
       );
     throw error;

@@ -27,8 +27,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { FlashAssistOption, FlashAssistResult, isCurrentFlashRequest } from "@/components/flash-assist-hint";
-import type { FlashAnalyticsAssist } from "@/lib/flash-assist";
+import { isCurrentFlashRequest } from "@/components/flash-assist-hint";
+import { CanonAiOption, CanonAiReview } from "@/components/canon-ai-review";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -49,6 +49,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { AnalyticsCardRow, AnalyticsReport } from "@/lib/analytics";
+import type { CanonAnalyticsAiReview } from "@/lib/canon-analytics-ai";
 import { cn } from "@/lib/utils";
 import { analyticsQuerySchema } from "@/lib/validation/analytics";
 
@@ -56,17 +57,12 @@ type AnalyticsWorkspaceProps = {
   cardsCount: number;
   dbAvailable: boolean;
   flashAssistAvailable?: boolean;
+  dynamicExamples?: string[];
 };
 
 type ViewMode = "table" | "list";
 
-const examples = [
-  "Собери все проекты взаимодействия вузов с индустриальными партнёрами в сфере медицины",
-  "Сделай отчёт по взаимодействию вузов между собой в здравоохранении",
-  "Покажи проекты ЮУрГУ в контуре ПИШ",
-  "Собери лаборатории по цифровым технологиям",
-  "Покажи паспорт вуза ЮУрГУ",
-];
+type AnalyticsResponse = AnalyticsReport & { error?: string; ai?: CanonAnalyticsAiReview };
 
 const summaryLabels = [
   { key: "total", label: "Найдено карточек" },
@@ -456,10 +452,15 @@ function ListView({ cards }: { cards: AnalyticsCardRow[] }) {
   );
 }
 
-function buildReportText(report: AnalyticsReport, origin: string): string {
+function buildReportText(report: AnalyticsResponse, origin: string): string {
   const lines: string[] = [
     "Аналитическая справка по базе",
-    `Запрос: ${report.query}`,
+    ...(report.ai?.appliedQuery
+      ? [
+          `Исходный запрос — ${report.ai.originalQuery}`,
+          `Запрос для расчёта — ${report.ai.appliedQuery}`,
+        ]
+      : [`Запрос: ${report.query}`]),
   ];
 
   if (report.filters.length > 0) {
@@ -514,14 +515,14 @@ export function AnalyticsWorkspace({
   cardsCount,
   dbAvailable,
   flashAssistAvailable = false,
+  dynamicExamples = [],
 }: AnalyticsWorkspaceProps) {
   const [query, setQuery] = useState("");
-  const [report, setReport] = useState<(AnalyticsReport & { flashAssist?: FlashAnalyticsAssist }) | null>(null);
+  const [report, setReport] = useState<AnalyticsResponse | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [flashEnabled, setFlashEnabled] = useState(false);
-  const queryInput = useRef<HTMLTextAreaElement>(null);
+  const [aiEnabled, setAiEnabled] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -534,11 +535,11 @@ export function AnalyticsWorkspace({
     setError(null);
   };
 
-  const requestAnalytics = async (nextQuery = query, useFlash = flashEnabled) => {
+  const requestAnalytics = async () => {
     if (abortRef.current) return;
     const parsed = analyticsQuerySchema.safeParse({
-      query: nextQuery,
-      ...(flashAssistAvailable && useFlash && { flashAssist: true }),
+      query,
+      ...(flashAssistAvailable && aiEnabled && { useAi: true }),
     });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0]?.message ?? "Проверьте текст запроса");
@@ -558,7 +559,7 @@ export function AnalyticsWorkspace({
         signal: controller.signal,
       });
       const data = (await response.json().catch(() => null)) as
-        | (AnalyticsReport & { error?: string; flashAssist?: FlashAnalyticsAssist })
+        | AnalyticsResponse
         | null;
 
       if (!isCurrentFlashRequest(controller, abortRef.current)) return;
@@ -581,7 +582,7 @@ export function AnalyticsWorkspace({
       setView("table");
 
       if (data.cards.length === 0) {
-        toast("Подходящих карточек нет", {
+        toast(data.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет", {
           description: data.notice ?? undefined,
         });
       } else {
@@ -653,7 +654,6 @@ export function AnalyticsWorkspace({
             </Label>
             <Textarea
               id="analytics-query"
-              ref={queryInput}
               value={query}
               onChange={(event) => handleQueryChange(event.target.value)}
               placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
@@ -661,7 +661,7 @@ export function AnalyticsWorkspace({
             />
 
             {flashAssistAvailable && (
-              <FlashAssistOption kind="analytics" checked={flashEnabled} disabled={isLoading} onChange={setFlashEnabled} />
+              <CanonAiOption kind="analytics" checked={aiEnabled} disabled={isLoading} onChange={setAiEnabled} />
             )}
 
             <div className="data-action-row">
@@ -682,13 +682,7 @@ export function AnalyticsWorkspace({
               </span>
             </div>
 
-            {!isLoading && flashEnabled && report?.flashAssist && (
-              <FlashAssistResult state={report.flashAssist} onApply={(proposed) => {
-                handleQueryChange(proposed);
-                queryInput.current?.focus();
-                void requestAnalytics(proposed, false);
-              }} />
-            )}
+            {!isLoading && report?.ai && <CanonAiReview review={report.ai} />}
 
             {error ? (
               <Alert variant="destructive">
@@ -705,7 +699,7 @@ export function AnalyticsWorkspace({
         >
           <h2 id="analytics-examples-title">Примеры запросов</h2>
           <ul>
-            {examples.map((example) => (
+            {dynamicExamples.map((example) => (
               <li key={example}>
                 <Button
                   type="button"
@@ -720,6 +714,9 @@ export function AnalyticsWorkspace({
               </li>
             ))}
           </ul>
+          {dynamicExamples.length === 0 && (
+            <p className="text-sm text-muted-foreground">Для текущего набора карточек пока нет примеров.</p>
+          )}
         </aside>
       </div>
 
@@ -732,8 +729,8 @@ export function AnalyticsWorkspace({
                   <EmptyMedia variant="icon">
                     <Search className="size-5" />
                   </EmptyMedia>
-                  <EmptyTitle>Подходящих карточек нет</EmptyTitle>
-                  <EmptyDescription>{report.notice}</EmptyDescription>
+                  <EmptyTitle>{report.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет"}</EmptyTitle>
+                  <EmptyDescription>{report.interpretation?.message ?? report.notice}</EmptyDescription>
                 </EmptyHeader>
                 <div className="w-full max-w-2xl">
                   <FilterChips report={report} centered />

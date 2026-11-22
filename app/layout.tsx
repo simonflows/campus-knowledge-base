@@ -11,6 +11,7 @@ import { PageContent } from "@/components/navigation/page-content";
 import { AmbientBackdrop } from "@/components/motion/ambient-backdrop";
 import { SystemStatusBar } from "@/components/system/system-status-bar";
 import { Toaster } from "@/components/ui/sonner";
+import { AssistantWidget } from "@/components/assistant/assistant-widget";
 import { getIntegrationStatus } from "@/lib/integration-status";
 import { getSessionUser } from "@/lib/auth-server";
 import { universities } from "@/lib/data";
@@ -169,6 +170,7 @@ export default async function RootLayout({
             </div>
           </div>
         </footer>
+        <AssistantWidget staff={staff} />
         <Toaster richColors position="top-right" offset={{ top: 96 }} />
       </body>
     </html>

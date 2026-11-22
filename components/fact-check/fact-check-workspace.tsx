@@ -28,8 +28,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-import { FlashAssistOption, FlashAssistResult, isCurrentFlashRequest } from "@/components/flash-assist-hint";
-import type { FlashFactAssist } from "@/lib/flash-assist";
+import { isCurrentFlashRequest } from "@/components/flash-assist-hint";
+import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/canon-ai-review";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -74,7 +74,7 @@ type RewriteCheck = {
 };
 
 type FactCheckResponse = FactCheckResult & {
-  flashAssist?: FlashFactAssist;
+  ai?: FactAiReview;
   rewrite?: CanonicalRewrite | null;
   rewriteCheck?: RewriteCheck | null;
   rewriteError?: string;
@@ -355,7 +355,7 @@ export function FactCheckWorkspace({
   const [isChecking, setIsChecking] = useState(false);
   const [isRewriting, setIsRewriting] = useState(false);
   const [filter, setFilter] = useState<LevelFilter>("all");
-  const [flashEnabled, setFlashEnabled] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(true);
   const requestRevision = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -437,7 +437,7 @@ export function FactCheckWorkspace({
     const parsed = factCheckInputSchema.safeParse({
       text: draft,
       mode,
-      ...(mode === "check" && flashAssistAvailable && flashEnabled && { flashAssist: true }),
+      ...(mode === "check" && flashAssistAvailable && aiEnabled && { useAi: true }),
     });
     if (!parsed.success) {
       toast.error(
@@ -642,8 +642,8 @@ export function FactCheckWorkspace({
             />
 
             {flashAssistAvailable && (
-              <FlashAssistOption kind="fact" checked={flashEnabled} disabled={isChecking || isRewriting}
-                onChange={setFlashEnabled} />
+              <CanonAiOption kind="fact" checked={aiEnabled} disabled={isChecking || isRewriting}
+                onChange={setAiEnabled} />
             )}
 
             <div className="data-action-row">
@@ -681,7 +681,7 @@ export function FactCheckWorkspace({
 
             <div className="data-check-examples">
               <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Примеры текстов для проверки
+                Учебные тексты с намеренными неточностями
               </p>
               <div className="grid gap-2 sm:grid-cols-3">
                 {FACT_CHECK_PRESETS.map((preset) => (
@@ -830,11 +830,7 @@ export function FactCheckWorkspace({
               )}
             </CardContent>
           </Card>
-          {flashEnabled && !isChecking && !isRewriting && result?.flashAssist ? (
-            <div className="rounded-xl border bg-card p-3">
-              <FlashAssistResult state={result.flashAssist} />
-            </div>
-          ) : null}
+          {!isChecking && !isRewriting && result?.ai && <CanonAiReview review={result.ai} />}
           <details className="data-fact-checkpoints">
             <summary>
               Контрольные точки <span>{checkpoints.length}</span>

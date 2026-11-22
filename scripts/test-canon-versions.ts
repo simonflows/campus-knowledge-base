@@ -1,5 +1,5 @@
+import "next/dist/server/node-environment-baseline";
 import assert from "node:assert/strict";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { test, type TestContext } from "node:test";
 import { DeleteCommand, PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
@@ -56,20 +56,27 @@ function removeFixtureCard(context: TestContext, card: KnowledgeCard) {
 
 test("publishing a new approved card stores its snapshot", async (context) => {
   await requireFixtureDatabase();
-  const input = knowledgeCardInputSchema.parse(knowledgeSeedCards[0]);
+  const accounts = installPilotFixture();
+  const owner = accounts.account("demo-owner-" + project.initiatorUniversityId);
+  const coordinator = accounts.account("demo-admin");
+  const input = knowledgeCardInputSchema.parse({
+    ...project,
+    owners: [owner.ownershipLabel],
+    ownerIds: [owner.id],
+  });
   const approved = await createKnowledgeCard(
     { ...input, title: "QA: новый утверждённый факт" },
     {
       status: "approved",
-      submittedBy: "qa-coordinator",
-      submittedByName: "Координатор QA",
+      submittedBy: coordinator.id,
+      submittedByName: coordinator.name,
     }
   );
   removeFixtureCard(context, approved);
   const history = await storedVersions(approved.id);
   assert.equal(history.length, 1);
   assert.equal(history[0].snapshot.title, approved.title);
-  assert.equal(history[0].actorId, "qa-coordinator");
+  assert.equal(history[0].actorId, coordinator.id);
   assert.equal(history[0].legacyBaseline, false);
 });
 
@@ -102,13 +109,14 @@ async function legacyCard(context: TestContext) {
 }
 
 async function routeFixture() {
-  Object.assign(globalThis, { AsyncLocalStorage });
   const pilot = installPilotFixture();
   const { NextRequest } = await import("next/server");
   const { workAsyncStorage } =
     await import("next/dist/server/app-render/work-async-storage.external");
   const { workUnitAsyncStorage } =
     await import("next/dist/server/app-render/work-unit-async-storage.external");
+  const { createRequestStoreForAPI } =
+    await import("next/dist/server/async-storage/request-store");
   const { SESSION_COOKIE, signSessionToken } =
     await import("../lib/auth-server");
   const origin = "http://127.0.0.2:8080";
@@ -126,6 +134,7 @@ async function routeFixture() {
       }
     ) {
       const uri = "/api/knowledge/cards/" + path;
+      const token = options ? signSessionToken(pilot.account(options.account).id) : undefined;
       const request = new NextRequest(
         origin + uri,
         options && {
@@ -133,6 +142,7 @@ async function routeFixture() {
           headers: {
             Origin: origin,
             "Content-Type": "application/json",
+            ...(token && { Cookie: SESSION_COOKIE + "=" + token }),
             ...(options.expected !== undefined && {
               "If-Match": options.expected,
             }),
@@ -140,18 +150,12 @@ async function routeFixture() {
           body: JSON.stringify(options.body),
         }
       );
-      const token = options
-        ? signSessionToken(pilot.account(options.account).id)
-        : "";
-      const cookies = {
-        get: (name: string) =>
-          token && name === SESSION_COOKIE ? { name, value: token } : undefined,
-      };
+      const requestStore = createRequestStoreForAPI(
+        request, request.nextUrl, { tags: [], expirationsByCacheKind: new Map() },
+        undefined, undefined, undefined,
+      );
       return workAsyncStorage.run({ route: uri } as never, () =>
-        workUnitAsyncStorage.run(
-          { type: "request", phase: "render", cookies } as never,
-          () => handler(request)
-        )
+        workUnitAsyncStorage.run(requestStore, () => handler(request))
       );
     },
   };
@@ -337,7 +341,7 @@ test("an assigned staff member can verify the approved version without seeing or
   await requireFixtureDatabase();
   const published = await legacyCard(context);
   const { call, account } = await routeFixture();
-  const assignedProfile = "demo-pr-" + published.initiatorUniversityId;
+  const assignedProfile = "demo-owner-" + published.initiatorUniversityId;
   const assigned = account(assignedProfile);
   const card: ProjectCard = {
     ...published,
@@ -371,7 +375,7 @@ test("an assigned staff member can verify the approved version without seeing or
     (
       await call(path, handler, {
         ...option,
-        account: "demo-owner-" + published.initiatorUniversityId,
+        account: "demo-pr-" + published.initiatorUniversityId,
         body: verify,
       })
     ).status,

@@ -1,7 +1,9 @@
 import {
   getApprovedVersion,
+  getCardStatus,
   getRequiredUniversityApprovals,
   isCardReadyForPublication,
+  stakeholderApprovalRoles,
   universityPassportSeeds,
   type KnowledgeCard,
 } from "./knowledge";
@@ -19,7 +21,7 @@ export function missingUniversityPassports(cards: KnowledgeCard[]) {
   );
 }
 
-/** Joint approvals belong to the exact card content, not to its permanent ID. */
+/** A change to a pending proposal invalidates decisions on the previous proposal. */
 export function knowledgeUpdateModeration(
   current: KnowledgeCard,
   input: KnowledgeCardInput,
@@ -29,6 +31,9 @@ export function knowledgeUpdateModeration(
     KnowledgeCard,
     | "status"
     | "participantApprovals"
+    | "participantApprovalRecords"
+    | "requiredApprovalStakeholderRoles"
+    | "stakeholderApprovals"
     | "approvedSnapshot"
     | "requiredApprovalUniversityIds"
     | "submittedBy"
@@ -38,19 +43,27 @@ export function knowledgeUpdateModeration(
     | "reviewComment"
   >
 > {
-  const changed = Object.keys(input).some(
+  const contentChanged = Object.keys(input).some(
     (key) => key !== "ownerIds" && key !== "changeReason" &&
       JSON.stringify(current[key as keyof KnowledgeCard]) !==
       JSON.stringify(input[key as keyof KnowledgeCardInput])
   );
-  if (!changed) return {};
-  const joint =
-    getRequiredUniversityApprovals(current).length > 0 ||
-    (current.type === "project" && current.isJoint) ||
-    (input.type === "project" && input.isJoint);
-  const readyForPublication = isCardReadyForPublication(input);
-  if (!joint && (!editor || editor.isAdmin) && readyForPublication) return {};
+  const assignmentsChanged = getCardStatus(current) !== "approved" &&
+    JSON.stringify(current.ownerIds) !== JSON.stringify(input.ownerIds);
+  if (!contentChanged && !assignmentsChanged) return {};
   const published = getApprovedVersion(current);
+  const requiredUniversityIds = [...new Set([
+    ...(published ? getRequiredUniversityApprovals(published) : []),
+    ...(current.type !== "project" ? getRequiredUniversityApprovals(current) : []),
+    ...(input.type === "project" && input.isJoint ? input.participantUniversityIds : []),
+  ])];
+  const requiredStakeholders = [...new Set([
+    ...(published ? stakeholderApprovalRoles(published) : []),
+    ...stakeholderApprovalRoles(input),
+  ])];
+  const readyForPublication = isCardReadyForPublication(input);
+  if (getCardStatus(current) === "approved" && !requiredUniversityIds.length && !requiredStakeholders.length &&
+      (!editor || editor.isAdmin) && readyForPublication) return {};
   const snapshot = published
     ? (Object.fromEntries(
         Object.entries(published).filter(([key]) => key !== "approvedSnapshot")
@@ -59,23 +72,19 @@ export function knowledgeUpdateModeration(
   return {
     status: "pending" as const,
     participantApprovals: [],
+    participantApprovalRecords: {},
+    requiredApprovalStakeholderRoles: requiredStakeholders,
+    stakeholderApprovals: {},
     ...(snapshot ? { approvedSnapshot: snapshot } : {}),
-    requiredApprovalUniversityIds: joint
-      ? [
-          ...new Set([
-            ...getRequiredUniversityApprovals(current),
-            ...(input.type === "project" ? input.participantUniversityIds : []),
-          ]),
-        ]
-      : [],
-    submittedBy: editor?.id ?? current.submittedBy,
-    submittedByName: editor?.name ?? current.submittedByName,
+    requiredApprovalUniversityIds: requiredUniversityIds,
+    submittedBy: contentChanged ? editor?.id ?? current.submittedBy : current.submittedBy,
+    submittedByName: contentChanged ? editor?.name ?? current.submittedByName : current.submittedByName,
     reviewedBy: "",
     reviewedAt: "",
     reviewComment: !readyForPublication
       ? "Перед согласованием уточните стадию и контур проекта по источникам."
-      : joint
-      ? "Содержание изменено: требуется новое подтверждение вузов-участников и координатора."
+      : requiredUniversityIds.length || requiredStakeholders.length
+      ? "Редакция изменена: требуются новые подтверждения и решение координатора."
       : "Содержание изменено: требуется проверка координатора.",
   };
 }

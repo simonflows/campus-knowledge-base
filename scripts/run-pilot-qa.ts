@@ -56,9 +56,28 @@ async function main() {
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
       const analyticsPage = await browser.newPage({ reducedMotion: "reduce" });
+      const analyticsLogin = await analyticsPage.request.post(base + "/api/auth/session", {
+        headers: { Origin: base },
+        data: credentials("demo-pr-midis"),
+      });
+      assert.equal(analyticsLogin.status(), 200);
       await analyticsPage.goto(base + "/analytics");
-      await analyticsPage.getByRole("button", { name: /Собери все проекты взаимодействия/ }).click();
-      await analyticsPage.getByRole("button", { name: "Собрать аналитику", exact: true }).click();
+      assert.equal(new URL(analyticsPage.url()).pathname, "/analytics");
+      const example = analyticsPage.getByRole("complementary", { name: "Примеры запросов" }).getByRole("button").first();
+      await example.waitFor();
+      const query = await example.innerText();
+      await example.click();
+      assert.equal(await analyticsPage.getByLabel("Запрос к базе", { exact: true }).inputValue(), query.trim());
+      const [analyticsResult] = await Promise.all([
+        analyticsPage.waitForResponse(response =>
+          response.request().method() === "POST" && new URL(response.url()).pathname === "/api/analytics"
+        ),
+        analyticsPage.getByRole("button", { name: "Собрать аналитику", exact: true }).click(),
+      ]);
+      assert.equal(analyticsResult.status(), 200);
+      const report = await analyticsResult.json();
+      assert.ok(report.cards?.length > 0, "A displayed example must match an available approved card");
+      assert.equal(report.summary.total, report.cards.length);
       const metrics = analyticsPage.locator(".data-report-metrics");
       await metrics.waitFor();
       const visibleMetrics = await metrics.locator("dd").evaluateAll(cells => cells.map(cell => {
@@ -67,6 +86,11 @@ async function main() {
         return value.height > track.height && value.bottom <= track.top;
       }));
       assert.deepEqual(visibleMetrics, [true, true, true, true], "Analytics figures must stand above their tracks");
+      for (const width of [1440, 390]) {
+        await analyticsPage.setViewportSize({ width, height: 900 });
+        assert.equal(await analyticsPage.evaluate(() => document.documentElement.scrollWidth), width, "Analytics report must fit at " + width);
+      }
+      await analyticsPage.setViewportSize({ width: 1440, height: 900 });
       await analyticsPage.getByLabel("Запрос к базе", { exact: true }).fill(
         "Собери все проекты взаимодействия вузов с индустриальными партнёрами в сфере медицины с партнёром «QA " + randomUUID() + "»"
       );

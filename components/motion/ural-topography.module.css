@@ -34,55 +34,17 @@
   fill: none;
   stroke: currentColor;
   stroke-width: 0.7px;
-  stroke-opacity: 0.2;
+  stroke-opacity: 0.24;
 }
 
 .layer .indexLine {
   stroke-width: 0.95px;
-  stroke-opacity: 0.36;
-}
-
-.playback {
-  position: absolute;
-  z-index: 1;
-  inset-inline-end: clamp(0.75rem, 2vw, 1.75rem);
-  inset-block-start: 0.5rem;
-  display: grid;
-  width: 1.5rem;
-  height: 1.5rem;
-  place-items: center;
-  border: 1px solid #455d6d;
-  border-radius: 50%;
-  background: #172532;
-  color: #b2ccd9;
-  cursor: pointer;
-}
-
-.playback svg {
-  width: 0.75rem;
-  height: 0.75rem;
-}
-
-.playback:focus-visible {
-  outline: 2px solid #a1d1ec;
-  outline-offset: 1px;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .playback:hover {
-    background: #293c4b;
-  }
+  stroke-opacity: 0.42;
 }
 
 @media (max-width: 640px) {
   .canvas {
     opacity: 0.66;
-  }
-}
-
-@media (prefers-reduced-motion: reduce), (forced-colors: active) {
-  .playback {
-    display: none;
   }
 }
 

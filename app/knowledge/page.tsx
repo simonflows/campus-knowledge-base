@@ -11,11 +11,14 @@ import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
 import { StorageUnavailable } from "@/components/storage-unavailable";
 import {
   getAllCardTypes,
+  getAllArticles,
   getAllKnowledgeCards,
   customCardCounts,
 } from "@/lib/models";
 import {
+  folderIds,
   getPublicApprovedCard,
+  getUniversityIdFromFolder,
   type CardTypeDefinition,
   type CardTypeWithStats,
 } from "@/lib/knowledge";
@@ -40,14 +43,23 @@ export default async function KnowledgePage({
     version?: string;
   }>;
 }) {
-  const user = await getSessionUser();
-  const [data, params] = await Promise.all([
+  const articleFolder = searchParams.then(params => {
+    const universityId = params.folder ? getUniversityIdFromFolder(params.folder) : null;
+    return !params.card && universityId && params.folder === folderIds.subfolder(universityId, "articles") ? universityId : null;
+  });
+  const [user, data, params, articles] = await Promise.all([
+    getSessionUser(),
     Promise.all([
       getAllKnowledgeCards(),
       getAllCardTypes(),
       getReadableStorageMode(),
     ]).catch(() => null),
     searchParams,
+    articleFolder.then(universityId => universityId
+      ? getAllArticles().then(items => items
+        .filter(article => article.universityId === universityId)
+        .map(({ id, title }) => ({ id, title }))).catch(() => null)
+      : undefined),
   ]);
   if (!data) return <StorageUnavailable title="База знаний" />;
   const [allCards, types, mode] = data;
@@ -58,7 +70,7 @@ export default async function KnowledgePage({
   const approvedOnly = params.version === "approved";
   const ownerCandidates = !approvedOnly && user?.role === "admin"
     ? sessionDirectory()
-      .filter(({ role }) => ["university_owner", "university_pr", "rio", "chkk"].includes(role))
+      .filter(({ role }) => ["university_owner", "rio", "chkk"].includes(role))
       .map(({ id, role, universityId, ownershipLabel }) => ({ id, role, universityId, ownershipLabel }))
     : [];
   return (
@@ -91,6 +103,7 @@ export default async function KnowledgePage({
         initialCardId={params.card ?? null}
         initialAction={approvedOnly ? null : (params.action ?? null)}
         initialFolderId={params.folder ?? null}
+        initialFolderArticles={articles}
         dbAvailable={dbAvailable}
         currentUser={approvedOnly ? null : user}
         ownerCandidates={ownerCandidates}

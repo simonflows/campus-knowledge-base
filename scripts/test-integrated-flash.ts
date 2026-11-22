@@ -92,11 +92,11 @@ function run(
 test("normal submissions and rewrites stay local unless the user opts in for a check or a report", async (context) => {
   const { provider } = fixture(context, () => assert.fail("Unexpected provider request"));
   for (const flashAssist of [undefined, false]) {
-    assert.equal((await run(analytics, { query, flashAssist })).status, 200);
+    assert.equal((await run(analytics, { query, flashAssist }, "query")).status, 200);
     assert.equal((await run(factCheck, { text: sourceText, flashAssist })).status, 200);
   }
   assert.equal((await run(factCheck, { text: sourceText, mode: "rewrite", flashAssist: true })).status, 200);
-  assert.equal((await run(analytics, { query, flashAssist: "true" })).status, 400);
+  assert.equal((await run(analytics, { query, flashAssist: "true" }, "query")).status, 400);
   assert.equal(provider.mock.callCount(), 0);
 });
 
@@ -106,7 +106,9 @@ test("staff opt-in adds a proposal or source quotes without changing the determi
     assert.match(JSON.stringify(body), /данные/i);
     return answer(responses.shift());
   });
-  const originalReport = await (await run(analytics, { query })).json();
+  const ordinaryReport = await run(analytics, { query }, "query");
+  assert.equal(ordinaryReport.status, 200);
+  const originalReport = await ordinaryReport.json();
   const assistedReport = await run(analytics, { query, flashAssist: true }, "query");
   assert.equal(assistedReport.status, 200);
   const { flashAssist: suggestion, ...report } = await assistedReport.json();
@@ -125,6 +127,9 @@ test("staff opt-in adds a proposal or source quotes without changing the determi
 test("guest, anonymous and cross-origin opt-in are rejected before paid calls or database access", async (context) => {
   const { provider, db } = fixture(context, () => assert.fail("Unexpected provider request"));
   assert.equal((await run(analytics, { query, flashAssist: true })).status, 401);
+  assert.equal((await run(analytics, { query })).status, 401);
+  assert.equal((await run(analytics, { query, flashAssist: true }, "guest")).status, 403);
+  assert.equal((await run(analytics, { query }, "guest")).status, 403);
   assert.equal((await run(factCheck, { text: sourceText, flashAssist: true }, "guest")).status, 403);
   assert.equal((await run(analytics, { query, flashAssist: true }, "blocked", "https://other.invalid")).status, 403);
   assert.equal(provider.mock.callCount(), 0);

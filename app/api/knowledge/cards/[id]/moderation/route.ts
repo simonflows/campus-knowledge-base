@@ -1,15 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { canConfirmJointParticipation, canModerate, visibleKnowledgeCard } from "@/lib/auth";
+import {
+  canConfirmJointParticipation, canConfirmStakeholderApproval, canModerate,
+  canReviewJointParticipation, canReviewStakeholderScope, missingJointOwnerUniversityIds, visibleKnowledgeCard,
+} from "@/lib/auth";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
 import {
-  isJointFullyApproved,
+  getCardStatus,
   isCardReadyForPublication,
+  getRequiredStakeholderApprovals,
   getRequiredUniversityApprovals,
 } from "@/lib/knowledge";
+import { getCardVersionId } from "@/lib/knowledge-versions";
+import { sessionDirectory } from "@/lib/pilot-auth";
 import { moderationActionSchema } from "@/lib/validation/access";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
@@ -71,9 +77,12 @@ async function handlePost(request: NextRequest, context: RouteContext) {
 
   const expectedVersion = request.headers.get("if-match");
   const withinDecisionScope = action === "confirm-participation"
-    ? Boolean(user.universityId && getRequiredUniversityApprovals(card).includes(user.universityId))
-    : canModerate(user);
-  if (withinDecisionScope && expectedVersion !== null && expectedVersion !== card.updatedAt) {
+    ? canReviewJointParticipation(user, card)
+    : action === "confirm-stakeholder" ? canReviewStakeholderScope(user, card) : canModerate(user);
+  if (!withinDecisionScope) {
+    return NextResponse.json({ error: "Вашей роли не назначено это согласование." }, { status: 403 });
+  }
+  if (expectedVersion !== null && expectedVersion !== card.updatedAt) {
     return NextResponse.json(
       { error: "Карточка изменилась. Обновите её и повторите подтверждение." },
       { status: 409 }
@@ -82,35 +91,32 @@ async function handlePost(request: NextRequest, context: RouteContext) {
 
   const participantId = action === "confirm-participation" &&
     canConfirmJointParticipation(user, card) ? user.universityId : undefined;
-  if (action === "confirm-participation") {
-    if (!participantId) {
-      return NextResponse.json(
-        {
-          error:
-            "Подтвердить участие может только представитель вуза-участника, которого ещё нет в подтверждениях",
-        },
-        { status: 403 }
-      );
-    }
-  } else if (!canModerate(user)) {
-    return NextResponse.json(
-      { error: "Модерировать карточки может только администратор канона" },
-      { status: 403 }
-    );
+  const stakeholderRole = action === "confirm-stakeholder" &&
+    canConfirmStakeholderApproval(user, card) ? user.role : undefined;
+  if ((action === "confirm-participation" && !participantId) ||
+      (action === "confirm-stakeholder" && !stakeholderRole)) {
+    return NextResponse.json({ error: "Подтверждение уже сохранено или редакция закрыта." }, { status: 403 });
+  }
+  if (action !== "reject" && expectedVersion === null) {
+    return NextResponse.json({ error: "Откройте текущую редакцию перед подтверждением." }, { status: 428 });
+  }
+  if (getCardStatus(card) !== "pending") {
+    return NextResponse.json({ error: "Решение доступно только для редакции на согласовании." }, { status: 409 });
   }
 
-  if (participantId) {
-    const approvals = Array.from(
-      new Set([...(card.participantApprovals ?? []), participantId])
-    );
-    const updated = await setKnowledgeCardModeration(
-      id,
-      {
-        participantApprovals: approvals,
-      },
-      card.updatedAt
-    );
-
+  const revisionId = getCardVersionId({ ...card, approvedSnapshot: undefined });
+  if (participantId || stakeholderRole) {
+    const decision = {
+      revisionId, actorId: user.id, at: new Date().toISOString(), ...(comment ? { comment } : {}),
+    };
+    const participantRecords = { ...card.participantApprovalRecords, ...(participantId ? { [participantId]: decision } : {}) };
+    const updated = await setKnowledgeCardModeration(id, {
+      ...(participantId ? {
+        participantApprovalRecords: participantRecords,
+        participantApprovals: Object.keys(participantRecords),
+      } : {}),
+      ...(stakeholderRole ? { stakeholderApprovals: { ...card.stakeholderApprovals, [stakeholderRole]: decision } } : {}),
+    }, card.updatedAt);
     return updated ? NextResponse.json(visibleKnowledgeCard(user, updated)) : NextResponse.json({ error: "Карточка не найдена" }, { status: 404 });
   }
 
@@ -121,22 +127,21 @@ async function handlePost(request: NextRequest, context: RouteContext) {
     );
   }
 
-  if (
-    action === "approve" &&
-    getRequiredUniversityApprovals(card).length > 0 &&
-    !isJointFullyApproved(card)
-  ) {
-    return NextResponse.json(
-      {
-        error:
-          "Совместный проект нельзя одобрить до подтверждения обоих вузов-участников",
-        missingUniversityIds: getRequiredUniversityApprovals(card).filter(
-          (universityId) =>
-            !(card.participantApprovals ?? []).includes(universityId)
-        ),
-      },
-      { status: 409 }
-    );
+  if (action === "approve") {
+    const directory = sessionDirectory();
+    const missingOwnerUniversityIds = missingJointOwnerUniversityIds(card, directory);
+    const missingUniversityIds = getRequiredUniversityApprovals(card)
+      .filter(universityId => card.participantApprovalRecords?.[universityId]?.revisionId !== revisionId);
+    const missingStakeholderRoles = getRequiredStakeholderApprovals(card)
+      .filter(role => card.stakeholderApprovals?.[role]?.revisionId !== revisionId);
+    if (missingOwnerUniversityIds.length || missingUniversityIds.length || missingStakeholderRoles.length) {
+      return NextResponse.json({
+        error: missingOwnerUniversityIds.length
+          ? "Назначьте ответственного руководителя от каждого вуза-участника."
+          : "Сначала получите обязательные подтверждения текущей редакции.",
+        missingOwnerUniversityIds, missingUniversityIds, missingStakeholderRoles,
+      }, { status: 409 });
+    }
   }
 
   const updated = await setKnowledgeCardModeration(

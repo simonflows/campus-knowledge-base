@@ -1,4 +1,4 @@
-import { canConfirmJointParticipation, canEditCard, canSeeCard, type SessionUser } from "./auth";
+import { canConfirmJointParticipation, canConfirmStakeholderApproval, canEditCard, canManageEditRequests, canSeeCard, type SessionUser } from "./auth";
 import { universities } from "./data";
 import { canReadEditorial, type EditorialDocument } from "./editorial";
 import { canAnswerInformationRequest, canSeeInformationRequest, type InformationRequest } from "./information-requests";
@@ -28,12 +28,14 @@ export function buildWorkQueue(user: SessionUser, data: WorkQueueInput): WorkIte
     const status = getCardStatus(card), canEdit = canEditCard(user, card);
     const responsibleId = fresh?.responsibleId ?? card.ownerIds?.[0] ?? null;
     const responsibleName = fresh?.responsibleName || card.owners.join(", ") || "Ответственный не назначен";
-    if (status === "pending" && (user.role === "admin" || canConfirmJointParticipation(user, card)))
-      add({ id: `card-approval:${card.id}`, kind: "card-approval", title: card.title, reason: user.role === "admin" ? "Карточка ожидает решения координатора" : "Нужно подтвердить участие вашего вуза в этой редакции", href, responsibleId: user.id, responsibleName: user.name, dueDate: null, state: "action" });
+    const stakeholder = canConfirmStakeholderApproval(user, card);
+    if (status === "pending" && (user.role === "admin" || stakeholder || canConfirmJointParticipation(user, card)))
+      add({ id: `card-approval:${card.id}`, kind: "card-approval", title: card.title, reason: user.role === "admin" ? "Карточка ожидает решения координатора" : stakeholder ? "Согласуйте сведения в зоне ответственности вашей организации" : "Нужно подтвердить участие вашего вуза в этой редакции", href, responsibleId: user.id, responsibleName: user.name, dueDate: null, state: "action" });
     if (status === "rejected" && canEdit)
       add({ id: `card-return:${card.id}`, kind: "card-return", title: card.title, reason: card.reviewComment || "Карточка возвращена для уточнения", href, responsibleId, responsibleName, dueDate: null, state: "action" });
-    if (canEdit) for (const request of card.editRequests ?? []) {
-      if (request.status === "open") add({ id: `card-request:${card.id}:${request.id}`, kind: "card-request", title: card.title, reason: `Запрос на правку от ${request.authorName}`, href, responsibleId, responsibleName, dueDate: null, state: "action" });
+    if (canManageEditRequests(user, card)) for (const request of card.editRequests ?? []) {
+      const coordinator = user.role === "admin" && (request.recipient === "coordinator" || card.ownerIds?.length === 0);
+      if (request.status === "open") add({ id: `card-request:${card.id}:${request.id}`, kind: "card-request", title: card.title, reason: `Запрос на правку от ${request.authorName}`, href, responsibleId: coordinator || user.role !== "admin" ? user.id : responsibleId, responsibleName: coordinator || user.role !== "admin" ? user.name : responsibleName, dueDate: null, state: "action" });
     }
   }
   for (const document of data.documents) {

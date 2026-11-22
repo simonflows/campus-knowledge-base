@@ -7,7 +7,7 @@ export const loginSchema = z.object({
 });
 
 export const moderationActionSchema = z.object({
-  action: z.enum(["approve", "reject", "confirm-participation"]),
+  action: z.enum(["approve", "reject", "confirm-participation", "confirm-stakeholder"]),
   comment: z.string().trim().max(2_000).optional(),
 });
 

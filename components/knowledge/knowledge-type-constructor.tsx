@@ -90,6 +90,7 @@ export function KnowledgeTypeConstructor({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [chkkOnly, setChkkOnly] = useState(false);
   const [fields, setFields] = useState<EditableField[]>([
     {
       id: "initial-field",
@@ -110,6 +111,7 @@ export function KnowledgeTypeConstructor({
     setEditingId(null);
     setName("");
     setDescription("");
+    setChkkOnly(false);
     setFields([createEmptyField()]);
     setFormError(null);
   };
@@ -123,6 +125,7 @@ export function KnowledgeTypeConstructor({
     setEditingId(type.id);
     setName(type.name);
     setDescription(type.description);
+    setChkkOnly(type.organizationScope === "chkk");
     setFields(
       type.fields.map((field) => ({
         id: field.id,
@@ -215,6 +218,7 @@ export function KnowledgeTypeConstructor({
     const payload = {
       name,
       description,
+      ...(chkkOnly ? { organizationScope: "chkk" as const } : {}),
       fields: fields.map((field) => ({
         id: field.id,
         name: field.name,
@@ -521,6 +525,18 @@ export function KnowledgeTypeConstructor({
                 placeholder="Коротко поясните, для чего этот тип"
               />
             </div>
+            <label className="flex flex-col gap-2 text-sm font-medium">
+              Кто может создавать карточки
+              <select
+                value={chkkOnly ? "chkk" : "standard"}
+                disabled={Boolean(editingId)}
+                onChange={event => setChkkOnly(event.target.value === "chkk")}
+                className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="standard">Сотрудники с доступом к базе</option>
+                <option value="chkk">ООО «ЧКК» и координатор</option>
+              </select>
+            </label>
           </div>
 
           <div className="space-y-3">

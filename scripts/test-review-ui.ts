@@ -118,6 +118,8 @@ const pending: ProjectCard = {
 const joint: ProjectCard = {
   ...pending,
   isJoint: true,
+  folderId: folderIds.joint,
+  ownerIds: [participant.id],
   participantUniversityIds: [
     participant.universityId!,
     participant.universityId === "susu" ? "midis" : "susu",

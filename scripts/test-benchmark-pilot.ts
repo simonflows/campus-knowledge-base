@@ -607,19 +607,14 @@ test(
       403
     );
 
-    const analytics = await post("/api/analytics", {
+    const analyticsQuery = {
       query: "Покажи паспорт вуза МИДиС",
-    });
-    assert.equal(analytics.status, 200);
-    const report = await analytics.json();
-    assert.equal(report.cards[0]?.id, "university-midis");
-    const source = await fetch(new URL(report.cards[0].sourceHref, base));
-    assert.equal(source.status, 200);
-    assert.match(await source.text(), /Паспорт вуза: МИДиС/);
+    };
+    assert.equal((await post("/api/analytics", analyticsQuery)).status, 401);
 
     const accountId = process.env.CAMPUS_BENCHMARK_HTTP_ACCOUNT;
     const accessKey = process.env.CAMPUS_BENCHMARK_HTTP_ACCESS_KEY;
-    if (!accountId || !accessKey) return;
+    assert.ok(accountId && accessKey, "Pass the synthetic employee fixture credentials for HTTP checks");
 
     const session = await post("/api/auth/session", {
       accountId,
@@ -628,6 +623,13 @@ test(
     assert.equal(session.status, 200);
     const cookie = session.headers.get("set-cookie")?.split(";")[0];
     assert.ok(cookie);
+    const analytics = await post("/api/analytics", analyticsQuery, { Cookie: cookie });
+    assert.equal(analytics.status, 200);
+    const report = await analytics.json();
+    assert.equal(report.cards[0]?.id, "university-midis");
+    const source = await fetch(new URL(report.cards[0].sourceHref, base), { headers: { Cookie: cookie } });
+    assert.equal(source.status, 200);
+    assert.match(await source.text(), /Паспорт вуза: МИДиС/);
     assert.equal(
       (
         await post(

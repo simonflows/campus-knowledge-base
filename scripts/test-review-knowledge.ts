@@ -19,6 +19,7 @@ import { PATCH as patchCardType } from "../app/api/knowledge/card-types/[id]/rou
 import { SESSION_COOKIE, signSessionToken } from "../lib/auth-server";
 import { docClient, resetDbAvailableCache } from "../lib/db";
 import { importApprovedKnowledge } from "../lib/knowledge-import";
+import { getCardVersionId } from "../lib/knowledge-versions";
 import {
   knowledgeSeedCards,
   type CardTypeDefinition,
@@ -258,9 +259,13 @@ test("A stale participation decision returns a version conflict before checking 
   const card: ProjectCard = {
     ...knowledgeSeedCards.find((card): card is ProjectCard => card.type === "project")!,
     id: "fixture-joint", status: "pending", isJoint: true,
+    folderId: "02_joint",
     initiatorUniversityId: "midis", participantUniversityIds: ["midis", "susu"],
     requiredApprovalUniversityIds: ["midis", "susu"], participantApprovals: ["midis"],
-    submittedBy: "fixture-coordinator", ownerIds: [], updatedAt: version,
+    submittedBy: "fixture-coordinator", ownerIds: ["demo-owner-midis"], updatedAt: version,
+  };
+  card.participantApprovalRecords = {
+    midis: { revisionId: getCardVersionId(card), actorId: "demo-owner-midis", at: version },
   };
   useDynamo(context, (command) => {
     assert.ok(command instanceof GetCommand, "A stale decision must not write");

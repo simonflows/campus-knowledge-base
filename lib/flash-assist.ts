@@ -56,7 +56,7 @@ function staffAllowed(user: SessionUser | null) {
 }
 
 export function showFlashAssist(user: SessionUser | null) {
-  return staffAllowed(user) && configured();
+  return staffAllowed(user);
 }
 
 export async function authorizeFlashAssist(request: Request): Promise<string | NextResponse> {
@@ -82,6 +82,23 @@ export async function askFlash(
 ): Promise<Unavailable | { status: "ready"; output: unknown }> {
   if (request.signal.aborted) return { status: "failed" };
   if (!configured()) return { status: "unavailable" };
+  const answer = await runLimitedAi(request, accountId, async (signal) => {
+    const completion = await callYandexAiWithUsage(
+      [{ role: "system", text: instruction }, { role: "user", text: input }],
+      { maxTokens: Math.min(maxTokens, 3_000), temperature: 0, signal },
+    );
+    const json = completion.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    return JSON.parse(json) as unknown;
+  });
+  return answer.status === "ready" ? { status: "ready", output: answer.value } : answer;
+}
+
+export async function runLimitedAi<T>(
+  request: Request,
+  accountId: string,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<Unavailable | { status: "ready"; value: T }> {
+  if (request.signal.aborted) return { status: "failed" };
   const now = Date.now();
   if (usage.active >= 2 || (usage.cooldowns.get(accountId) ?? 0) > now) {
     return { status: "busy" };
@@ -92,16 +109,9 @@ export async function askFlash(
   usage.cooldowns.set(accountId, now + 10_000);
   usage.active++;
   try {
-    const answer = await callYandexAiWithUsage(
-      [{ role: "system", text: instruction }, { role: "user", text: input }],
-      {
-        maxTokens: Math.min(maxTokens, 1_000),
-        temperature: 0,
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(10_000)]),
-      },
-    );
-    const json = answer.text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    return { status: "ready", output: JSON.parse(json) };
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(20_000)]);
+    const value = await operation(signal);
+    return signal.aborted ? { status: "failed" } : { status: "ready", value };
   } catch {
     return { status: "failed" };
   } finally {

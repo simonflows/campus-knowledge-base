@@ -68,10 +68,10 @@ assert.equal(canEditCard(second, { ...bound, status: "pending", submittedBy: sec
 assert.equal(canEditCard(first, visibleKnowledgeCard(first, bound)!), true);
 assert.equal(canEditCard(second, visibleKnowledgeCard(second, bound)!), false);
 assert.ok(!JSON.stringify(visibleKnowledgeCard(null, bound)).includes(first.id));
-assert.equal(canEditCard(account("pr"), { ...legacy, type: "university", universityId: "csu", structuredMetrics: [] }), true);
+assert.equal(canEditCard(account("pr"), { ...legacy, type: "university", universityId: "csu", structuredMetrics: [] }), false);
 const passport: UniversityCard = { ...bound, type: "university", universityId: "csu", structuredMetrics: [] };
 assert.equal(canEditCard(second, passport), false);
-assert.equal(canEditCard(account("pr"), passport), true);
+assert.equal(canEditCard(account("pr"), passport), false);
 const legacyPassport = { ...passport, ownerIds: undefined, owners: [profile.ownershipLabel] };
 assert.equal(canEditCard(first, legacyPassport), false, "A legacy passport cannot grant both leaders personal access");
 assert.equal(canEditCard(second, legacyPassport), false);
@@ -89,14 +89,14 @@ assert.equal(resolveLegacyCardOwnerIds({ ...csuCard, owners: [first.ownershipLab
 assert.equal(resolveLegacyCardOwnerIds({ ...csuCard, owners: [profile.ownershipLabel] }, directoryUsers), null);
 assert.equal(resolveLegacyCardOwnerIds({ ...csuCard, owners: [account("pr").ownershipLabel] }, directoryUsers), null);
 assert.equal(resolveLegacyCardOwnerIds({ ...csuCard, folderId: "01_universities/susu/products" }, directoryUsers), null);
-assert.equal(areCardOwnerIdsAssignable(csuCard, [first.id, account("pr").id], directoryUsers), true);
+assert.equal(areCardOwnerIdsAssignable(csuCard, [first.id, account("pr").id], directoryUsers), false);
 assert.equal(areCardOwnerIdsAssignable(csuCard, [rio.id], directoryUsers), false);
 assert.equal(areCardOwnerIdsAssignable(csuCard, ["missing"], directoryUsers), false);
 assert.equal(areCardOwnerIdsAssignable({ ...csuCard, folderId: "02_joint", type: "project", isJoint: true, participantUniversityIds: ["susu"] }, [first.id], directoryUsers), false);
 const compound = directory([
   row("csu", "Тест Имя", "demo-owner-csu"),
   row("susu", "Тест Имя", "demo-owner-susu"),
-  row("compound", "Тест Имя, ЧелГУ", "demo-pr-csu"),
+  row("compound", "Тест Имя, ЧелГУ", "demo-owner-csu"),
 ]);
 const compoundCard = { ...legacy, owners: [compound("compound").ownershipLabel] };
 assert.equal(canEditCard(compound("compound"), compoundCard), true);

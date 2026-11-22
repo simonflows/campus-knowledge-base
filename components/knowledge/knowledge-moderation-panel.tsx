@@ -21,12 +21,14 @@ import {
 } from "@/components/ui/card";
 import {
   getParticipantApprovals,
+  getRequiredStakeholderApprovals,
+  getRequiredUniversityApprovals,
   getUniversityName,
   isJointFullyApproved,
-  isJointProject,
   knowledgeCardTypeLabels,
   type KnowledgeCard,
 } from "@/lib/knowledge";
+import { roleShortLabels } from "@/lib/auth";
 
 type KnowledgeModerationPanelProps = {
   cards: KnowledgeCard[];
@@ -107,16 +109,15 @@ export function KnowledgeModerationPanel({
           </Badge>
         </div>
         <CardDescription>
-          Новые карточки от PR-команд и владельцев не попадают в утверждённую
-          базу, пока координатор их не одобрит. Совместный проект требует
-          подтверждения обоих вузов-участников.
+          Координатор утверждает редакцию после обязательных согласований.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {cards.map((card) => {
-          const joint = isJointProject(card);
+          const requiredUniversityIds = getRequiredUniversityApprovals(card);
           const approvals = getParticipantApprovals(card);
-          const ready = !joint || isJointFullyApproved(card);
+          const waitingRoles = getRequiredStakeholderApprovals(card).filter(role => !card.stakeholderApprovals?.[role]);
+          const ready = isJointFullyApproved(card) && !waitingRoles.length;
 
           return (
             <div
@@ -135,10 +136,10 @@ export function KnowledgeModerationPanel({
                       · {card.owners.join(", ")}
                     </span>
                   </div>
-                  {joint ? (
+                  {requiredUniversityIds.length ? (
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
                       <Handshake className="h-3.5 w-3.5 text-primary" />
-                      {card.participantUniversityIds.map((universityId) => {
+                      {requiredUniversityIds.map((universityId) => {
                         const confirmed = approvals.includes(universityId);
 
                         return (
@@ -198,8 +199,9 @@ export function KnowledgeModerationPanel({
               </div>
               {!ready ? (
                 <p className="mt-2 text-xs text-amber-900">
-                  Нужно подтверждение второго вуза-участника, прежде чем
-                  добавлять проект в утверждённую базу.
+                  {waitingRoles.length
+                    ? `Ожидаются согласования: ${waitingRoles.map(role => roleShortLabels[role]).join(", ")}.`
+                    : "Ожидаются подтверждения вузов-участников."}
                 </p>
               ) : null}
             </div>

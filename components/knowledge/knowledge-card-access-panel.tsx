@@ -24,7 +24,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   canConfirmJointParticipation,
+  canConfirmStakeholderApproval,
   canEditCard,
+  canManageEditRequests,
   canModerate,
   canRequestEdit,
   roleShortLabels,
@@ -35,12 +37,14 @@ import {
   getCardStatus,
   getParticipantApprovals,
   getPendingEditRequests,
+  getRequiredStakeholderApprovals,
   getRequiredUniversityApprovals,
   getUniversityName,
   isJointFullyApproved,
   isJointProject,
   type KnowledgeCard,
 } from "@/lib/knowledge";
+import type { ModerationActionInput } from "@/lib/validation/access";
 import { cn } from "@/lib/utils";
 
 type KnowledgeCardAccessPanelProps = {
@@ -81,11 +85,16 @@ export function KnowledgeCardAccessPanel({
 
   const status = getCardStatus(card);
   const canEdit = canEditCard(currentUser, card);
+  const canResolveRequests = canManageEditRequests(currentUser, card);
   const canRequest = canRequestEdit(currentUser, card);
   const canConfirm = canConfirmJointParticipation(currentUser, card);
+  const canConfirmStakeholder = canConfirmStakeholderApproval(currentUser, card);
   const canApprove = canModerate(currentUser) && status === "pending";
   const requiredUniversityIds = getRequiredUniversityApprovals(card);
   const joint = isJointProject(card) || requiredUniversityIds.length > 0;
+  const stakeholderRoles = getRequiredStakeholderApprovals(card);
+  const stakeholderConfirmed = stakeholderRoles.every(role => Boolean(card.stakeholderApprovals?.[role]));
+  const awaitingApprovals = !stakeholderConfirmed || !isJointFullyApproved(card);
   const approvals = getParticipantApprovals(card);
   const openRequests = getPendingEditRequests(card);
   const editRequests = card.editRequests ?? [];
@@ -147,7 +156,9 @@ export function KnowledgeCardAccessPanel({
 
       onCardUpdated(data as KnowledgeCard);
       setMessage("");
-      toast.success("Запрос на правку отправлен владельцу карточки");
+      toast.success(response.headers.get("X-Canon-Edit-Request-Recipient") === "coordinator"
+        ? "Запрос на правку отправлен координатору"
+        : "Запрос на правку отправлен владельцу карточки");
     } catch {
       toast.error("Ошибка сети при отправке запроса");
     } finally {
@@ -156,7 +167,7 @@ export function KnowledgeCardAccessPanel({
   };
 
   const handleModeration = async (
-    action: "approve" | "reject" | "confirm-participation"
+    action: ModerationActionInput["action"]
   ) => {
     if (busyAction !== null) return;
     setBusyAction(action);
@@ -198,6 +209,8 @@ export function KnowledgeCardAccessPanel({
         toast.success("Карточка одобрена и добавлена в утверждённую базу");
       } else if (action === "reject") {
         toast.success("Карточка отклонена");
+      } else if (action === "confirm-stakeholder") {
+        toast.success("Согласование вашей организации сохранено");
       } else {
         toast.success("Участие вуза подтверждено");
       }
@@ -285,8 +298,8 @@ export function KnowledgeCardAccessPanel({
             {currentUser?.role === "admin"
               ? "Администратор базы: можно редактировать любую карточку, модерировать черновики и общие параметры кампуса."
               : canEdit
-                ? "Вы владелец карточки: правки сохраняются от вашего имени."
-                : "Только просмотр. Чужую утверждённую карточку нельзя изменить — отправьте запрос владельцу."}
+                ? "У вас есть доступ к редактированию этой карточки."
+                : canRequest ? "Предложите правку владельцу карточки или координатору." : "Карточка доступна для просмотра."}
           </p>
         </div>
 
@@ -308,9 +321,7 @@ export function KnowledgeCardAccessPanel({
                 type="button"
                 className="h-10 flex-1 sm:h-8 sm:flex-none"
                 onClick={() => handleModeration("approve")}
-                disabled={
-                  busyAction !== null || (joint && !isJointFullyApproved(card))
-                }
+                disabled={!dbAvailable || busyAction !== null || awaitingApprovals}
               >
                 <CheckCircle2 className="h-4 w-4" />
                 {busyAction === "approve" ? "Одобряем..." : "Одобрить"}
@@ -320,7 +331,7 @@ export function KnowledgeCardAccessPanel({
                 variant="outline"
                 className="h-10 flex-1 sm:h-8 sm:flex-none"
                 onClick={() => handleModeration("reject")}
-                disabled={busyAction !== null}
+                disabled={!dbAvailable || busyAction !== null}
               >
                 <XCircle className="h-4 w-4" />
                 Отклонить
@@ -330,9 +341,9 @@ export function KnowledgeCardAccessPanel({
         </div>
       </div>
 
-      {canApprove && joint && !isJointFullyApproved(card) ? (
+      {canApprove && awaitingApprovals ? (
         <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
-          Одобрение станет доступно после подтверждения обоих вузов-участников.
+          Соберите подтверждения всех указанных участников и организаций.
         </p>
       ) : null}
 
@@ -382,7 +393,7 @@ export function KnowledgeCardAccessPanel({
               size="sm"
               className="h-10 sm:h-7"
               onClick={() => handleModeration("confirm-participation")}
-              disabled={busyAction !== null}
+              disabled={!dbAvailable || busyAction !== null}
             >
               <UserCheck className="h-4 w-4" />
               Подтвердить участие вуза
@@ -391,14 +402,37 @@ export function KnowledgeCardAccessPanel({
           {!isJointFullyApproved(card) ? (
             <p className="text-xs leading-relaxed text-muted-foreground">
               Совместный проект не попадёт в утверждённую базу, пока его не
-              подтвердят оба вуза-участника.
+              подтвердят все вузы-участники.
             </p>
           ) : (
             <p className="text-xs leading-relaxed text-emerald-800">
-              Оба вуза-участника подтвердили проект.
+              Все вузы-участники подтвердили проект.
             </p>
           )}
         </div>
+      ) : null}
+
+      {stakeholderRoles.length > 0 && status === "pending" ? (
+        <section className="flex flex-col items-start gap-3 rounded-2xl border p-3" aria-label="Согласования организаций">
+          <div className="flex flex-wrap gap-2">
+            {stakeholderRoles.map(role => (
+              <Badge key={role} variant={card.stakeholderApprovals?.[role] ? "secondary" : "outline"}>
+                {roleShortLabels[role]} · {card.stakeholderApprovals?.[role] ? "подтверждено" : "ожидается"}
+              </Badge>
+            ))}
+          </div>
+          {canConfirmStakeholder ? (
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => handleModeration("confirm-stakeholder")}
+              disabled={!dbAvailable || busyAction !== null}
+            >
+              <UserCheck data-icon="inline-start" />
+              Согласовать сведения
+            </Button>
+          ) : null}
+        </section>
       ) : null}
 
       {context && (!canRequest || !dbAvailable) && (
@@ -430,7 +464,7 @@ export function KnowledgeCardAccessPanel({
         >
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <MessageSquarePlus className="h-3.5 w-3.5" />
-            Запрос на правку владельцу
+            Запрос на правку
           </div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <Textarea
@@ -517,7 +551,7 @@ export function KnowledgeCardAccessPanel({
                 </p>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                   <span>{formatMoment(request.createdAt)}</span>
-                  {canEdit ? (
+                  {canResolveRequests ? (
                     <div className="flex w-full gap-2 sm:w-auto">
                       {request.status === "open" ? (
                         <Button
