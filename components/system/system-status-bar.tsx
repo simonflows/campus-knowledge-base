@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { useWorkspacePathname } from "@/components/navigation/workspace-navigation";
 import { useEffect, useState } from "react";
 import {
   CheckCircle2,
@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 
 import type { getIntegrationStatus } from "@/lib/integration-status";
 
-type SystemStatusPayload = ReturnType<typeof getIntegrationStatus> & {
+export type SystemStatusPayload = ReturnType<typeof getIntegrationStatus> & {
   storageMode: string;
   incomingRequests?: number;
 };
@@ -68,7 +68,7 @@ type SystemStatusBarProps = {
 };
 
 export function SystemStatusBar(props: SystemStatusBarProps) {
-  const pathname = usePathname();
+  const pathname = useWorkspacePathname();
   return <SystemStatusControls key={pathname} {...props} />;
 }
 

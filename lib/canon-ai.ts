@@ -2,11 +2,12 @@ import { z } from "zod";
 import { buildCanonSources, validateCanonQuote, resolveCanonReference, type CanonCitation, type CanonSource } from "./canon-context";
 import { checkFactText, deniesCurrentOperation, FACT_CHECK_CHECKPOINTS, type FactCheckFinding, type FactCheckResult } from "./fact-check";
 import { askFlash } from "./flash-assist";
-import { getApprovedVersion, type KnowledgeCard } from "./knowledge";
+import { universities } from "./data";
+import { getApprovedVersion, getUniversityIdFromFolder, type KnowledgeCard } from "./knowledge";
 import { getCardVersionId } from "./knowledge-versions";
-import { searchKnowledgeCards } from "./knowledge-search";
+import { knowledgeCardMatch, searchKnowledgeCards } from "./knowledge-search";
 import { checkEditorialEvidence } from "./editorial-evidence";
-import { indexKnowledgeFragment, knowledgeQueryTerms, matchKnowledgeTerm } from "./knowledge-query";
+import { indexKnowledgeFragment, knowledgeQueryTerms, matchKnowledgeTerm, sameKnowledgeWord, tokenizeKnowledgeText } from "./knowledge-query";
 
 export type AiUnavailable = { status: "unavailable" | "busy" | "failed" | "too-long" };
 export type AiFactClaim = {
@@ -110,8 +111,9 @@ function hasQuotedContradiction(text: string, citations: CanonCitation[], source
 }
 
 const chatFillers = new Set("а как где находится находятся находиться расположен расположена расположены установлен установлена установлены работает работают работал работала что известно расскажи расскажите скажи скажите покажи покажите пожалуйста есть ли об обо о про мне нам ты вы можешь можете какой какая какие какое кто это этот эта эти он она они его ее её узнать найти найди информация сведения интересует использует используется используют оборудование оборудовании партнер партнёр у лаборатории лаборатория лабораторию".split(" "));
+const chatIdentityLead = /^(?:(?:а|пожалуйста|расскажи(?:те)?|скажи(?:те)?|подскажи(?:те)?|слушай(?:те)?)[,\s]+)*(?:кто\s+так(?:ой|ая|ие)|что\s+(?:такое|за))[\s:—-]+/iu;
 function chatSearchQuery(question: string, history: string[] = []): string {
-  const words = question.match(/[\p{L}\p{N}_-]+/gu) ?? [];
+  const words = question.trim().replace(chatIdentityLead, "").match(/[\p{L}\p{N}_-]+/gu) ?? [];
   const contextual = words.some(word => ["он", "она", "они", "его", "ее", "её", "этот", "эта", "эти"].includes(word.toLocaleLowerCase("ru")));
   const query = words.filter(word => !chatFillers.has(word.toLocaleLowerCase("ru"))).join(" ");
   if (!contextual || !history.length) return query;
@@ -120,10 +122,14 @@ function chatSearchQuery(question: string, history: string[] = []): string {
 }
 
 type ChatFieldIntent = "location" | "partner" | "equipment" | null;
-function chatFieldIntent(question: string): ChatFieldIntent {
+const specificEquipment =
+  /(?<![\p{L}])(?:робот|манипулятор|контроллер|станок|станк|датчик)[а-яё]*(?![\p{L}])/iu;
+
+function chatFieldIntent(question: string, query: string): ChatFieldIntent {
   if (/где|местонахожд|располож|размещ/iu.test(question)) return "location";
   if (/(?:кто|какой|какие|какого).{0,60}партн[её]р|партн[её]р.{0,30}(?:кто|какой)/iu.test(question)) return "partner";
-  if (/(?:какое|какой|что известно).{0,50}(?:оборудован|модел|робот)|об оборудован/iu.test(question)) return "equipment";
+  if (/(?:какое|какой|что известно).{0,50}(?:оборудован|модел|робот)|об оборудован/iu.test(question) ||
+      specificEquipment.test(query)) return "equipment";
   return null;
 }
 function answersField(field: string, text: string, intent: ChatFieldIntent) {
@@ -131,20 +137,70 @@ function answersField(field: string, text: string, intent: ChatFieldIntent) {
   if (intent === "location") return /^(?:placementDetails|placementStatus|affiliation|universityId)$/u.test(field) ||
     field === "referenceDescription" && /площадк|располож|размещ|на баз|на территории|в кампус|в университет|в институт|адрес|корпус/iu.test(text);
   if (intent === "partner") return /^(?:partner|industrialPartner)$/u.test(field) || field === "referenceDescription" && /партн[её]р/iu.test(text);
-  return field.startsWith("equipment.") || field === "referenceDescription" && /оборудован|робот|манипулятор|установк|контроллер/iu.test(text);
+  return field.startsWith("equipment.") || field === "referenceDescription" && /оборудован|робот|манипулятор|установк|контроллер|станок|станк|датчик/iu.test(text);
 }
-function fieldPriority(field: string, intent: ChatFieldIntent) {
+function fieldPriority(field: string, intent: ChatFieldIntent, identityQuestion: boolean) {
   if (intent === "location") return field === "placementDetails" ? 0 : field === "affiliation" ? 1 : field === "placementStatus" ? 2 : 3;
   if (intent === "partner") return field === "partner" || field === "industrialPartner" ? 0 : 1;
-  if (intent === "equipment") return field.startsWith("equipment.") ? 0 : 1;
+  if (intent === "equipment") return (identityQuestion ? field === "referenceDescription" : field.startsWith("equipment.")) ? 0 : 1;
   return field === "referenceDescription" ? 0 : field === "title" ? 1 : 2;
 }
 
+const universityAliases = universities.map(({ id, shortName, fullName }) => ({
+  id,
+  aliases: [
+    fullName.replace(/\s*\([^)]*\)$/u, ""),
+    shortName,
+    shortName.replace(/\s+им\..*$/u, ""),
+  ].map(tokenizeKnowledgeText).sort((first, second) => second.length - first.length),
+}));
+
+function chatUniversityScope(query: string) {
+  const terms = tokenizeKnowledgeText(query);
+  const ids: string[] = [];
+  for (const { id, aliases } of universityAliases) {
+    for (const name of aliases) {
+      const start = terms.findIndex((_, index) => name.every((word, offset) =>
+        sameKnowledgeWord(word, terms[index + offset] ?? "")
+      ));
+      if (start < 0) continue;
+      const preposition = ["в", "во", "из"].includes(terms[start - 1]) ? 1 : 0;
+      terms.splice(start - preposition, name.length + preposition);
+      ids.push(id);
+      break;
+    }
+  }
+  return { ids, subject: ids.length ? terms.join(" ") : query };
+}
+
+function cardUniversityScope(card: KnowledgeCard): string[] {
+  if (card.type === "university") return [card.universityId];
+  if (card.type === "project") return [card.initiatorUniversityId, ...card.participantUniversityIds];
+  if (card.type === "laboratory") {
+    const affiliation = chatUniversityScope(card.affiliation).ids;
+    if (affiliation.length) return affiliation;
+  }
+  const owner = getUniversityIdFromFolder(card.folderId);
+  return owner ? [owner] : [];
+}
+
 function matchingChatCards(cards: KnowledgeCard[], query: string, question: string) {
+  if (/(?:^|\s)(?:не|без|кроме|ни|исключая)(?=\s|$)/iu.test(query)) return [];
+  const { ids, subject } = chatUniversityScope(query);
   const laboratory = /лаборатор/iu.test(question);
   const project = /проект/iu.test(question);
-  return (query ? searchKnowledgeCards(cards, query) : []).filter(card =>
-    laboratory && !project ? card.type === "laboratory" : project && !laboratory ? card.type === "project" : true);
+  const eligible = ids.length ? cards.filter(card => {
+    const scope = cardUniversityScope(card);
+    return ids.every(id => scope.includes(id));
+  }) : cards;
+  const matching = subject ? searchKnowledgeCards(eligible, subject)
+    : ids.length ? eligible.filter(card => card.type === "university") : [];
+  const equipment = ids.length && specificEquipment.test(subject) ? knowledgeQueryTerms(subject) : null;
+  return matching.filter(card =>
+    (!equipment || knowledgeCardMatch(card, equipment, "equipment") > 0) &&
+    (!laboratory || project || card.type === "laboratory") &&
+    (!project || laboratory || card.type === "project")
+  );
 }
 
 function answersEquipmentQuery(quote: string, query: string, sources: CanonSource[]) {
@@ -272,13 +328,14 @@ const chatOutput = z.strictObject({
 
 function localChat(question: string, cards: KnowledgeCard[], sources: CanonSource[], status: CanonChatAnswer["status"], history: string[] = []): CanonChatAnswer {
   const query = chatSearchQuery(question, history);
-  const intent = chatFieldIntent(question);
+  const intent = chatFieldIntent(question, query);
+  const identityQuestion = chatIdentityLead.test(question.trim());
   const matching = matchingChatCards(cards, query, question).slice(0, 4);
   const citations = matching.flatMap(card => {
     const source = sources.find(source => source.cardId === card.id);
     const fact = source?.facts.filter(fact => fact.text.length >= 1 && fact.text.length <= 1200 && answersField(fact.field, fact.text, intent) &&
       (intent !== "equipment" || answersEquipmentQuery(fact.text, query, sources)))
-      .sort((first, second) => fieldPriority(first.field, intent) - fieldPriority(second.field, intent))[0];
+      .sort((first, second) => fieldPriority(first.field, intent, identityQuestion) - fieldPriority(second.field, intent, identityQuestion))[0];
     if (!source || !fact) return [];
     const quote = validateCanonQuote({ sourceId: source.id, factId: fact.id, quote: fact.text.slice(0, 800) }, sources);
     return quote ? [quote] : [];
@@ -322,7 +379,7 @@ export async function answerCanonChat({ request, accountId, question, cards, his
   if (citations.some(citation => citation === null)) return localChat(question, cards, sources, "failed", history);
   const query = chatSearchQuery(question, history);
   const matching = new Set(matchingChatCards(cards, query, question).map(card => card.id));
-  const intent = chatFieldIntent(question);
+  const intent = chatFieldIntent(question, query);
   if (citations.some(citation => citation && (citation.quote.length > 1200 || !matching.has(citation.cardId) || !answersField(citation.field, citation.quote, intent) ||
     intent === "equipment" && !answersEquipmentQuery(citation.quote, query, sources)))) return localChat(question, cards, sources, "failed", history);
   const service = parsed.data.service ? services[parsed.data.service] : null;

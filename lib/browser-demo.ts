@@ -8,23 +8,41 @@ import {
   getDemoAccount,
   isCardOwner,
   toSessionUser,
+  visibleKnowledgeCards,
 } from "./auth";
-import { editorialContentSchema, editorialText } from "./editorial";
+import {
+  editorialContentSchema,
+  editorialText,
+  type EditorialDocument,
+  type EditorialRevision,
+} from "./editorial";
 import { checkFactText } from "./fact-check";
 import {
   folderIds,
   getCardStatus,
   getPublicApprovedCard,
   getRequiredUniversityApprovals,
+  getRequiredStakeholderApprovals,
   getUniversityIdFromFolder,
   isCardReadyForPublication,
   knowledgeSeedCards,
+  stakeholderApprovalRoles,
   type KnowledgeCard,
 } from "./knowledge";
 import {
   knowledgeCardInputSchema,
+  cardTypeInputSchema,
+  customCardFieldInputSchema,
   type KnowledgeCardInput,
 } from "./validation/knowledge";
+import { demoCardRevisionId } from "./browser-demo-version";
+import {
+  createInformationRequestSchema,
+  requestStatusLabels,
+  type InformationRequest,
+} from "./information-requests";
+import { createWorkflowSchema } from "./validation/workflow";
+import type { WorkflowEvent, WorkflowRecord } from "./workflow";
 
 export const BROWSER_DEMO_KEY = "campus-browser-demo:v1";
 export const DEMO_EXERCISE_ID = "demo-joint-exercise";
@@ -41,6 +59,26 @@ const cardMetadataSchema = z.object({
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
+const decisionSchema = z.object({
+  revisionId: z.string(),
+  actorId: z.string(),
+  at: z.string(),
+  comment: z.string().optional(),
+});
+const editRequestSchema = z.object({
+  id: z.string(),
+  authorId: z.string(),
+  authorName: z.string(),
+  authorRole: z.string(),
+  authorOrganization: z.string(),
+  message: z.string(),
+  createdAt: z.iso.datetime(),
+  status: z.enum(["open", "resolved"]),
+  recipient: z.enum(["owner", "coordinator"]).optional(),
+  resolvedBy: z.string().optional(),
+  resolvedAt: z.iso.datetime().optional(),
+  resolution: z.string().optional(),
+});
 
 const storedCardSchema = z.intersection(
   knowledgeCardInputSchema,
@@ -50,7 +88,26 @@ const storedCardSchema = z.intersection(
     submittedByName: z.string().optional(),
     reviewedAt: z.iso.datetime().optional(),
     reviewedBy: z.string().optional(),
+    reviewComment: z.string().optional(),
     participantApprovals: z.array(z.string()).max(7).optional(),
+    participantApprovalRecords: z.record(z.string(), decisionSchema).optional(),
+    requiredApprovalUniversityIds: z.array(z.string()).max(7).optional(),
+    requiredApprovalStakeholderRoles: z
+      .array(z.enum(["ministry", "rio", "chkk"]))
+      .optional(),
+    stakeholderApprovals: z
+      .partialRecord(z.enum(["ministry", "rio", "chkk"]), decisionSchema)
+      .optional(),
+    freshness: z
+      .object({
+        responsibleId: z.string().optional(),
+        responsibleName: z.string().optional(),
+        lastVerifiedAt: z.iso.datetime().optional(),
+        nextReviewAt: z.iso.date().optional(),
+        verifiedVersionId: z.string().optional(),
+      })
+      .optional(),
+    editRequests: z.array(editRequestSchema).max(100).optional(),
     approvedSnapshot: z
       .intersection(knowledgeCardInputSchema, cardMetadataSchema)
       .optional(),
@@ -66,9 +123,175 @@ const demoDocumentSchema = z.object({
   updatedAt: z.iso.datetime(),
 });
 
+const storedTypeSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    description: z.string(),
+    organizationScope: z.literal("chkk").optional(),
+    fields: z.array(customCardFieldInputSchema),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .refine((type) => cardTypeInputSchema.safeParse(type).success);
+const revisionEventSchema = z.object({
+  id: z.string(),
+  action: z.enum([
+    "created",
+    "saved",
+    "restored",
+    "submitted",
+    "returned",
+    "approved",
+    "commented",
+    "deleted",
+  ]),
+  revisionId: z.string(),
+  actorId: z.string(),
+  actorName: z.string(),
+  at: z.iso.datetime(),
+  comment: z.string(),
+});
+const editorialRowSchema = z.object({
+  document: z.object({
+    id: z.string(),
+    ownerId: z.string(),
+    ownerName: z.string(),
+    originalId: z.string(),
+    channel: z.string(),
+    version: z.number().int().positive(),
+    revisionId: z.string(),
+    submittedRevisionId: z.string().nullable(),
+    approvedRevisionId: z.string().nullable(),
+    status: z.enum(["draft", "submitted", "returned", "approved"]),
+    content: editorialContentSchema,
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    events: z.array(revisionEventSchema).max(80),
+    legacyArticleId: z.string().optional(),
+    submittedOnce: z.boolean().optional(),
+    reviewerId: z.string().optional(),
+    reviewerName: z.string().optional(),
+  }),
+  revisions: z
+    .array(
+      z.object({
+        id: z.string(),
+        documentId: z.string(),
+        number: z.number().int().positive(),
+        content: editorialContentSchema,
+        actorId: z.string(),
+        actorName: z.string(),
+        createdAt: z.iso.datetime(),
+        restoredFrom: z.string().optional(),
+      })
+    )
+    .max(50),
+  readiness: z
+    .object({
+      checkedAt: z.iso.datetime().optional(),
+      revisionId: z.string(),
+      reviews: z
+        .array(
+          z.object({
+            cardId: z.string(),
+            versionId: z.string(),
+            comment: z.string(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+});
+const storedRequestSchema = createInformationRequestSchema
+  .omit({ operationId: true, responsibleId: true, dueDate: true })
+  .extend({
+    id: z.string(),
+    authorId: z.string(),
+    authorName: z.string(),
+    authorOrganization: z.string(),
+    status: z.enum(
+      Object.keys(requestStatusLabels) as [
+        InformationRequest["status"],
+        ...InformationRequest["status"][],
+      ]
+    ),
+    answer: z.string().nullable(),
+    evidenceUrl: z.string().nullable(),
+    answeredBy: z.string().nullable(),
+    candidateCardId: z.string().nullable(),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    revision: z.number().int().min(0),
+    creationDigest: z.string(),
+    lastOperationId: z.string().nullable(),
+    lastOperationDigest: z.string().nullable(),
+    participantIds: z.array(z.string()).optional(),
+    responsibleId: z.string().nullable().optional(),
+    responsibleName: z.string().optional(),
+    dueDate: z.iso.date().nullable().optional(),
+  });
+const workflowEventSchema = z.object({
+  id: z.string(),
+  kind: z.literal("workflow-event"),
+  recordId: z.string(),
+  actorId: z.string(),
+  actorName: z.string(),
+  at: z.iso.datetime(),
+  action: z.string(),
+  message: z.string(),
+  version: z.number().positive().int(),
+});
+const storedWorkflowSchema = z.object({
+  record: z.custom<WorkflowRecord>((value) => {
+    if (!value || typeof value !== "object") return false;
+    const {
+      id,
+      creatorId,
+      creatorName,
+      createdAt,
+      updatedAt,
+      version,
+      creationDigest,
+      lastOperationId,
+      lastOperationDigest,
+      ...input
+    } = value as WorkflowRecord;
+    const hasMetadata =
+      [
+        id,
+        creatorId,
+        creatorName,
+        createdAt,
+        updatedAt,
+        creationDigest,
+        lastOperationId,
+        lastOperationDigest,
+      ].every((item) => typeof item === "string") && Number.isInteger(version);
+    if (!hasMetadata) return false;
+    if (input.kind === "dispute") {
+      const { status, decision, ...data } = input;
+      return (
+        (status === "open" || status === "resolved") &&
+        (decision === null || typeof decision === "string") &&
+        createWorkflowSchema.safeParse({
+          ...data,
+          operationId: lastOperationId,
+        }).success
+      );
+    }
+    return createWorkflowSchema.safeParse({
+      ...input,
+      operationId: lastOperationId,
+    }).success;
+  }),
+  events: z.array(workflowEventSchema).max(80),
+});
+
 const demoStateSchema = z.object({
   version: z.literal(1),
   profile: z.string().refine((id) => Boolean(getDemoAccount(id))),
+  epoch: z.union([z.literal("legacy"), z.uuid()]).default("legacy"),
   updates: z
     .array(storedCardSchema)
     .max(MAX_EDITS)
@@ -82,18 +305,59 @@ const demoStateSchema = z.object({
       (records) =>
         new Set(records.map((record) => record.id)).size === records.length
     ),
+  cardTypes: z.array(storedTypeSchema).max(30).optional(),
+  removedCardIds: z.array(z.string()).max(MAX_EDITS).optional(),
+  cardVersions: z
+    .array(z.intersection(knowledgeCardInputSchema, cardMetadataSchema))
+    .max(150)
+    .optional(),
+  editorialRows: z.array(editorialRowSchema).max(MAX_MATERIALS).optional(),
+  removedDocumentIds: z.array(z.string()).max(MAX_MATERIALS).optional(),
+  requests: z.array(storedRequestSchema).max(60).optional(),
+  workflows: z.array(storedWorkflowSchema).max(60).optional(),
+  articleUpdates: z
+    .array(
+      z.object({
+        id: z.string(),
+        deleted: z.boolean().optional(),
+        sections: editorialContentSchema.shape.sections.optional(),
+        title: z.string().optional(),
+        lead: z.string().optional(),
+        universityId: z.string().optional(),
+        projectTitle: z.string().optional(),
+        topic: z.string().optional(),
+        updatedAt: z.iso.datetime().optional(),
+      })
+    )
+    .max(80)
+    .optional(),
 });
 
 export type DemoDocument = z.infer<typeof demoDocumentSchema>;
 export type BrowserDemoState = Omit<
   z.infer<typeof demoStateSchema>,
-  "updates"
+  "updates" | "editorialRows" | "cardVersions" | "workflows" | "requests"
 > & {
   updates: KnowledgeCard[];
+  cardVersions?: KnowledgeCard[];
+  editorialRows?: DemoEditorialRow[];
+  requests?: InformationRequest[];
+  workflows?: { record: WorkflowRecord; events: WorkflowEvent[] }[];
+};
+export type DemoEditorialRow = {
+  document: EditorialDocument;
+  revisions: EditorialRevision[];
+  readiness?: z.infer<typeof editorialRowSchema>["readiness"];
 };
 
-function createBrowserDemo(): BrowserDemoState {
-  return { version: 1, profile: DEFAULT_PROFILE, updates: [], documents: [] };
+function createBrowserDemo(epoch = "legacy"): BrowserDemoState {
+  return {
+    version: 1,
+    profile: DEFAULT_PROFILE,
+    epoch,
+    updates: [],
+    documents: [],
+  };
 }
 
 export function getDemoError(error: unknown) {
@@ -115,7 +379,13 @@ export function readBrowserDemo(storage: DemoStorage): BrowserDemoState {
   if (raw.length <= MAX_PAYLOAD_CHARS) {
     try {
       const result = demoStateSchema.safeParse(JSON.parse(raw));
-      if (result.success) return result.data as BrowserDemoState;
+      if (result.success) {
+        const state = result.data as BrowserDemoState;
+        return {
+          ...state,
+          updates: state.updates.map(restoreParticipantApprovals),
+        };
+      }
     } catch {
       // The original value is retained until the visitor explicitly resets it.
     }
@@ -123,6 +393,28 @@ export function readBrowserDemo(storage: DemoStorage): BrowserDemoState {
   throw new Error(
     "Хранилище демо повреждено или использует другую версию. Вы можете явно начать демо заново."
   );
+}
+
+function restoreParticipantApprovals(card: KnowledgeCard): KnowledgeCard {
+  if (
+    getCardStatus(card) !== "pending" ||
+    card.participantApprovalRecords ||
+    !card.participantApprovals?.length
+  )
+    return card;
+  return {
+    ...card,
+    participantApprovalRecords: Object.fromEntries(
+      card.participantApprovals.map((universityId) => [
+        universityId,
+        {
+          revisionId: demoCardRevisionId(card),
+          actorId: getDemoAccount(`demo-owner-${universityId}`)?.id ?? "",
+          at: card.updatedAt,
+        },
+      ])
+    ),
+  };
 }
 
 export function writeBrowserDemo(
@@ -135,6 +427,11 @@ export function writeBrowserDemo(
       "Достигнут лимит хранилища демо. Сократите содержимое или начните демо заново."
     );
   }
+  if (!demoStateSchema.safeParse(state).success) {
+    throw new Error(
+      "Не удалось сохранить данные демо. Проверьте поля или сократите записи."
+    );
+  }
   try {
     storage.setItem(BROWSER_DEMO_KEY, raw);
   } catch {
@@ -145,7 +442,7 @@ export function writeBrowserDemo(
 }
 
 export function resetBrowserDemo(storage: DemoStorage) {
-  const state = createBrowserDemo();
+  const state = createBrowserDemo(crypto.randomUUID());
   writeBrowserDemo(storage, state);
   return state;
 }
@@ -164,7 +461,7 @@ const seedCards = [
           industrialPartner: "Учебный партнёр",
           confirmedFigures: ["1 учебный прототип"],
           referenceDescription:
-            "Учебный проект для согласования карточки двумя вузами и координатором.",
+            "Учебный проект для согласования карточки двумя вузами, АНО «РИОН» и координатором.",
           stopFormula:
             "Учебный пример. Не используйте сведения этого проекта в рабочих материалах.",
           ownerIds: ["demo-owner-midis", "demo-owner-susmu"],
@@ -186,20 +483,25 @@ export function selectDemoProfile(
   profile: string
 ): BrowserDemoState {
   if (!getDemoAccount(profile)) throw new Error("Выберите учебный профиль.");
-  return { ...state, profile };
+  return state.profile === profile
+    ? state
+    : { ...state, profile, epoch: crypto.randomUUID() };
 }
 
 export function getDemoCard(state: BrowserDemoState, id: string) {
+  if (state.removedCardIds?.includes(id)) return undefined;
   return (
     state.updates.find((card) => card.id === id) ??
     seedCards.find((card) => card.id === id)
   );
 }
 
-function allDemoCards(state: BrowserDemoState) {
+export function allDemoCards(state: BrowserDemoState) {
   const cards = new Map(seedCards.map((card) => [card.id, card]));
   for (const card of state.updates) cards.set(card.id, card);
-  return Array.from(cards.values());
+  return Array.from(cards.values()).filter(
+    (card) => !state.removedCardIds?.includes(card.id)
+  );
 }
 
 export function canEditDemoCard(state: BrowserDemoState, card: KnowledgeCard) {
@@ -207,19 +509,7 @@ export function canEditDemoCard(state: BrowserDemoState, card: KnowledgeCard) {
 }
 
 export function visibleDemoCards(state: BrowserDemoState): KnowledgeCard[] {
-  const user = demoUser(state);
-  return allDemoCards(state).flatMap((card) => {
-    if (
-      getCardStatus(card) === "approved" ||
-      canEditDemoCard(state, card) ||
-      (user.role !== "guest" && card.submittedBy === user.id) ||
-      (getCardStatus(card) === "pending" &&
-        isResponsibleParticipant(state, card))
-    )
-      return [card];
-    const previous = getPublicApprovedCard(card);
-    return previous ? [previous] : [];
-  });
+  return visibleKnowledgeCards(demoUser(state), allDemoCards(state));
 }
 
 export function approvedDemoCards(state: BrowserDemoState) {
@@ -228,7 +518,7 @@ export function approvedDemoCards(state: BrowserDemoState) {
     .filter((card): card is KnowledgeCard => card !== null);
 }
 
-function updateCard(
+export function updateDemoCard(
   state: BrowserDemoState,
   card: KnowledgeCard
 ): BrowserDemoState {
@@ -241,7 +531,7 @@ function updateCard(
   return { ...state, updates };
 }
 
-function nextTimestamp(previous?: string) {
+export function nextDemoTimestamp(previous?: string) {
   return new Date(
     Math.max(Date.now(), previous ? Date.parse(previous) + 1 : 0)
   ).toISOString();
@@ -278,7 +568,7 @@ export function saveDemoCard(
     throw new Error("Выберите карточку или раздел своего учебного профиля.");
   }
   const approvedSnapshot = previous ? getPublicApprovedCard(previous) : null;
-  const now = nextTimestamp(previous?.updatedAt);
+  const now = nextDemoTimestamp(previous?.updatedAt);
   const universityId =
     parsed.type === "project"
       ? parsed.initiatorUniversityId
@@ -293,15 +583,33 @@ export function saveDemoCard(
     const owner = getDemoAccount(`demo-owner-${id}`);
     return owner ? [owner] : [];
   });
-  const ownerIds = owners.length
+  const automaticOwnerIds = owners.length
     ? owners.map((owner) => owner.id)
     : (previous?.ownerIds ?? (previous ? undefined : [user.id]));
+  const assigned = user.role === "admin" ? parsed.ownerIds : undefined;
+  const ownerIds = assigned ?? automaticOwnerIds;
+  const selectedOwners =
+    assigned?.map(
+      (ownerId) => getDemoAccount(ownerId)?.ownershipLabel ?? ownerId
+    ) ?? owners.map((owner) => owner.ownershipLabel);
+  const approvalUniversities = [
+    ...new Set([
+      ...(previous ? getRequiredUniversityApprovals(previous) : []),
+      ...(parsed.type === "project" && parsed.isJoint
+        ? parsed.participantUniversityIds
+        : []),
+    ]),
+  ];
+  const approvalStakeholders = [
+    ...new Set([
+      ...(previous ? getRequiredStakeholderApprovals(previous) : []),
+      ...stakeholderApprovalRoles(parsed),
+    ]),
+  ];
   const card = {
     ...parsed,
     folderId,
-    ...(owners.length
-      ? { owners: owners.map((owner) => owner.ownershipLabel) }
-      : {}),
+    ...(selectedOwners.length ? { owners: selectedOwners } : {}),
     ownerIds,
     id: previous?.id ?? `demo-card-${crypto.randomUUID()}`,
     createdAt: previous?.createdAt ?? now,
@@ -309,11 +617,15 @@ export function saveDemoCard(
     status: "pending",
     submittedBy: user.id,
     submittedByName: user.name,
+    freshness: previous?.freshness,
+    editRequests: previous?.editRequests,
+    requiredApprovalUniversityIds: approvalUniversities,
+    requiredApprovalStakeholderRoles: approvalStakeholders,
     ...(approvedSnapshot && { approvedSnapshot }),
   } as KnowledgeCard;
   // Stored rows use the same validation after loading or across browser tabs.
   storedCardSchema.parse(card);
-  return { state: updateCard(state, card), card };
+  return { state: updateDemoCard(state, card), card };
 }
 
 function isResponsibleParticipant(
@@ -350,20 +662,28 @@ export function moderateDemoCard(
   if (!card || getCardStatus(card) !== "pending") {
     throw new Error("Эта карточка сейчас не на учебной проверке.");
   }
-  const updatedAt = nextTimestamp(card.updatedAt);
+  const updatedAt = nextDemoTimestamp(card.updatedAt);
   if (action === "confirm") {
     if (!isResponsibleParticipant(state, card)) {
       throw new Error("Подтвердить участие может ответственный владелец вуза.");
     }
     if (!canConfirmDemoParticipation(state, card))
       throw new Error("Этот вуз уже подтвердил участие.");
-    return updateCard(state, {
+    return updateDemoCard(state, {
       ...card,
       updatedAt,
       participantApprovals: [
         ...(card.participantApprovals ?? []),
         user.universityId!,
       ],
+      participantApprovalRecords: {
+        ...card.participantApprovalRecords,
+        [user.universityId!]: {
+          revisionId: demoCardRevisionId(card),
+          actorId: user.id,
+          at: updatedAt,
+        },
+      },
     });
   }
   if (user.role !== "admin")
@@ -382,7 +702,7 @@ export function moderateDemoCard(
     );
   }
   if (action === "return") {
-    return updateCard(state, {
+    return updateDemoCard(state, {
       ...card,
       updatedAt,
       status: "rejected",
@@ -390,7 +710,7 @@ export function moderateDemoCard(
       reviewedBy: user.name,
     });
   }
-  return updateCard(state, {
+  return updateDemoCard(state, {
     ...card,
     updatedAt,
     status: "approved",
@@ -443,7 +763,7 @@ export function saveDemoDocument(
   if (parsed.sourceCardIds.some((id) => !approved.has(id))) {
     throw new Error("Подберите утверждённые учебные источники заново.");
   }
-  const now = nextTimestamp(previous?.updatedAt);
+  const now = nextDemoTimestamp(previous?.updatedAt);
   const document: DemoDocument = {
     id: previous?.id ?? `demo-doc-${crypto.randomUUID()}`,
     author: user.id,
@@ -531,7 +851,7 @@ export function moderateDemoDocument(
         ? ({
             ...item,
             status,
-            updatedAt: nextTimestamp(item.updatedAt),
+            updatedAt: nextDemoTimestamp(item.updatedAt),
           } as DemoDocument)
         : item
     ),
@@ -550,9 +870,42 @@ export function demoArticles(state: BrowserDemoState): ReadyArticle[] {
         approvedAt: article.updatedAt,
       },
     }));
-  return [
+  const published = (state.editorialRows ?? []).flatMap(
+    ({ document, revisions }) => {
+      const approved = revisions.find(
+        ({ id }) => id === document.approvedRevisionId
+      );
+      if (!approved) return [];
+      const event = document.events.find(
+        ({ action, revisionId }) =>
+          action === "approved" && revisionId === approved.id
+      );
+      return [
+        {
+          ...approved.content,
+          id: document.id,
+          originalDraftId: document.originalId,
+          channel: document.channel,
+          query: "",
+          createdAt: document.createdAt,
+          updatedAt: event?.at ?? approved.createdAt,
+          approval: {
+            revisionId: approved.id,
+            approvedBy: event?.actorName || "Учебный координатор",
+            approvedAt: event?.at ?? approved.createdAt,
+          },
+        },
+      ];
+    }
+  );
+  const rows = [
+    ...published,
     ...state.documents
-      .filter((doc) => doc.status === "approved")
+      .filter(
+        (doc) =>
+          doc.status === "approved" &&
+          !published.some((article) => article.id === doc.id)
+      )
       .map((doc) => ({
         ...doc.content,
         id: doc.id,
@@ -567,4 +920,9 @@ export function demoArticles(state: BrowserDemoState): ReadyArticle[] {
       })),
     ...examples,
   ];
+  return rows.flatMap((article) => {
+    const update = state.articleUpdates?.find(({ id }) => id === article.id);
+    if (update?.deleted) return [];
+    return [update ? { ...article, ...update } : article];
+  });
 }

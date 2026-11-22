@@ -1,5 +1,7 @@
 "use client";
-import Link from "next/link";
+
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Files } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,17 +13,18 @@ import type { CardUsage } from "@/lib/card-usage";
 
 const dateLabel = new Intl.DateTimeFormat("ru-RU", { dateStyle: "medium", timeZone: "UTC" });
 export function KnowledgeUsagePanel({ cardId }: { cardId: string }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [state, setState] = useState<{ status: "loading" | "error" | "ready"; items: CardUsage[] }>({ status: "loading", items: [] });
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    void fetch(`/api/knowledge/cards/${encodeURIComponent(cardId)}/usage`, { signal: controller.signal, cache: "no-store" }).then(async response => {
+    void workspaceRequest(`/api/knowledge/cards/${encodeURIComponent(cardId)}/usage`, { signal: controller.signal, cache: "no-store" }).then(async response => {
       if (!response.ok) throw new Error();
       const data = await response.json();
       if (!controller.signal.aborted) setState({ status: "ready", items: data.items });
     }).catch(() => { if (!controller.signal.aborted) setState({ status: "error", items: [] }); });
     return () => controller.abort();
-  }, [cardId, attempt]);
+  }, [cardId, attempt, workspaceRequest]);
   return <section className="flex flex-col gap-3" aria-labelledby={`usage-${cardId}`}>
     <h3 id={`usage-${cardId}`} className="font-semibold">Где использована карточка</h3>
     <p className="text-sm text-muted-foreground">Видны только доступные вам материалы. Версия указана у каждого материала; изменение источника не переписывает статью.</p>

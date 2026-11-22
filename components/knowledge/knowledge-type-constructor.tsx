@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useState } from "react";
 import {
   AlertTriangle,
@@ -87,6 +89,7 @@ export function KnowledgeTypeConstructor({
   onDeleted,
   onClose,
 }: KnowledgeTypeConstructorProps) {
+  const workspaceRequest = useWorkspaceRequest();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -241,7 +244,7 @@ export function KnowledgeTypeConstructor({
     setIsSaving(true);
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         editingId
           ? `/api/knowledge/card-types/${editingId}`
           : "/api/knowledge/card-types",
@@ -317,7 +320,7 @@ export function KnowledgeTypeConstructor({
           if (isDeleting) return;
           setIsDeleting(true);
           try {
-            const response = await fetch(
+            const response = await workspaceRequest(
               `/api/knowledge/card-types/${type.id}`,
               { method: "DELETE" }
             );

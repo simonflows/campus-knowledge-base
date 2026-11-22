@@ -14,9 +14,10 @@ import { clearEditorialRecovery } from "@/lib/editorial-session-cleanup";
 
 type UserMenuProps = {
   initialUser: SessionUser | null;
+  demoHref: string;
 };
 
-export function UserMenu({ initialUser }: UserMenuProps) {
+export function UserMenu({ initialUser, demoHref }: UserMenuProps) {
   const router = useRouter();
   const accountCurrent = usePathname() === "/login" ? "page" : undefined;
   const [isBusy, setIsBusy] = useState(false);
@@ -40,22 +41,26 @@ export function UserMenu({ initialUser }: UserMenuProps) {
 
   if (!initialUser) {
     return (
-      <Link
-        href="/login"
-        className={buttonVariants({
-          className: "atlas-account atlas-login",
-          size: "sm",
-        })}
-        aria-current={accountCurrent}
-      >
-        <LogIn className="h-4 w-4" aria-hidden="true" />
-        <span>Войти</span>
-      </Link>
+      <div className="flex items-center gap-2">
+        <DemoEntry href={demoHref} />
+        <Link
+          href="/login"
+          className={buttonVariants({
+            className: "atlas-account atlas-login",
+            size: "sm",
+          })}
+          aria-current={accountCurrent}
+        >
+          <LogIn className="h-4 w-4" aria-hidden="true" />
+          <span>Войти</span>
+        </Link>
+      </div>
     );
   }
 
   return (
     <div className="flex items-center gap-2">
+      <DemoEntry href={demoHref} />
       <Link
         href="/login"
         aria-current={accountCurrent}
@@ -85,5 +90,16 @@ export function UserMenu({ initialUser }: UserMenuProps) {
         <LogOut className="h-4 w-4" />
       </Button>
     </div>
+  );
+}
+
+function DemoEntry({ href }: { href: string }) {
+  return (
+    <a
+      className={buttonVariants({ variant: "outline", size: "sm" })}
+      href={href}
+    >
+      Демо<span className="hidden sm:inline">-режим</span>
+    </a>
   );
 }

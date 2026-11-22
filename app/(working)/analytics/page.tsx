@@ -1,4 +1,4 @@
-import "../data-workspaces.css";
+import "@/app/data-workspaces.css";
 
 import { AnalyticsWorkspace } from "@/components/analytics/analytics-workspace";
 import { StorageUnavailable } from "@/components/storage-unavailable";

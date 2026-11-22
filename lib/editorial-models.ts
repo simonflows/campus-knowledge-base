@@ -23,7 +23,9 @@ import { getApprovedVersion, getPublicApprovedCard, getUniversityById, type Know
 import { ensureApprovedCardVersion, getApprovedCardVersion, getCardVersionId } from "./knowledge-versions";
 import {
   EditorialError,
+  canDeleteEditorial,
   canReadEditorial,
+  canWriteEditorial,
   editorialContentSchema,
   editorialText,
   validateEditorialAction,
@@ -41,6 +43,18 @@ async function available() {
       503
     );
 }
+
+function isEditorialWriteConflict(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  if (error.name === "ConditionalCheckFailedException") return true;
+  return error.name === "TransactionCanceledException" && (
+    !(error instanceof TransactionCanceledException) ||
+    !error.CancellationReasons?.some(
+      ({ Code }) => Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)
+    )
+  );
+}
+
 async function scan<T>(
   table: TableName,
   filter?: Pick<
@@ -242,6 +256,58 @@ export async function getCurrentEditorialSnapshot(id: string, user: SessionUser)
   const document = await getReadableEditorialHead(id, user);
   const revision = await getEditorialRevision(document, user, document.revisionId);
   return { document, revision };
+}
+
+export async function deleteEditorial(id: string, user: SessionUser, version: number) {
+  await available();
+  const current = await getReadableEditorialHead(id, user);
+  if (!canWriteEditorial(user, current))
+    throw new EditorialError("Черновик не найден", 404);
+  if (current.version !== version)
+    throw new EditorialError("Черновик изменился. Откройте актуальную редакцию.", 409);
+  if (!canDeleteEditorial(user, current))
+    throw new EditorialError("Удалить можно черновик, который не находится на согласовании и ещё не был утверждён.", 409);
+
+  const audit = event(user, "deleted", current.revisionId);
+  try {
+    await docClient.send(new TransactWriteCommand({
+      TransactItems: [
+        {
+          Put: {
+            TableName: TableName.EDITORIAL_DOCUMENTS,
+            Item: {
+              ...current,
+              version: current.version + 1,
+              updatedAt: audit.at,
+              deletedAt: audit.at,
+              events: [...current.events, audit].slice(-20),
+            },
+            ConditionExpression: "#version = :version AND ownerId = :ownerId AND attribute_not_exists(deletedAt)",
+            ExpressionAttributeNames: { "#version": "version" },
+            ExpressionAttributeValues: { ":version": current.version, ":ownerId": user.id },
+          },
+        },
+        {
+          Put: {
+            TableName: TableName.EDITORIAL_REVISIONS,
+            Item: { id: audit.id, documentId: id, kind: "event", event: audit },
+            ConditionExpression: "attribute_not_exists(id)",
+          },
+        },
+        {
+          ConditionCheck: {
+            TableName: TableName.ARTICLES,
+            Key: { id },
+            ConditionExpression: "attribute_not_exists(id)",
+          },
+        },
+      ],
+    }));
+  } catch (error) {
+    if (isEditorialWriteConflict(error))
+      throw new EditorialError("Черновик изменился или уже опубликован. Обновите список.", 409);
+    throw error;
+  }
 }
 
 export async function getEditorialSourceVersions(content: EditorialContent) {
@@ -789,19 +855,7 @@ export async function mutateEditorial(
   try {
     await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
   } catch (error) {
-    if (
-      error instanceof TransactionCanceledException &&
-      error.CancellationReasons?.some(
-        ({ Code }) => Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)
-      )
-    ) throw error;
-    if (
-      error instanceof Error &&
-      [
-        "TransactionCanceledException",
-        "ConditionalCheckFailedException",
-      ].includes(error.name)
-    )
+    if (isEditorialWriteConflict(error))
       throw new EditorialError(
         publication
           ? "Редакция или её источник изменились. Обновите материал и проверьте источники."

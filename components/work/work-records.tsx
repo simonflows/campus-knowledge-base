@@ -1,6 +1,10 @@
 "use client";
 
-import Link from "next/link";
+import { WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
+
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ArrowUpRight, Plus } from "lucide-react";
 import { toast } from "sonner";
@@ -180,9 +184,9 @@ function DisputeDetails({ record, linkedTitle, canDecide, busy, save }: {
                   <dt>Единица</dt><dd>{part.unit || "Не указана"}</dd>
                   <dt>План или факт</dt><dd>{factLabels[part.state]}</dd>
                 </dl>
-                {url && <a className={styles.textLink} href={url} target="_blank" rel="noopener noreferrer">
+                {url && <WorkspaceExternalLink className={styles.textLink} href={url} target="_blank" rel="noopener noreferrer">
                   Открыть источник <ArrowUpRight size={15} aria-hidden="true" />
-                </a>}
+                </WorkspaceExternalLink>}
               </div>
             );
           })}
@@ -217,6 +221,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
   section: RecordSection; id: string; initial?: WorkflowPresentation;
   data: WorkData; onChanged: (item: WorkflowPresentation) => void;
 }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [item, setItem] = useState(initial);
   const [events, setEvents] = useState<WorkflowEvent[] | null>(null);
   const [editing, setEditing] = useState(false);
@@ -234,7 +239,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
     const controller = new AbortController();
     read.current = controller;
     try {
-      const { events, ...received } = await requestWork<DetailResponse>(endpoint, { signal: controller.signal });
+      const { events, ...received } = await requestWork<DetailResponse>(workspaceRequest, endpoint, { signal: controller.signal });
       if (!controller.signal.aborted && keepNewestRecord(seen.current, received) === received) {
         seen.current = received;
         setItem(received);
@@ -250,7 +255,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
       }
       setError({ message: (failure as Error).message });
     }
-  }, [endpoint]);
+  }, [endpoint, workspaceRequest]);
 
   useEffect(() => {
     active.current = true;
@@ -280,7 +285,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
     setBusy(true);
     setError(null);
     try {
-      const next = await requestWork<WorkflowPresentation>(endpoint, {
+      const next = await requestWork<WorkflowPresentation>(workspaceRequest, endpoint, {
         method: "PATCH", body: JSON.stringify(parsed.data),
       });
       read.current?.abort();

@@ -11,7 +11,10 @@ import {
   type ReactNode,
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { AppRouterContext, type AppRouterInstance } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import {
+  AppRouterContext,
+  type AppRouterInstance,
+} from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { SearchParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { toast } from "sonner";
 import { KnowledgeCardAccessPanel } from "../components/knowledge/knowledge-card-access-panel";
@@ -168,9 +171,23 @@ for (const scenario of [
     }
     renderToStaticMarkup(
       createElement(
-        SearchParamsContext.Provider,
-        { value: new URLSearchParams() },
-        createElement(Capture)
+        AppRouterContext.Provider,
+        {
+          value: {
+            back() {},
+            forward() {},
+            refresh() {},
+            push() {},
+            replace() {},
+            prefetch() {},
+            bfcacheId: "moderation-test",
+          },
+        },
+        createElement(
+          SearchParamsContext.Provider,
+          { value: new URLSearchParams() },
+          createElement(Capture)
+        )
       )
     );
     assert.ok(click, `Не найдена кнопка «${scenario.label}»`);

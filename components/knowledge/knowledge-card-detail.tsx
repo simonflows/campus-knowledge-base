@@ -1,5 +1,9 @@
 "use client";
 
+import { WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
+
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useState } from "react";
 import { getFolderDisplayPath } from "./folder-labels";
 import {
@@ -249,6 +253,7 @@ export function KnowledgeCardDetail({
   readOnlyVersion = false,
   additionalSections,
 }: KnowledgeCardDetailProps) {
+  const workspaceRequest = useWorkspaceRequest();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const joint = isJointProject(card);
@@ -292,7 +297,7 @@ export function KnowledgeCardDetail({
     if (isDeleting || !canDelete) return;
     setIsDeleting(true);
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/knowledge/cards?id=${encodeURIComponent(card.id)}`,
         { method: "DELETE" }
       );
@@ -548,14 +553,14 @@ export function KnowledgeCardDetail({
                       Проверено {metric.verifiedAt} · {metric.owner}
                     </p>
                     {/^https:\/\//i.test(metric.evidenceUrl) ? (
-                      <a
+                      <WorkspaceExternalLink
                         className="text-sm text-primary underline"
                         href={metric.evidenceUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
                         Документ-основание
-                      </a>
+                      </WorkspaceExternalLink>
                     ) : (
                       <span className="text-sm text-muted-foreground">
                         Безопасная ссылка на документ не задана

@@ -3,7 +3,8 @@ import {
   MastheadCount,
   WorkspaceMasthead,
 } from "@/components/workspace-masthead";
-import Link from "next/link";
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import { AppLink, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import {
   useCallback,
   useEffect,
@@ -35,11 +36,13 @@ import {
   LockKeyhole,
   ScrollText,
   SquarePen,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/canon-ai-review";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -68,6 +71,8 @@ import {
 import type { FactCheckResult } from "@/lib/fact-check";
 import type { EditorAssistSuggestion } from "@/lib/editor-assist";
 import {
+  canDeleteEditorial,
+  deleteEditorialSchema,
   editorialContentSchema,
   editorialMutationSchema,
   editorialStatusLabels,
@@ -121,10 +126,10 @@ function AssistSources({ sourceVersions, staleSources }: Pick<EditorAssistPrevie
         <ul className="space-y-1">
           {sourceVersions.map(({ cardId, versionId, title }) => (
             <li key={cardId}>
-              <Link href={`/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(versionId)}`}
+              <AppLink href={`/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(versionId)}`}
                 prefetch={false} className="text-primary underline underline-offset-2">
                 {title} · актуальная версия
-              </Link>
+              </AppLink>
             </li>
           ))}
         </ul>
@@ -142,8 +147,8 @@ function ArticleBlockDetails({ reference }: { reference: ArticleBasisReference }
     </div>
   );
 }
-async function jsonRequest(url: string, init?: RequestInit) {
-  const response = await fetch(url, {
+async function requestJson(request: ReturnType<typeof useWorkspaceRequest>, url: string, init?: RequestInit) {
+  const response = await request(url, {
     ...init,
     cache: "no-store",
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -233,6 +238,7 @@ function recoveryList(ownerId?: string) {
     },
     getSnapshot: () => snapshot,
     subscribe(notify: () => void) {
+      if (!ownerId) return () => {};
       listeners.add(notify);
       if (ownerId && !ended) migrateEditorialRecovery(ownerId);
       refresh();
@@ -259,6 +265,11 @@ function EditorSession({
   initialDocumentId,
   initialArticleId,
 }: Props) {
+  const request = useWorkspaceRequest();
+  const demo = useWorkspaceMode() === "demo";
+  const { pathname, searchParams, replaceHistory } = useWorkspaceNavigation();
+  const jsonRequest = useCallback((url: string, init?: RequestInit) => requestJson(request, url, init), [request]);
+  const savedStatus = demo ? "Сохранено в этом браузере" : "Сохранено на сервере";
   const [documents, setDocuments] = useState<EditorialDocument[]>([]),
     [articles, setArticles] = useState(initialArticles),
     [legacy, setLegacy] = useState<ReadyArticle[]>([]);
@@ -303,9 +314,12 @@ function EditorSession({
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkRetry, setLinkRetry] = useState(0);
   const [focusedArticleId, setFocusedArticleId] = useState(initialArticleId);
+  const [draftToDelete, setDraftToDelete] = useState<EditorialDocument | null>(null);
+  const cancelDeletion = useRef<HTMLButtonElement>(null);
+  const deletedDraftIds = useRef(new Set<string>());
   const busy = operationBusy || linkOpening;
   const [recoveryStore] = useState(() =>
-    recoveryList(currentUser?.role === "guest" ? undefined : currentUser?.id)
+    recoveryList(demo || currentUser?.role === "guest" ? undefined : currentUser?.id)
   );
   const recoveries = useSyncExternalStore(
     recoveryStore.subscribe,
@@ -343,7 +357,9 @@ function EditorSession({
       if (!active.current || signal?.aborted) return;
       const latest = docRef.current;
       setDocuments((items) => {
-        const received: EditorialDocument[] = data.documents;
+        const received = (data.documents as EditorialDocument[]).filter(
+          (item) => !deletedDraftIds.current.has(item.id)
+        );
         return latest &&
           items.some((item) => item.id === latest.id) &&
           !received.some(
@@ -354,7 +370,7 @@ function EditorSession({
       });
       setLegacy(data.legacyArticles);
     },
-    [userId]
+    [jsonRequest, userId]
   );
   useEffect(() => {
     const requests = new AbortController();
@@ -389,6 +405,7 @@ function EditorSession({
       setServerDocument(null);
       setLegacy([]);
       setDocuments([]);
+      setDraftToDelete(null);
     };
     const syncSession = (event: StorageEvent) => {
       if (event.key !== EDITORIAL_SESSION_END_KEY) return;
@@ -397,8 +414,10 @@ function EditorSession({
       } catch {}
       endSession();
     };
-    window.addEventListener(EDITORIAL_SESSION_ENDED, endSession);
-    window.addEventListener("storage", syncSession);
+    if (!demo) {
+      window.addEventListener(EDITORIAL_SESSION_ENDED, endSession);
+      window.addEventListener("storage", syncSession);
+    }
     return () => {
       active.current = false;
       requests.abort();
@@ -408,7 +427,7 @@ function EditorSession({
       window.removeEventListener(EDITORIAL_SESSION_ENDED, endSession);
       window.removeEventListener("storage", syncSession);
     };
-  }, [currentUser?.role, recoveryStore, refresh, userId]);
+  }, [currentUser?.role, demo, jsonRequest, recoveryStore, refresh, userId]);
 
   const acceptVersion = (next: EditorialDocument | null) => {
     docRef.current = next;
@@ -432,12 +451,12 @@ function EditorSession({
     if (!currentUser || !active.current) return;
     const id = docRef.current?.id || null;
     if (!pendingSave.current && JSON.stringify(next) === baselineRef.current) {
-      removeEditorialRecovery(currentUser.id, id);
+      if (!demo) removeEditorialRecovery(currentUser.id, id);
       setSaveStatus(
-        docRef.current ? "Сохранено на сервере" : "Новый личный черновик"
+        docRef.current ? savedStatus : "Новый личный черновик"
       );
     } else {
-      const stored = saveEditorialRecovery(
+      const stored = demo || saveEditorialRecovery(
         currentUser.id,
         id,
         recoveryVersion.current,
@@ -473,7 +492,7 @@ function EditorSession({
       recovery
         ? "Восстановлен неотправленный текст из копии в этой вкладке"
         : next
-          ? "Сохранено на сервере"
+          ? savedStatus
           : "Новый личный черновик"
     );
   };
@@ -520,7 +539,7 @@ function EditorSession({
     } catch (error) {
       if (active.current) toast.error((error as Error).message);
     }
-  }, []);
+  }, [jsonRequest]);
   const save = useCallback(async () => {
     if (
       !currentUser ||
@@ -572,10 +591,12 @@ function EditorSession({
           recoveryVersion.current = next.version;
           const latest = contentRef.current;
           if (JSON.stringify(latest) === fingerprint) {
-            if (!current) removeEditorialRecovery(currentUser.id, null);
-            removeEditorialRecovery(currentUser.id, next.id);
-            recoveryStore.refresh();
-            setSaveStatus("Сохранено на сервере");
+            if (!demo) {
+              if (!current) removeEditorialRecovery(currentUser.id, null);
+              removeEditorialRecovery(currentUser.id, next.id);
+              recoveryStore.refresh();
+            }
+            setSaveStatus(savedStatus);
             void jsonRequest(`/api/editor/drafts/${next.id}`)
               .then((details: Details) => {
                 if (!active.current || docRef.current !== next) return;
@@ -591,7 +612,7 @@ function EditorSession({
             return next;
           }
           if (
-            saveEditorialRecovery(
+            !demo && saveEditorialRecovery(
               currentUser.id,
               next.id,
               next.version,
@@ -614,12 +635,12 @@ function EditorSession({
       pendingSave.current = null;
     });
     return pendingSave.current;
-  }, [currentUser, conflict, recoveryStore, handleConflict]);
+  }, [currentUser, conflict, demo, jsonRequest, recoveryStore, handleConflict, savedStatus]);
   useEffect(() => {
-    if (!editable || !dirty || conflict || busy) return;
+    if (!editable || !dirty || conflict || busy || draftToDelete) return;
     const timer = setTimeout(() => void save(), 1200);
     return () => clearTimeout(timer);
-  }, [content, dirty, editable, conflict, busy, save]);
+  }, [content, dirty, editable, conflict, busy, draftToDelete, save]);
   useEffect(() => {
     const warning = (event: BeforeUnloadEvent) => {
       if (active.current && (dirty || pendingSave.current)) {
@@ -666,7 +687,7 @@ function EditorSession({
               : "Черновик недоступен. Проверьте ссылку и права на материал.");
             return;
           }
-          const copy = currentUser && result.details.document.ownerId === currentUser.id
+          const copy = !demo && currentUser && result.details.document.ownerId === currentUser.id
             ? readEditorialRecovery(currentUser.id).find((entry) => entry.documentId === initialDocumentId)
             : undefined;
           openDocument(result.details, copy);
@@ -707,6 +728,51 @@ function EditorSession({
       if (active.current) showDraft();
     } finally {
       setBusy(false);
+    }
+  };
+  const deleteDraft = async () => {
+    if (!currentUser || !draftToDelete || busy || !active.current) return;
+    setBusy(true);
+    try {
+      await pendingSave.current;
+      const current = docRef.current;
+      if (!active.current || current?.id !== draftToDelete.id) return;
+      if (!canDeleteEditorial(currentUser, current)) {
+        toast.error("Этот черновик больше нельзя удалить.");
+        setDraftToDelete(null);
+        return;
+      }
+      await jsonRequest(`/api/editor/drafts/${encodeURIComponent(current.id)}`, {
+        method: "DELETE",
+        body: JSON.stringify(deleteEditorialSchema.parse({ version: current.version })),
+      });
+      if (!active.current) return;
+      deletedDraftIds.current.add(current.id);
+      if (!demo) {
+        removeEditorialRecovery(currentUser.id, current.id);
+        recoveryStore.refresh();
+      }
+      setDocuments((items) => items.filter((item) => item.id !== current.id));
+      setDraftToDelete(null);
+      openDocument(null);
+      if (searchParams?.get("draft") === current.id) {
+        const remaining = new URLSearchParams(searchParams.toString());
+        remaining.delete("draft");
+        const query = remaining.toString();
+        replaceHistory(query ? `${pathname}?${query}` : pathname);
+      }
+      showDraft();
+      toast.success("Черновик удалён");
+    } catch (error) {
+      if (!active.current) return;
+      const failure = error as Error & { status?: number };
+      toast.error(failure.message);
+      if (failure.status === 409 && docRef.current) {
+        setDraftToDelete(null);
+        await handleConflict(docRef.current);
+      }
+    } finally {
+      if (active.current) setBusy(false);
     }
   };
   const change = (key: keyof EditorialContent, value: unknown) => {
@@ -976,7 +1042,7 @@ function EditorSession({
     })));
   };
   const recover = async (selected: EditorialRecovery) => {
-    if (!currentUser || !active.current) return;
+    if (demo || !currentUser || !active.current) return;
     const recovery = readEditorialRecovery(currentUser.id).find(
       (copy) => copy.documentId === selected.documentId
     );
@@ -1039,9 +1105,49 @@ function EditorSession({
     doc && !dirty && !busy
       ? `/api/editor/drafts/${encodeURIComponent(doc.id)}/docx?revisionId=${encodeURIComponent(reviewRevision || doc.revisionId)}`
       : undefined;
+  const downloadDemoDocx = async () => {
+    if (!doc || !downloadHref) return;
+    try {
+      const response = await request(downloadHref);
+      if (!response.ok) throw new Error("Не удалось скачать DOCX");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `article-${doc.id}.docx`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+  const downloadProps = demo
+    ? { onClick: () => void downloadDemoDocx() }
+    : { nativeButton: false, render: <a href={downloadHref} download /> };
 
   return (
     <div className="atlas-wrap campus-workspace desk-editor">
+      <Dialog
+        open={!!draftToDelete}
+        onOpenChange={(open) => { if (!open && !operationBusy) setDraftToDelete(null); }}
+      >
+        <DialogContent showCloseButton={false} initialFocus={cancelDeletion}>
+          <DialogHeader>
+            <DialogTitle>Удалить черновик?</DialogTitle>
+            <DialogDescription>
+              «{draftToDelete?.content.title || draftToDelete?.content.topic || "Без заголовка"}» исчезнет из списка.
+              {dirty && " Несохранённые изменения будут удалены."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button ref={cancelDeletion} variant="outline" disabled={operationBusy} onClick={() => setDraftToDelete(null)}>
+              Отмена
+            </Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void deleteDraft()}>
+              {operationBusy ? "Удаляем…" : "Удалить"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <WorkspaceMasthead
         id="editor-page-title"
         icon={SquarePen}
@@ -1049,9 +1155,9 @@ function EditorSession({
         description="Готовьте статьи по официальным данным, проверяйте факты и согласовывайте редакции."
       >
         <MastheadCount count={cardsCount} label="карточек в справочнике">
-          <Link href="/knowledge" className="desk-text-link">
+          <AppLink href="/knowledge" className="desk-text-link">
             База знаний <ArrowRight size={15} aria-hidden="true" />
-          </Link>
+          </AppLink>
         </MastheadCount>
       </WorkspaceMasthead>
       {linkOpening && <p role="status" className="desk-footnote mb-3">Открываем запись…</p>}
@@ -1093,9 +1199,9 @@ function EditorSession({
               Рабочий аккаунт открывает редактор, историю и согласование.
             </p>
           </div>
-          <Link href="/login" className="desk-text-link">
+          <AppLink href="/login" className="desk-text-link">
             Войти в аккаунт <ArrowRight size={16} />
-          </Link>
+          </AppLink>
         </section>
       )}
       {!dbAvailable && canWork ? (
@@ -1277,6 +1383,15 @@ function EditorSession({
                   >
                     <Save data-icon="inline-start" /> Сохранить черновик
                   </Button>
+                  {doc && currentUser && canDeleteEditorial(currentUser, doc) && (
+                    <Button
+                      disabled={busy || conflict}
+                      variant="ghost"
+                      onClick={() => setDraftToDelete(doc)}
+                    >
+                      <Trash2 data-icon="inline-start" /> Удалить черновик
+                    </Button>
+                  )}
                 </div>
               </div>
               <div className="desk-manuscript-grid">
@@ -1303,12 +1418,11 @@ function EditorSession({
                                   replaceText(serverDocument.content);
                                   upsert(serverDocument);
                                   setConflict(false);
-                                  setSaveStatus("Сохранено на сервере");
-                                  removeEditorialRecovery(
-                                    currentUser.id,
-                                    serverDocument.id
-                                  );
-                                  recoveryStore.refresh();
+                                  setSaveStatus(savedStatus);
+                                  if (!demo) {
+                                    removeEditorialRecovery(currentUser.id, serverDocument.id);
+                                    recoveryStore.refresh();
+                                  }
                                 }}
                               >
                                 Оставить серверный текст
@@ -1446,7 +1560,7 @@ function EditorSession({
                       </div>
                       {provider !== "canonical" && (
                         <p className="desk-footnote">
-                          Тема запроса и данные утверждённых источников передаются в Yandex AI Studio.
+                          {demo ? "Учебный текст собирается в браузере, без отправки запроса во внешнюю нейросеть." : "Тема запроса и данные утверждённых источников передаются в Yandex AI Studio."}
                           Можно выбрать подготовку по проверенным фактам в Каноне.
                         </p>
                       )}
@@ -1673,12 +1787,12 @@ function EditorSession({
                         const pinned = content.sourceVersions?.find((source) => source.cardId === id);
                         return (
                         <div className="desk-source-item" key={id}>
-                          <a
+                          <AppLink
                             href={`/knowledge?card=${encodeURIComponent(id)}${pinned ? `&version=${encodeURIComponent(pinned.versionId)}` : ""}`}
                             className="text-sm text-primary underline underline-offset-2"
                           >
                             {content.sourceCardTitles[i] || id}{!pinned && " · версия не зафиксирована"}
-                          </a>
+                          </AppLink>
                           <Button
                             size="sm"
                             variant="ghost"
@@ -1805,8 +1919,7 @@ function EditorSession({
                       <Button
                         variant="outline"
                         disabled={dirty || busy}
-                        nativeButton={false}
-                        render={<a href={downloadHref} download />}
+                        {...downloadProps}
                       >
                         <Download data-icon="inline-start" /> Скачать DOCX с
                         источниками
@@ -1851,7 +1964,7 @@ function EditorSession({
                         {flashAssistAvailable && (
                           <>
                             <p className="desk-footnote">
-                              Текст и актуальные утверждённые карточки будут переданы в Yandex AI Studio. Предложение можно проверить перед применением.
+                              {demo ? "Учебный вариант готовится в браузере без внешней нейросети. Проверьте его перед применением." : "Текст и актуальные утверждённые карточки будут переданы в Yandex AI Studio. Предложение можно проверить перед применением."}
                             </p>
                             <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !selectedFragment}
                               onClick={() => void requestEditorialAssist("rewrite")}>
@@ -1963,8 +2076,7 @@ function EditorSession({
                     <Button
                       variant="outline"
                       disabled={dirty || busy}
-                      nativeButton={false}
-                      render={<a href={downloadHref} download />}
+                      {...downloadProps}
                     >
                       <Download data-icon="inline-start" /> Скачать DOCX с
                       источниками

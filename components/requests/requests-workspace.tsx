@@ -1,9 +1,12 @@
 "use client";
+
+import { WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
+
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
 import { RequestFollowup } from "./request-followup";
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import {
   ArrowLeft,
   ArrowRight,
@@ -68,6 +71,7 @@ function RequestItem({
   available: boolean;
 }) {
   const [answer, setAnswer] = useState("");
+  const workspaceRequest = useWorkspaceRequest();
   const [evidenceUrl, setEvidenceUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const operation = useRef<string | null>(null);
@@ -88,7 +92,7 @@ function RequestItem({
     }
     setBusy(true);
     try {
-      const response = await fetch(`/api/requests/${item.id}`, {
+      const response = await workspaceRequest(`/api/requests/${item.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(parsed.data),
@@ -152,14 +156,14 @@ function RequestItem({
             <h3 className="font-semibold">Ответ вуза</h3>
             <p className="whitespace-pre-wrap break-words">{item.answer}</p>
             {item.evidenceUrl && (
-              <a
+              <WorkspaceExternalLink
                 href={item.evidenceUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="desk-text-link"
               >
                 Источник ответа <ArrowUpRight size={16} />
-              </a>
+              </WorkspaceExternalLink>
             )}
             <p className="text-sm text-muted-foreground">
               {item.status === "approved"
@@ -237,7 +241,8 @@ export function RequestsWorkspace({
   initialCardId,
   initialRequestId,
 }: Props) {
-  const router = useRouter();
+  const workspaceRequest = useWorkspaceRequest();
+  const router = useWorkspaceNavigation();
   const [items, setItems] = useState(initialItems);
   const [subject, setSubject] = useState("");
   const [question, setQuestion] = useState(initialQuestion);
@@ -295,7 +300,7 @@ export function RequestsWorkspace({
     refreshRequest.current = controller;
     setRefreshing(true);
     try {
-      const response = await fetch("/api/requests", {
+      const response = await workspaceRequest("/api/requests", {
         cache: "no-store",
         signal: controller.signal,
       });
@@ -332,7 +337,7 @@ export function RequestsWorkspace({
     }
     setBusy(true);
     try {
-      const response = await fetch("/api/requests", {
+      const response = await workspaceRequest("/api/requests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(parsed.data),

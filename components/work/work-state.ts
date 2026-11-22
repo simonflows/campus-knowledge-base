@@ -1,3 +1,4 @@
+import type { WorkspaceRequest } from "@/lib/browser-demo-http";
 import type { WorkItem } from "@/lib/work-queue";
 import type { WorkflowPresentation } from "@/lib/workflow-models";
 
@@ -74,8 +75,8 @@ export class WorkRequestError extends Error {
   }
 }
 
-export async function requestWork<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
+export async function requestWork<T>(request: WorkspaceRequest, url: string, init: RequestInit = {}): Promise<T> {
+  const response = await request(url, {
     ...init,
     cache: "no-store",
     ...(init.body && { headers: { "Content-Type": "application/json" } }),

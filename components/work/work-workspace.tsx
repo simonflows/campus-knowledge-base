@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
+import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ClipboardList } from "lucide-react";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
@@ -26,7 +27,8 @@ const sections = [
 export function WorkWorkspace({ section, record, create, admin }: {
   section: WorkSection; record?: string; create: boolean; admin: boolean;
 }) {
-  const router = useRouter();
+  const workspaceRequest = useWorkspaceRequest();
+  const router = useWorkspaceNavigation();
   const [data, setData] = useState<WorkData | null>(null);
   const [error, setError] = useState("");
   const reader = useRef<AbortController | null>(null);
@@ -37,7 +39,7 @@ export function WorkWorkspace({ section, record, create, admin }: {
     const controller = new AbortController();
     reader.current = controller;
     try {
-      const next = await requestWork<WorkData>("/api/work", { signal: controller.signal });
+      const next = await requestWork<WorkData>(workspaceRequest, "/api/work", { signal: controller.signal });
       if (controller.signal.aborted || !active.current) return;
       setData((current) => {
         const previous = new Map(current?.workflows.map((item) => [item.record.id, item]));
@@ -49,7 +51,7 @@ export function WorkWorkspace({ section, record, create, admin }: {
       if (failure instanceof WorkRequestError && [401, 403].includes(failure.status)) setData(null);
       setError((failure as Error).message);
     }
-  }, []);
+  }, [workspaceRequest]);
 
   useEffect(() => {
     active.current = true;

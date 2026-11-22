@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useState } from "react";
 import {
   CheckCircle2,
@@ -41,6 +43,7 @@ export function KnowledgeModerationPanel({
   onCardUpdated,
   onOpenCard,
 }: KnowledgeModerationPanelProps) {
+  const workspaceRequest = useWorkspaceRequest();
   const [busyId, setBusyId] = useState<string | null>(null);
 
   if (cards.length === 0) return null;
@@ -53,7 +56,7 @@ export function KnowledgeModerationPanel({
     setBusyId(`${card.id}-${action}`);
 
     try {
-      const response = await fetch(
+      const response = await workspaceRequest(
         `/api/knowledge/cards/${card.id}/moderation`,
         {
           method: "POST",

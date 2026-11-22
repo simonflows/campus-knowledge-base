@@ -1,7 +1,9 @@
 "use client";
 
+import { useWorkspaceMode } from "@/components/demo/workspace-transport";
+
 import { useId } from "react";
-import Link from "next/link";
+import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 
 import { safeAssistantHref } from "@/components/assistant/assistant-answer";
 import type { CanonAnalyticsAiReview } from "@/lib/canon-analytics-ai";
@@ -30,6 +32,7 @@ export function CanonAiOption({
   disabled?: boolean;
   onChange: (checked: boolean) => void;
 }) {
+  const demo = useWorkspaceMode() === "demo";
   const id = useId();
   return (
     <div className="flex min-w-0 flex-col gap-1">
@@ -45,7 +48,9 @@ export function CanonAiOption({
         {kind === "fact" ? "Проверить текст с ИИ" : "Сверить отчёт с ИИ"}
       </label>
       <p id={id} className="text-xs leading-relaxed text-muted-foreground">
-        {kind === "fact"
+        {demo
+          ? "Учебная проверка выполняется в браузере. Текст и карточки не отправляются на сервер или во внешнюю нейросеть."
+          : kind === "fact"
           ? "ИИ сверяет текст с утверждёнными карточками. Текст проверки и данные источников передаются в Yandex AI Studio. Используйте публичный текст."
           : "ИИ сверяет отчёт с утверждёнными карточками. Текст запроса и данные источников передаются в Yandex AI Studio. Используйте публичные сведения."}
       </p>

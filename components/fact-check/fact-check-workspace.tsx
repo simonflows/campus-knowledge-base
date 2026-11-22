@@ -4,7 +4,6 @@ import {
   WorkspaceMasthead,
 } from "@/components/workspace-masthead";
 
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   BookOpenCheck,
@@ -28,6 +27,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import { AppLink, WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
 import { isCurrentFlashRequest } from "@/components/flash-assist-hint";
 import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/canon-ai-review";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -64,6 +65,7 @@ import {
   type FactCheckSummary,
 } from "@/lib/fact-check";
 import { replaceCheckedFragment } from "@/lib/fact-check-edit";
+import type { RewriteAiReview } from "@/lib/canon-rewrite-ai";
 import { factCheckInputSchema } from "@/lib/validation/fact-check";
 import { cn } from "@/lib/utils";
 
@@ -77,6 +79,7 @@ type FactCheckResponse = FactCheckResult & {
   ai?: FactAiReview;
   rewrite?: CanonicalRewrite | null;
   rewriteCheck?: RewriteCheck | null;
+  rewriteAi?: RewriteAiReview;
   rewriteError?: string;
   error?: string;
 };
@@ -244,7 +247,7 @@ function FindingCard({
         </div>
         <div className="flex flex-wrap gap-2">
           {finding.sourceUrl && (
-            <a
+            <WorkspaceExternalLink
               href={finding.sourceUrl}
               target="_blank"
               rel="noopener noreferrer"
@@ -252,31 +255,31 @@ function FindingCard({
             >
               <ExternalLink data-icon="inline-start" />
               Первоисточник
-            </a>
+            </WorkspaceExternalLink>
           )}
           {!finding.sourceCardId && (
-            <Link
+            <AppLink
               href={`/requests?${new URLSearchParams({ q: `Прошу уточнить факт: ${finding.title}. Фрагмент: ${finding.quote ?? ""}` }).toString()}`}
               className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               Запросить подтверждение у вуза
-            </Link>
+            </AppLink>
           )}
           {finding.sourceCardId && (
-            <Link
+            <AppLink
               href={`/knowledge?card=${encodeURIComponent(finding.sourceCardId)}&version=approved`}
               className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               Официальная карточка
-            </Link>
+            </AppLink>
           )}
           {finding.sourceCardId && (
-            <Link
+            <AppLink
               href={`/knowledge?${new URLSearchParams({ card: finding.sourceCardId, action: "request", finding: finding.title, quote: finding.quote ?? "" }).toString()}#edit-request`}
               className={buttonVariants({ variant: "outline", size: "sm" })}
             >
               Оспорить и приложить источник
-            </Link>
+            </AppLink>
           )}
         </div>
       </div>
@@ -345,6 +348,8 @@ export function FactCheckWorkspace({
   cardsCount,
   flashAssistAvailable,
 }: FactCheckWorkspaceProps) {
+  const request = useWorkspaceRequest();
+  const workspaceMode = useWorkspaceMode();
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [result, setResult] = useState<FactCheckResponse | null>(null);
@@ -370,6 +375,17 @@ export function FactCheckWorkspace({
 
   const hasRed = (result?.summary.red ?? 0) > 0;
   const hasYellow = (result?.summary.yellow ?? 0) > 0;
+  const omittedFindings = useMemo(() => {
+    if (!result || !rewrite) return [];
+    const byQuote = new Map<string, FactCheckFinding>();
+    for (const finding of result.findings) {
+      if (finding.level !== "green" && finding.quote &&
+          !rewrite.plainText.includes(finding.quote) && !byQuote.has(finding.quote)) {
+        byQuote.set(finding.quote, finding);
+      }
+    }
+    return [...byQuote.values()];
+  }, [result, rewrite]);
 
   const resetOutput = () => {
     requestRevision.current += 1;
@@ -432,12 +448,12 @@ export function FactCheckWorkspace({
     toast.success("Файл загружен", { description: file.name });
   };
 
-  const requestFactCheck = async (mode: "check" | "rewrite", draft = text) => {
+  const requestFactCheck = async (mode: "check" | "rewrite", draft = text, rewriteWithAi = false) => {
     if (abortRef.current) return;
     const parsed = factCheckInputSchema.safeParse({
       text: draft,
       mode,
-      ...(mode === "check" && flashAssistAvailable && aiEnabled && { useAi: true }),
+      ...(flashAssistAvailable && (mode === "rewrite" ? rewriteWithAi : aiEnabled) && { useAi: true }),
     });
     if (!parsed.success) {
       toast.error(
@@ -461,7 +477,7 @@ export function FactCheckWorkspace({
     }
 
     try {
-      const response = await fetch("/api/fact-check", {
+      const response = await request("/api/fact-check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(parsed.data),
@@ -512,7 +528,7 @@ export function FactCheckWorkspace({
           toast.error("Не удалось переписать текст по официальным данным");
         } else if (data.rewriteCheck?.isClean) {
           toast.success("Текст переписан по официальным данным", {
-            description: "Красных и жёлтых замечаний не осталось.",
+            description: "В предложенном тексте нет красных и жёлтых замечаний.",
           });
         }
       } else {
@@ -720,10 +736,25 @@ export function FactCheckWorkspace({
                   ? "Переписываем..."
                   : "Переписать по официальным данным"}
               </Button>
-              <span className="text-xs text-muted-foreground">
-                Исправленный текст по правилам SEO и GEO: первые 1000 знаков,
-                заголовки и смысловые фрагменты.
-              </span>
+              {flashAssistAvailable && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => requestFactCheck("rewrite", text, true)}
+                    disabled={isChecking || isRewriting}
+                    aria-describedby="fact-rewrite-ai-hint"
+                  >
+                    <Sparkles className="size-4" />
+                    Переписать с ИИ
+                  </Button>
+                  <span id="fact-rewrite-ai-hint" className="text-xs text-muted-foreground">
+                    {workspaceMode === "demo"
+                      ? "В демо правка выполняется на этом устройстве."
+                      : "Исходный текст и выбранные данные карточек передаются в Yandex AI Studio. Используйте публичный текст."}
+                  </span>
+                </>
+              )}
             </div>
 
             {error ? (
@@ -964,7 +995,13 @@ export function FactCheckWorkspace({
                 Текст, переписанный по официальным данным
               </h2>
               <p className="text-xs text-muted-foreground">
-                Первые 1000 знаков, структура H1–H3 и смысловые фрагменты.
+                {result.rewriteAi?.status === "ready"
+                  ? "ИИ предложил редакцию абзаца. Формулировки сверены с утверждёнными карточками."
+                  : result.rewriteAi?.status === "unchanged"
+                    ? "После сверки с ИИ показана формулировка из утверждённой карточки."
+                    : result.rewriteAi && result.rewriteAi.status !== "local"
+                      ? "Правка с ИИ недоступна. Показан вариант по утверждённым карточкам."
+                      : "Вариант составлен по утверждённым карточкам."}
               </p>
             </div>
             {rewrite ? (
@@ -994,7 +1031,7 @@ export function FactCheckWorkspace({
                   onClick={handleCopyRewrite}
                 >
                   <Copy className="size-3.5" />
-                  Скопировать чистовик
+                  Скопировать текст
                 </Button>
                 <Button
                   type="button"
@@ -1071,22 +1108,39 @@ export function FactCheckWorkspace({
                   <p className="text-sm font-semibold">Карточки-источники</p>
                 </div>
                 <ul className="mt-2 flex flex-col gap-2">
-                  {rewrite.sourceCardIds.map((cardId, index) => (
-                    <li
-                      key={cardId}
-                      className="flex items-center gap-2 text-xs"
-                    >
-                      <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-                      <Link
-                        href={`/knowledge?card=${encodeURIComponent(cardId)}&version=approved`}
-                        className="font-medium underline-offset-4 hover:underline"
-                      >
-                        {rewrite.sourceCardTitles[index] ?? cardId}
-                      </Link>
-                    </li>
-                  ))}
+                  {rewrite.sourceCardIds.map((cardId, index) => {
+                    const citation = result.rewriteAi?.status === "ready"
+                      ? result.rewriteAi.citations.find((item) => item.cardId === cardId)
+                      : undefined;
+                    return (
+                      <li key={cardId} className="flex items-center gap-2 text-xs">
+                        <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                        <AppLink
+                          href={citation?.href ?? `/knowledge?card=${encodeURIComponent(cardId)}&version=approved`}
+                          className="font-medium underline-offset-4 hover:underline"
+                        >
+                          {rewrite.sourceCardTitles[index] ?? cardId}
+                        </AppLink>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
+              {omittedFindings.length > 0 && (
+                <div className="mt-5 rounded-2xl border bg-muted/20 p-4">
+                  <h3 className="text-sm font-semibold">Что требует сверки в исходном тексте</h3>
+                  <ul className="mt-2 space-y-2 text-xs">
+                    {omittedFindings.map((finding) => (
+                      <li key={finding.id}>
+                        <span className="font-medium">
+                          {finding.level === "red" ? "Требует исправления" : "Требует подтверждения"}
+                        </span>{" "}
+                        «{finding.quote}»
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </article>
           ) : null}
         </section>

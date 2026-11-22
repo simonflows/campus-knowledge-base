@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -44,6 +46,8 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
   onSynced,
   compact = false,
 }: DiskSyncPanelProps<T>) {
+  const workspaceRequest = useWorkspaceRequest();
+  const demo = useWorkspaceMode() === "demo";
   const [isRetrying, setIsRetrying] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const [registryResult, setRegistryResult] = useState<{
@@ -55,7 +59,7 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
   const isFailed = sync.status === "failed";
   const lastComplete = lastSuccessfulDiskExport(sync);
   const key =
-    canRetry && diskSync
+    !demo && canRetry && diskSync
       ? [retryEndpoint, sync.attemptId, sync.lastSyncedAt, refresh].join("|")
       : null;
   const registry =
@@ -64,7 +68,7 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
   useEffect(() => {
     if (!key) return;
     const controller = new AbortController();
-    fetch(retryEndpoint, { signal: controller.signal })
+    workspaceRequest(retryEndpoint, { signal: controller.signal })
       .then(async (response) =>
         response.ok
           ? ((await response.json()) as { registry: DiskRegistryView | null })
@@ -78,14 +82,14 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
         if (!controller.signal.aborted) setRegistryResult({ key, value: null });
       });
     return () => controller.abort();
-  }, [key, retryEndpoint]);
+  }, [key, retryEndpoint, workspaceRequest]);
 
   const handleRetry = async () => {
     if (isRetrying) return;
     setIsRetrying(true);
 
     try {
-      const response = await fetch(retryEndpoint, { method: "POST" });
+      const response = await workspaceRequest(retryEndpoint, { method: "POST" });
       const data = (await response.json().catch(() => null)) as
         | (T & { error?: string; diskSync?: DiskSyncInfo })
         | null;
@@ -122,6 +126,13 @@ export function DiskSyncPanel<T extends DiskSyncedEntity>({
       setIsRetrying(false);
     }
   };
+
+  if (demo) return (
+    <div className="flex items-center gap-2 rounded-2xl border border-border bg-muted/30 p-3 text-sm">
+      <CloudUpload className="size-4 shrink-0" aria-hidden="true" />
+      Выгрузка на Яндекс Диск отключена в демо-режиме.
+    </div>
+  );
 
   return (
     <div

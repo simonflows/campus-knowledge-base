@@ -1,10 +1,10 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { useWorkspacePathname } from "@/components/navigation/workspace-navigation";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 
 export function PageContent({ children }: { children: ReactNode }) {
-  const pathname = usePathname();
+  const pathname = useWorkspacePathname();
   const previousPathname = useRef(pathname);
   const main = useRef<HTMLElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -52,7 +52,7 @@ export function PageContent({ children }: { children: ReactNode }) {
   return (
     <>
       <div ref={progressRef} className="atlas-route-bar" aria-hidden="true" />
-      <main ref={main} id="main-content" className="min-w-0 flex-1">
+      <main ref={main} id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         {children}
       </main>
     </>

@@ -1,5 +1,7 @@
 "use client";
 
+import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+
 import { useEffect, useRef, useState } from "react";
 import { Users } from "lucide-react";
 import { toast } from "sonner";
@@ -14,6 +16,7 @@ import type { SessionUser } from "@/lib/auth";
 type Person = { id: string; name: string };
 type Draft = { responsibleId: string; dueDate: string; revision: number };
 export function RequestFollowup({ item, user, available, onUpdated }: { item: InformationRequest; user: SessionUser; available: boolean; onUpdated: (item: InformationRequest) => void }) {
+  const workspaceRequest = useWorkspaceRequest();
   const [people, setPeople] = useState<Person[]>([]), [participants, setParticipants] = useState<Person[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null), [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState(false), [error, setError] = useState("");
@@ -21,13 +24,13 @@ export function RequestFollowup({ item, user, available, onUpdated }: { item: In
   const operation = useRef<{ signature: string; id: string } | null>(null);
   useEffect(() => {
     const abort = new AbortController();
-    void fetch(`/api/requests/${encodeURIComponent(item.id)}`, { signal: abort.signal, cache: "no-store" }).then(async response => {
+    void workspaceRequest(`/api/requests/${encodeURIComponent(item.id)}`, { signal: abort.signal, cache: "no-store" }).then(async response => {
       if (!response.ok) throw new Error();
       const data = await response.json();
       if (!abort.signal.aborted) { setPeople(data.people); setParticipants(data.participants); setLoadError(false); }
     }).catch(() => { if (!abort.signal.aborted) setLoadError(true); });
     return () => abort.abort();
-  }, [item.id, item.revision, reload]);
+  }, [item.id, item.revision, reload, workspaceRequest]);
   const form = draft ?? { responsibleId: item.responsibleId ?? "", dueDate: item.dueDate ?? "", revision: item.revision };
   const joined = (item.participantIds ?? [item.authorId]).includes(user.id);
   const change = (fields: Partial<Draft>) => { setDraft({ ...form, ...fields }); operation.current = null; };
@@ -41,7 +44,7 @@ export function RequestFollowup({ item, user, available, onUpdated }: { item: In
     if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? "Проверьте поля"); return; }
     setBusy(true); setError("");
     try {
-      const response = await fetch(`/api/requests/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parsed.data) });
+      const response = await workspaceRequest(`/api/requests/${item.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(parsed.data) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Не удалось сохранить сведения запроса");
       if (action === "assign") setDraft(null);
