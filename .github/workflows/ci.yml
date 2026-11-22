@@ -118,3 +118,10 @@ jobs:
           CAMPUS_QA_MARKER="$(npm run --silent qa:init-fixture)"
           export CAMPUS_QA_MARKER
           CAMPUS_QA_EXPECT_REVISION="$GITHUB_SHA" node scripts/qa-image-smoke.mjs verify
+          docker run --rm --network host --read-only --tmpfs /tmp:mode=1777 \
+            --env-file "$CAMPUS_RUNTIME_ENV_FILE" \
+            -e USE_DATABASE=true -e CANON_DISK_RECOVERY=false \
+            -e DOCUMENT_API_ENDPOINT=http://127.0.0.1:8000 \
+            -e CAMPUS_RELEASE_STORAGE_TEST=yes \
+            -e "CAMPUS_RELEASE_QA_PREFIX=qa095-ci-release096-${GITHUB_RUN_ID}-" \
+            "campus-kb:$CAMPUS_RELEASE_TAG" node --import tsx scripts/test-release-storage.ts
