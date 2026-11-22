@@ -57,25 +57,36 @@ export async function checkDeployStorage(
 
 /** Exercise the same runtime mode and primary keys used by the application. */
 export async function isRuntimeStorageReady(): Promise<boolean> {
-  try {
-    if ((await getStorageMode()) !== "dynamodb") return false;
-    await Promise.all(
-      TABLE_NAMES.map((TableName) =>
-        docClient.send(
-          new GetCommand({
-            TableName,
-            Key: { id: "__campus_readiness__" },
-            ProjectionExpression: "id",
-            ConsistentRead: true,
-          }),
-          { abortSignal: AbortSignal.timeout(2500) }
+  const state = globalThis as unknown as { _campusReadinessInFlight?: Promise<boolean> };
+  if (state._campusReadinessInFlight) return state._campusReadinessInFlight;
+  const probe = async () => {
+    try {
+      if ((await getStorageMode()) !== "dynamodb") return false;
+      // Share only the active probe. Wait for every sibling even on failure so
+      // another caller cannot start a second batch while reads are still pending.
+      const results = await Promise.allSettled(
+        TABLE_NAMES.map(async (TableName) =>
+          docClient.send(
+            new GetCommand({
+              TableName,
+              Key: { id: "__campus_readiness__" },
+              ProjectionExpression: "id",
+              ConsistentRead: true,
+            }),
+            { abortSignal: AbortSignal.timeout(2500) }
+          )
         )
-      )
-    );
-    return true;
-  } catch {
-    return false;
-  }
+      );
+      return results.every(result => result.status === "fulfilled");
+    } catch {
+      return false;
+    }
+  };
+  const pending = probe().finally(() => {
+    if (state._campusReadinessInFlight === pending) delete state._campusReadinessInFlight;
+  });
+  state._campusReadinessInFlight = pending;
+  return pending;
 }
 
 /** The comparison workspace uses a labelled fixture in explicit demo modes. */
