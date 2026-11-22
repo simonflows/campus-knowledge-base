@@ -18,6 +18,7 @@ import {
   type ReadyArticle,
 } from "./articles";
 import { docClient, getStorageMode, getWritableStorageMode } from "./db";
+import { runDatabaseRead } from "./database-read";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { createPendingDiskSync, diskAttemptCondition, diskAttemptMatches, observedExportCondition, type DiskAttemptGuard, type DiskRegistry, type DiskRegistryCommit, type DiskSyncInfo } from "./disk-sync";
 import {
@@ -62,12 +63,17 @@ export async function getAllKnowledgeCards(signal?: AbortSignal): Promise<Knowle
   const cards: KnowledgeCard[] = [];
   let cursor: Record<string, unknown> | undefined;
   do {
-    const result: ScanCommandOutput = await docClient.send(
-      new ScanCommand({
-        TableName: TableName.KNOWLEDGE_CARDS,
-        ConsistentRead: true,
-        ExclusiveStartKey: cursor,
-      }), { abortSignal: signal }
+    const result: ScanCommandOutput = await runDatabaseRead(
+      (abortSignal) =>
+        docClient.send(
+          new ScanCommand({
+            TableName: TableName.KNOWLEDGE_CARDS,
+            ConsistentRead: true,
+            ExclusiveStartKey: cursor,
+          }),
+          { abortSignal }
+        ),
+      signal
     );
     cards.push(...((result.Items as KnowledgeCard[]) ?? []));
     cursor = result.LastEvaluatedKey;
@@ -706,12 +712,17 @@ export async function getAllCardTypes(signal?: AbortSignal): Promise<CardTypeDef
   const types: CardTypeDefinition[] = [];
   let cursor: ScanCommandOutput["LastEvaluatedKey"];
   do {
-    const page: ScanCommandOutput = await docClient.send(
-      new ScanCommand({
-        TableName: TableName.KNOWLEDGE_CARD_TYPES,
-        ConsistentRead: true,
-        ExclusiveStartKey: cursor,
-      }), { abortSignal: signal }
+    const page: ScanCommandOutput = await runDatabaseRead(
+      (abortSignal) =>
+        docClient.send(
+          new ScanCommand({
+            TableName: TableName.KNOWLEDGE_CARD_TYPES,
+            ConsistentRead: true,
+            ExclusiveStartKey: cursor,
+          }),
+          { abortSignal }
+        ),
+      signal
     );
     types.push(...((page.Items ?? []) as CardTypeDefinition[]));
     cursor = page.LastEvaluatedKey;
