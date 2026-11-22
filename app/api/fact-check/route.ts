@@ -8,6 +8,7 @@ import {
 } from "@/lib/fact-check";
 import { getCanonicalKnowledgeCards } from "@/lib/models";
 import { factCheckInputSchema } from "@/lib/validation/fact-check";
+import { assistFactCheck, authorizeFlashAssist } from "@/lib/flash-assist";
 
 function rewriteSummary(result: FactCheckResult | null) {
   if (!result) return null;
@@ -45,13 +46,18 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { text, mode } = parsed.data;
+  const { text, mode, flashAssist } = parsed.data;
+  const account = flashAssist && mode === "check" ? await authorizeFlashAssist(request) : null;
+  if (account instanceof Response) return account;
   const cards = await getCanonicalKnowledgeCards().catch(() => null);
   if (!cards) return unavailableStorageResponse();
   const result = checkFactText(text, cards);
 
   if (mode === "check") {
-    return NextResponse.json(result);
+    return NextResponse.json(
+      account ? { ...result, flashAssist: await assistFactCheck(request, account, text) } : result,
+      account ? { headers: { "Cache-Control": "no-store" } } : undefined,
+    );
   }
 
   const rewrite = buildCanonicalRewrite(text, cards);

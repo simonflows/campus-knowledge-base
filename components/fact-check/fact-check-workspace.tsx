@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { FlashAssistHint } from "@/components/flash-assist-hint";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -82,6 +83,7 @@ type LevelFilter = "all" | FactCheckLevel;
 
 type FactCheckWorkspaceProps = {
   cardsCount: number;
+  flashAssistAvailable: boolean;
 };
 
 const levelStyles: Record<
@@ -337,7 +339,10 @@ function FindingCard({
   );
 }
 
-export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
+export function FactCheckWorkspace({
+  cardsCount,
+  flashAssistAvailable,
+}: FactCheckWorkspaceProps) {
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
   const [result, setResult] = useState<FactCheckResponse | null>(null);
@@ -812,6 +817,9 @@ export function FactCheckWorkspace({ cardsCount }: FactCheckWorkspaceProps) {
               )}
             </CardContent>
           </Card>
+          {flashAssistAvailable && result ? (
+            <FlashAssistHint kind="fact" text={text} />
+          ) : null}
           <details className="data-fact-checkpoints">
             <summary>
               Контрольные точки <span>{checkpoints.length}</span>

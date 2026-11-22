@@ -22,7 +22,8 @@ export async function runEditorialRoutes(credentials: (profile: string) => { acc
   }
   const owner = await login("demo-pr-midis"),
     other = await login("demo-pr-susu"),
-    admin = await login("demo-admin");
+    admin = await login("demo-admin"),
+    guest = await login("demo-guest");
   const call = (path: string, cookie: string, method = "GET", body?: unknown) =>
     fetch(base + path, {
       method,
@@ -33,6 +34,38 @@ export async function runEditorialRoutes(credentials: (profile: string) => { acc
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+  const generate = (cookie: string) =>
+    call("/api/editor/generate", cookie, "POST", {
+      query: "Подготовь материал о центре промышленного дизайна МИДиС",
+      provider: "canonical",
+    });
+  assert.equal((await generate("")).status, 401);
+  assert.equal((await generate(guest)).status, 403);
+  assert.equal((await call("/api/editor/generate", guest, "POST", {})).status, 403);
+  const generated = await generate(owner);
+  assert.equal(generated.status, 200);
+  const canonical = await generated.json();
+  assert.equal(canonical.noData, false);
+  assert.equal(canonical.providerMeta.provider, "canonical");
+  assert.ok(canonical.article.title);
+  assert.ok(canonical.sources.some((source: { id: string }) => source.id === "lab-midis-kuka"));
+  for (const [endpoint, input] of [
+    ["/api/fact-check", { text: "В лаборатории прошёл тестовый показ проекта." }],
+    ["/api/analytics", { query: "Покажи лаборатории МИДиС" }],
+  ] as const) {
+    const standard = await call(endpoint, "", "POST", input);
+    assert.equal(standard.status, 200);
+    const local = await standard.json();
+    assert.equal("flashAssist" in local, false);
+    const assist = { ...input, flashAssist: true };
+    assert.equal((await call(endpoint, "", "POST", assist)).status, 401);
+    assert.equal((await call(endpoint, guest, "POST", assist)).status, 403);
+    const allowed = await call(endpoint, owner, "POST", assist);
+    assert.equal(allowed.status, 200);
+    const { flashAssist, ...rest } = await allowed.json();
+    assert.equal(flashAssist.status, "unavailable");
+    assert.deepEqual(rest, local);
+  }
   const legacy = { ...articleSeed[0], id: "qa-legacy-" + randomUUID(), universityId: "midis" };
   await docClient.send(new PutCommand({
     TableName: TableName.ARTICLES, Item: legacy, ConditionExpression: "attribute_not_exists(id)",

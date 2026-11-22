@@ -90,7 +90,7 @@ function parseCompletion(
 
 export async function callYandexAiWithUsage(
   messages: YandexAiMessage[],
-  options: { temperature?: number; maxTokens?: number } = {}
+  options: { temperature?: number; maxTokens?: number; signal?: AbortSignal } = {}
 ): Promise<AiCompletion> {
   const apiKey = process.env.YANDEX_AI_STUDIO_API_KEY;
   const folderId = process.env.YANDEX_AI_STUDIO_FOLDER_ID;
@@ -138,7 +138,7 @@ export async function callYandexAiWithUsage(
           ...(useChatCompletions && { "x-data-logging-enabled": "false" }),
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(60_000),
+        signal: options.signal ?? AbortSignal.timeout(60_000),
       }
     );
   } catch {

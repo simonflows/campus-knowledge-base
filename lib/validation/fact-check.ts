@@ -7,6 +7,7 @@ export const factCheckInputSchema = z.object({
     .min(20, "Вставьте текст для проверки")
     .max(60_000, "Текст слишком длинный: сократите черновик"),
   mode: z.enum(["check", "rewrite"]).default("check"),
+  flashAssist: z.boolean().optional(),
 });
 
 export type FactCheckInput = z.infer<typeof factCheckInputSchema>;

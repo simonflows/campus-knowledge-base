@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { FlashAssistHint } from "@/components/flash-assist-hint";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -48,10 +49,12 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import type { AnalyticsCardRow, AnalyticsReport } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
+import { analyticsQuerySchema } from "@/lib/validation/analytics";
 
 type AnalyticsWorkspaceProps = {
   cardsCount: number;
   dbAvailable: boolean;
+  flashAssistAvailable?: boolean;
 };
 
 type ViewMode = "table" | "list";
@@ -509,12 +512,14 @@ function buildReportText(report: AnalyticsReport, origin: string): string {
 export function AnalyticsWorkspace({
   cardsCount,
   dbAvailable,
+  flashAssistAvailable = false,
 }: AnalyticsWorkspaceProps) {
   const [query, setQuery] = useState("");
   const [report, setReport] = useState<AnalyticsReport | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const queryInput = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -527,12 +532,11 @@ export function AnalyticsWorkspace({
     setError(null);
   };
 
-  const requestAnalytics = async () => {
+  const requestAnalytics = async (nextQuery = query) => {
     if (abortRef.current) return;
-    const trimmed = query.trim();
-
-    if (trimmed.length < 3) {
-      toast.error("Опишите запрос хотя бы тремя символами");
+    const parsed = analyticsQuerySchema.safeParse({ query: nextQuery });
+    if (!parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? "Проверьте текст запроса");
       return;
     }
 
@@ -545,7 +549,7 @@ export function AnalyticsWorkspace({
       const response = await fetch("/api/analytics", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed }),
+        body: JSON.stringify(parsed.data),
         signal: controller.signal,
       });
       const data = (await response.json().catch(() => null)) as
@@ -644,6 +648,7 @@ export function AnalyticsWorkspace({
             </Label>
             <Textarea
               id="analytics-query"
+              ref={queryInput}
               value={query}
               onChange={(event) => handleQueryChange(event.target.value)}
               placeholder="Опишите, какие проекты, лаборатории или связи нужно собрать: отрасль, вуз, партнёр, статус, контур."
@@ -653,7 +658,7 @@ export function AnalyticsWorkspace({
             <div className="data-action-row">
               <Button
                 type="button"
-                onClick={requestAnalytics}
+                onClick={() => void requestAnalytics()}
                 disabled={isLoading}
               >
                 {isLoading ? (
@@ -807,6 +812,17 @@ export function AnalyticsWorkspace({
             </Card>
           </div>
         )
+      ) : null}
+      {flashAssistAvailable && report ? (
+        <FlashAssistHint
+          kind="analytics"
+          query={report.query}
+          onApply={(proposed) => {
+            queryInput.current?.focus();
+            handleQueryChange(proposed);
+            void requestAnalytics(proposed);
+          }}
+        />
       ) : null}
     </div>
   );

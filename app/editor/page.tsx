@@ -4,6 +4,7 @@ import { StorageUnavailable } from "@/components/storage-unavailable";
 import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
 import { getAllArticles, getCanonicalKnowledgeCards } from "@/lib/models";
 import { publicArticle } from "@/lib/articles";
+import { showFlashAssist } from "@/lib/flash-assist";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export default async function EditorPage() {
       cardsCount={cards.length}
       dbAvailable={mode === "dynamodb"}
       currentUser={user}
+      flashAssistAvailable={showFlashAssist(user)}
     />
   );
 }

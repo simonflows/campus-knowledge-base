@@ -345,6 +345,7 @@ function toRow(
 type ParsedQuery = {
   filters: AnalyticsFilter[];
   cardTypes: Set<AnalyticsCardType>;
+  usesDefaultCardTypes: boolean;
   industries: IndustryDefinition[];
   universityIds: string[];
   requirePartner: boolean;
@@ -374,10 +375,6 @@ function detectCardTypes(
     )
   )
     types.add("university");
-  if (types.size === 0) {
-    types.add("project");
-    types.add("laboratory");
-  }
   return types;
 }
 
@@ -396,6 +393,11 @@ function parseQuery(
       )
     : [];
   const cardTypes = detectCardTypes(query, Boolean(explicitCustomName));
+  const usesDefaultCardTypes = cardTypes.size === 0;
+  if (usesDefaultCardTypes) {
+    cardTypes.add("project");
+    cardTypes.add("laboratory");
+  }
   const filterQuery = query.replace(/[«"][^"»]+["»]/gu, "");
   const industries = INDUSTRIES.filter((industry) =>
     includesAny(filterQuery, industry.queryKeywords)
@@ -512,6 +514,7 @@ function parseQuery(
   return {
     filters,
     cardTypes,
+    usesDefaultCardTypes: usesDefaultCardTypes && !jointOnly,
     industries,
     universityIds,
     requirePartner,
@@ -522,6 +525,14 @@ function parseQuery(
     jointOnly,
     unknownIndustry,
   };
+}
+
+export function getAnalyticsCriteria(
+  query: string,
+  customTypes: CardTypeDefinition[],
+) {
+  const { filters, usesDefaultCardTypes } = parseQuery(query, customTypes);
+  return { filters, usesDefaultCardTypes };
 }
 
 function matchesQuery(card: KnowledgeCard, parsed: ParsedQuery): boolean {

@@ -36,6 +36,7 @@ import {
   SquarePen,
 } from "lucide-react";
 import { toast } from "sonner";
+import { FlashAssistHint } from "@/components/flash-assist-hint";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -86,6 +87,7 @@ type Props = {
   cardsCount: number;
   dbAvailable: boolean;
   currentUser?: SessionUser | null;
+  flashAssistAvailable: boolean;
 };
 async function jsonRequest(url: string, init?: RequestInit) {
   const response = await fetch(url, {
@@ -144,6 +146,7 @@ function EditorSession({
   cardsCount,
   dbAvailable,
   currentUser = null,
+  flashAssistAvailable,
 }: Props) {
   const [documents, setDocuments] = useState<EditorialDocument[]>([]),
     [articles, setArticles] = useState(initialArticles),
@@ -192,6 +195,7 @@ function EditorSession({
   const [check, setCheck] = useState<FactCheckResult | null>(null),
     [channel, setChannel] = useState("Telegram"),
     [provider, setProvider] = useState("canonical");
+  const checkRequest = useRef<AbortController | null>(null);
   const pendingSave = useRef<Promise<EditorialDocument | null> | null>(null);
   const active = useRef(true);
   const [ended, setEnded] = useState(false);
@@ -245,6 +249,7 @@ function EditorSession({
     const endSession = () => {
       active.current = false;
       requests.abort();
+      checkRequest.current?.abort();
       recoveryStore.end();
       setEnded(true);
       setSurface("library");
@@ -269,6 +274,7 @@ function EditorSession({
     return () => {
       active.current = false;
       requests.abort();
+      checkRequest.current?.abort();
       window.removeEventListener(EDITORIAL_SESSION_ENDED, endSession);
       window.removeEventListener("storage", syncSession);
     };
@@ -282,6 +288,7 @@ function EditorSession({
     recoveryVersion.current = next?.version || 0;
   };
   const replaceText = (next: EditorialContent) => {
+    checkRequest.current?.abort();
     contentRef.current = next;
     setContent(next);
     setCheck(null);
@@ -571,16 +578,21 @@ function EditorSession({
     }
   };
   const checkText = async () => {
+    if (checkRequest.current) return;
+    const controller = new AbortController();
+    checkRequest.current = controller;
     setBusy(true);
     try {
       const result = await jsonRequest("/api/fact-check", {
         method: "POST",
+        signal: controller.signal,
         body: JSON.stringify({ text: editorialText(content), mode: "check" }),
       });
-      if (active.current) setCheck(result);
+      if (active.current && !controller.signal.aborted) setCheck(result);
     } catch (e) {
-      toast.error((e as Error).message);
+      if (!controller.signal.aborted) toast.error((e as Error).message);
     } finally {
+      checkRequest.current = null;
       setBusy(false);
     }
   };
@@ -694,6 +706,7 @@ function EditorSession({
               key={id}
               aria-pressed={surface === id}
               onClick={() => {
+                if (id !== "write") checkRequest.current?.abort();
                 setSurface(id);
                 if (id === "history") refreshHistory();
               }}
@@ -1396,8 +1409,7 @@ function EditorSession({
                   ) : null}
                 </aside>
                 {check ? (
-                  <div className="desk-editor-check">
-                    {" "}
+                  <div className="desk-editor-check flex min-w-0 flex-col gap-3">
                     <Alert
                       variant={check.summary.red ? "destructive" : "default"}
                     >
@@ -1417,6 +1429,12 @@ function EditorSession({
                         </div>
                       </AlertDescription>
                     </Alert>
+                    {flashAssistAvailable && surface === "write" ? (
+                      <FlashAssistHint
+                        kind="fact"
+                        text={editorialText(content)}
+                      />
+                    ) : null}
                   </div>
                 ) : null}
               </div>
