@@ -1779,6 +1779,36 @@ export function isRelevantFactFragment(text: string, cards: KnowledgeCard[]): bo
   return factRelevantSpans(text, approved).some(span => span.relevant);
 }
 
+const pastActionLead = /^(?:уже\s+)?(?:не\s+)?\p{L}{2,}[аеёиуя]л[аои]?\s+/iu;
+
+/** Flag a relationship described as a past action for further review. */
+export function hasNamedPastActionRelation(subject: string, predicate: string, cards: KnowledgeCard[]): boolean {
+  if (!pastActionLead.test(predicate)) return false;
+  const approved = cards.map(getApprovedVersion).filter((card): card is KnowledgeCard => card !== null);
+  const approvedUniversities = new Set(approved.map(card => card.type === "university"
+    ? card.universityId : getUniversityIdFromFolder(card.folderId)));
+  const models = recordedEquipmentModels(approved);
+  const knownEquipment = (text: string) => namedEquipmentMentions(text, models)
+    .filter(mention => models.includes(mention.model.toLowerCase()));
+  const subjectUniversities = universitiesIn(subject);
+  const subjectEquipment = knownEquipment(subject);
+  const namedEquipmentSubject = subjectEquipment.some(mention =>
+    normalize(subject) === normalize([mention.kind, mention.model, mention.variant].join(" ")));
+  const subjectCard = officialScope(subject, approved);
+  if (!subjectCard && !namedEquipmentSubject && !subjectUniversities.some(id => approvedUniversities.has(id) &&
+    [getUniversityName(id), getUniversityFullName(id)].some(name => equivalentWords(subject, name)))) return false;
+
+  if (universitiesIn(predicate).some(id => approvedUniversities.has(id) && !subjectUniversities.includes(id)) ||
+      knownEquipment(predicate).some(other => !subjectEquipment.some(mention =>
+        mention.model.toLowerCase() === other.model.toLowerCase()))) return true;
+  const statement = " " + normalize(predicate) + " ";
+  return approved.some(card => card.id !== subjectCard?.id && card.type !== "university" &&
+    [card.title, projectTitle(card)].some(alias => {
+      const normalized = normalize(alias);
+      return normalized.length > 4 && statement.includes(" " + normalized + " ");
+    }));
+}
+
 function checkableStatement(statement: string, models: string[]): boolean {
   const text = statement.replace(/^#{1,6}\s+/u, "").trim();
   if (neutralQuestionHeading.test(text) || neutralTransition.test(text) ||
