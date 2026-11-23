@@ -1,29 +1,20 @@
-# Контекст выпуска 0.9.7
+# Краткий контекст Канона0.9.7
 
-Обновлено 23 ноября 2026, Asia/Yekaterinburg. Это краткая рабочая сводка вместо перечитывания чатов.
+Обновлено23ноября2026, Asia/Yekaterinburg. Последние поручения владельца реализованы и установлены; это навигатор для продолжения без перечитывания чатов.
 
-## Что уже закончено
-- Рабочий сайт https://51.250.46.79/ проверен: 0.9.6, revision `061e6383d525c00ae02060eb49692a2ef0537cbb`, healthy/ready200.
-- Image `sha256:cd08f3654bea0d43e455cf9b92eca62c8cd5051c0cd060807da822d2f2db0a3b`; systemd pin `23-workflows-096.conf`, override `/var/lib/canon/precutover096-f096n23b/image.override.yml`.
-- PR3/PR4 merged; текущий main `a16b442efac981f2329d9773762f399928a31eac`. Рабочая ветка `fix/kanon-096-demo-controls` от этого main.
-- Исправлены KUKA rewrite/chat, нейтральные связки, удаление своих черновиков, демо на обычных компонентах сайта, ограниченный повтор временных Scan-чтений.
-- 244 теста, check/build, свежие CI45079643901/45079608586 и полный browser fixture PASS; independent review GREEN.
-- Реальная YDB28/28, backup/restore8таблиц/81запись, AI6запросов/7вызовов (5полезных; отдельный editor title smoke unchanged), Disk fault/retry/offline6файлов/0DBопераций PASS.
-- Normal23/peak57 (однаволна50),0ошибок; p95макс1.414s. Первый ad3 peak с2analytics503 сохранён, первопричина не доказана. 200 отложен, Nginx/firewall не менять.
-- Fresh cutover archive `/var/lib/canon/precutover096-f096n23b/before-cutover-096.json`, SHA `bb2b89f174ebab10e14aacf8855a0f856e40daf1894b672c8475815e57829942`; inventory совпал.
-- Production Disk postcheck:16MD/13CSV/13receipts/47folders/exact bytes PASS. Публичный браузер: guest KUKA2цитаты, demo save/reload/0fetch/cookies/390px/exit PASS, но найден низкий контраст кнопки выхода.
+- Сайт https://51.250.46.79/ работает:0.9.7, revision `027db7bbe925d254bdd76a0ebec94aeb92beda41`, healthy/ready200.
+- Image `sha256:e6b8fd15c573624a9f7750f61fe1fbcada6ca31431e56b155df969c2dc7b80e1`; pin24-ui-097.conf, override `/var/lib/canon/ui097-f097n23a/image.override.yml`.
+- КодPR5 merged какba325dda2739ac8e7c9a35b392f08d2cf10f6b22; финальные отчёты сохраняются отдельно без пересборки runtime.
+- Вход в демо только/login, читаемый выход, запросы подтверждения по умолчанию закрыты, rewrite выше подробностей с focus/scroll после явного успеха. Public390px/клавиатура/0demoAPI PASS.
+- Check/build/offline246, CI45085566925/45085573167 и полный fixture/HTTPS image PASS; независимое code+ops review GREEN.
+- Ops final SHA remote097.sh73e7bcc7efe5743d02ea1124765bcf6646ab6be56c50541941a510b59d8cda93, compat097.py`a46c61656da7eed8807b38a0ffcfab1014ee0ffa85d3590d46be9f9e257a21b2`, verifier1fef18b65c264bf555721e05a5f809e582f7f158b2430eb17787712f014ccb1f.
+- Архив8таблиц/86записей: `/var/lib/canon/ui097-f097n23a/backup/before-cutover-097.json`, SHA `b2e03132d80dc53dc969e0dfb5148609a214578ec24d366f5842a2faddc5a93b`. Verify+frozen-start inventory PASS (IDs/kinds/counts), запись/recovery открыты, restart unless-stopped.
+- Первый preflight остановился без изменений на LF между systemd условиями; однострочная поправка протестирована/отдельно reviewed. Failed-log сохранён. Никакого bypass.
+- Backend lib/app-api/deploy/backup CLI и зависимости равны061; прежние AI/Диск/YDB/нагрузка доказательства наследуются, не переименованы в новые проверки.
+- Для061 были проверены realYDB28, restore8таблиц/81запись, AI6запросов/7вызовов(5полезных), Disk exactbytes+fault/retry, peak50 без ошибок. Новый86-снимок проверен, отдельный restore86 не запускался.
+- 11pending не утверждать/удалять без решений ответственных. Старые48ce/0.9.5 writers запрещены; совместимый UIrollback только к061 без восстановления старой БД.
+- Секреты/env/Config.Env не читать/не печатать; реальные данные не использовать для тестовых записей. Alibaba/домен/200 вне задачи.
+- Собственные QA-контейнеры остановлены, воспроизводимый buildcache очищен; данные/volumes/backup не удалены. Localdev8080 не останавливать; `.next-campus-demo` содержит node_modules junction.
+- После сохранения и публикации итогов пользователь явно поручил выключить Windows обычным способом без /f. До сдачи выключение не планировать.
 
-## Новое поручение — 0.9.7
-1. Удалить вход в демо из шапки; оставить единственную аккуратную кнопку «Попробовать в демо-режиме» на странице входа. Индикатор активного демо и читаемый выход сохранить.
-2. Исправить белые надписи на белых кнопках в шапке (DemoEntry удаляется, ExitDemo получает существующий стиль atlas-account/atlas-login).
-3. «Запросы на подтверждение» — закрыты по умолчанию, заголовок/счётчик видимы, мышь и клавиатура раскрывают/сворачивают. Изменение уже есть только в knowledge-moderation-panel.tsx; RED→GREEN/Chrome390/9UIтестов у прежнего исполнителя, интеграция ещё не проверена.
-4. Переписанный текст поставить до длинного разбора; после явного rewrite прокрутить к результату. Не скрывать краткие предупреждения/источники, не менять запросы/фактлогику.
-5. Версия package/lock/активные QA checks —0.9.7. Проверить UI, check/build/CI, независимое ревью, merge/deploy; не повторять платный AI только из-за косметики. Backend-поддеревья должны остаться теми же, доказательства061 наследуются явно.
-6. После ВСЕХ правок/проверок/деплоя/сохранения отчётов пользователь прямо просит выключить ПК. Обычное выключение, без /f; до готовности не запускать.
-
-## Границы
-- Секреты/runtime.env/Config.Env не читать и не печатать; только opaque env-file. Рабочие данные не менять тестами.
-- 48ce208 и0.9.5 writer запрещены: нет фильтра tombstone. Совместимый откат UI допустим только к061 при доказанно одинаковых backend/API/schema; без отката данных.
-- Localdev8080 и disposableDDB8000 не останавливать; `.next-campus-demo` содержит node_modules junction, не удалять рекурсивно.
-- Детали: docs/followup-0.9.6-workflows.md; `.next-campus-demo/*followup-read.log`; предыдущие серверные helpers в `.next-campus-demo/followup096-ops` закреплены на48ce→061, повторно для0.9.7 не запускать.
-- 11pending требуют людей; не утверждать и не удалять автоматически. Alibaba/домен/200 исключены.
+[Полный отчёт0.9.7](release-0.9.7.md) · [Контракты0.9.6](followup-0.9.6-workflows.md) · [История приёмки061](followup-0.9.6-production.md).
