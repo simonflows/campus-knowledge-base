@@ -121,3 +121,28 @@ for (const question of [
     assert.match(answer.message, /не найдены/iu);
   });
 }
+
+test("membership example guides to resident cards when the approved passport has only a count", async () => {
+  const seed = knowledgeSeedCards.find((card) => card.type === "campus");
+  assert.ok(seed && seed.type === "campus");
+  const card = { ...seed, referenceDescription: "Паспорт межуниверситетского кампуса.",
+    campusMetrics: [{ label: "Вузы-резиденты", value: "7 вузов", note: "Сведения из официального сообщения." }] };
+  const answer = await answerCanonChat({
+    question: "Какие вузы входят в кампус?", cards: [card],
+    request: new Request("http://localhost:8080/api/assistant"), accountId: null,
+    ask: async () => assert.fail("Guest guide called AI"),
+  });
+  assert.deepEqual(answer.citations, [], "A count is not a list of member names");
+  assert.doesNotMatch(answer.message, /не найдены/iu);
+  assert.ok(answer.actions.some(action => action.href === "/knowledge?folder=01_universities"));
+  for (const question of ["Какие частные вузы входят в кампус?", "Какие вузы не входят в кампус?",
+    "Какие вузы входят в кампус в 2020 году?", "Какие вузы входят в кампус «Северный Урал»?",
+    "Сколько вузов входит в кампус?", "Какие вузы входят в кампусы?", "Вузы входят в кампус?"]) {
+    const constrained = await answerCanonChat({
+      question, cards: [card], request: new Request("http://localhost:8080/api/assistant"), accountId: null,
+      ask: async () => assert.fail("Guest guide called AI"),
+    });
+    assert.deepEqual(constrained.citations, [], question);
+    assert.ok(!constrained.actions.some(action => action.href === "/knowledge?folder=01_universities"), question);
+  }
+});

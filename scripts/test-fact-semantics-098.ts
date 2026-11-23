@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkFactText, buildCanonicalRewrite } from "../lib/fact-check";
-import { knowledgeSeedCards, type LaboratoryCard } from "../lib/knowledge";
+import { knowledgeSeedCards, type CampusCard, type LaboratoryCard } from "../lib/knowledge";
 import { mergeAiFactReview, reviewFactsWithAi } from "../lib/canon-ai";
 import pilotCards from "../data/pilot-0.9.5-candidates.json";
 
@@ -65,6 +65,184 @@ test("the same area is confirmed once and cannot carry over to another campus, d
     const checked = checkFactText(unsupported, knowledgeSeedCards);
     assert.equal(checked.summary.red + checked.summary.green, 0, unsupported);
     assert.equal(checked.claimCoverage?.unknown, 1, unsupported);
+  }
+});
+
+const hotelCapacity = "Общая вместимость гостиниц кампуса составляет 3 400 мест.";
+const hotelCapacityWithDash = "Общая вместимость гостиниц кампуса — 3 400 мест.";
+const hotelPassport: CampusCard = {
+  ...knowledgeSeedCards.find(card => card.type === "campus")!,
+  referenceDescription: "Утверждённые показатели гостиниц кампуса «Южный Урал».",
+  campusMetrics: [{
+    label: "Общая вместимость гостиниц",
+    value: "3 400 мест, 8 гостиниц",
+    note: "Вместимость после двух гостиничных очередей по сообщению ЧКК об условиях заселения.",
+  }],
+};
+
+function reviewHotelCapacity(text: string, verdict: "supported" | "contradicted" = "supported", assertion?: string) {
+  return reviewFactsWithAi({
+    request, accountId: "hotel-capacity-fixture", text, cards: [hotelPassport],
+    ask: async (_request, _account, _instruction, input) => {
+      const batch = JSON.parse(input) as {
+        sources: Array<{ id: string; cardId: string; facts: Array<{ id: string; field: string; text: string }> }>;
+        claims: Array<{ id: number; text: string }>;
+      };
+      const source = batch.sources.find(item => item.cardId === hotelPassport.id);
+      const metric = source?.facts.find(fact => fact.field === "campusMetrics.0");
+      assert.ok(source && metric);
+      return { status: "ready", output: { claims: batch.claims.map(({ id, text }) =>
+        assertion && !text.includes(assertion) ? { id, verdict: "outside" } : {
+          id, verdict, ...(assertion && { quote: assertion }),
+          evidence: [{ sourceId: source.id, factId: metric.id, quote: metric.text }],
+        }) } };
+    },
+  });
+}
+
+for (const [form, quote] of [["copula", hotelCapacity], ["dash and period", hotelCapacityWithDash]]) {
+  test(`hotel capacity with ${form} keeps the exact span and approved metric evidence`, async () => {
+    const text = "\n\n" + quote;
+    const ordinary = checkFactText(text, [hotelPassport]);
+    const review = await reviewHotelCapacity(text);
+    assert.equal(review.status, "ready");
+    if (review.status !== "ready") return;
+    assert.equal(review.claims[0].verdict, "supported");
+    assert.equal(review.claims[0].evidence[0].field, "campusMetrics.0");
+    assert.match(review.claims[0].evidence[0].href, /version=cv-/u);
+    for (const result of [ordinary, mergeAiFactReview(ordinary, review)]) {
+      assert.deepEqual(result.summary, { red: 0, yellow: 0, green: 1, total: 1 });
+      const [finding] = result.findings;
+      assert.equal(finding.quote, quote);
+      assert.equal(finding.quoteStart, 2);
+      assert.equal(finding.quoteEnd, text.length);
+    }
+  });
+}
+
+test("the same hotel metric still contradicts 9 999 places and cannot confirm another assertion", async () => {
+  const wrong = hotelCapacity.replace("3 400", "9 999");
+  const wrongOrdinary = checkFactText(wrong, [hotelPassport]);
+  const wrongReview = await reviewHotelCapacity(wrong, "contradicted");
+  assert.equal(wrongReview.status, "ready");
+  if (wrongReview.status === "ready") assert.equal(wrongReview.claims[0].verdict, "contradicted");
+  assert.deepEqual(mergeAiFactReview(wrongOrdinary, wrongReview).summary, { red: 1, yellow: 0, green: 0, total: 1 });
+
+  for (const text of [
+    "Общая вместимость гостиниц кампуса «Северный Урал» составляет 3 400 мест.",
+    "В 2020 году общая вместимость гостиниц кампуса составляла 3 400 мест.",
+    "В 2020 г., общая вместимость гостиниц кампуса — 3 400 мест.",
+    "Вместимость первой очереди гостиниц кампуса составляет 3 400 мест.",
+    "Общая вместимость гостиниц кампуса не составляет 3 400 мест.",
+    "Общая вместимость гостиниц кампуса составляет 3 400 номеров.",
+    "Общая вместимость гостиниц кампуса — 3 400 мест, если построены все гостиницы.",
+    "Общая вместимость гостиниц кампуса — 3 400 мест, но это только гипотеза.",
+  ]) {
+    const ordinary = checkFactText(text, [hotelPassport]);
+    assert.equal(ordinary.summary.green, 0, text);
+    const review = await reviewHotelCapacity(text);
+    assert.equal(mergeAiFactReview(ordinary, review).summary.green, 0, text);
+  }
+});
+
+test("malformed AI evidence cannot erase the ordinary confirmed hotel capacity with punctuation", async () => {
+  const ordinary = checkFactText(hotelCapacityWithDash, [hotelPassport]);
+  const review = await reviewFactsWithAi({
+    request, accountId: "hotel-capacity-fixture", text: hotelCapacityWithDash, cards: [hotelPassport],
+    ask: async () => ({ status: "ready", output: { claims: [{ id: 1, verdict: "supported" }] } }),
+  });
+  assert.equal(review.status, "ready");
+  if (review.status === "ready") assert.equal(review.mode, "mixed");
+  const merged = mergeAiFactReview(ordinary, review);
+  assert.deepEqual(merged.summary, { red: 0, yellow: 0, green: 1, total: 1 });
+  assert.equal(merged.findings[0].quote, hotelCapacityWithDash);
+  assert.equal(merged.canPublish, false);
+});
+
+for (const tail of ["только при выполнении всех условий", "это ещё не доказано"]) {
+  test(`a hotel metric retains the dependent tail: ${tail}`, async () => {
+    for (const [value, verdict] of [["3 400", "supported"], ["9 999", "contradicted"]] as const) {
+      const assertion = hotelCapacity.replace("3 400", value).slice(0, -1);
+      const text = `${assertion}, но ${tail}.`;
+      const ordinary = checkFactText(text, [hotelPassport]);
+      const review = await reviewHotelCapacity(text, verdict, assertion);
+      const merged = mergeAiFactReview(ordinary, review);
+      assert.equal(ordinary.summary.red + ordinary.summary.green, 0, text);
+      assert.equal(merged.summary.red + merged.summary.green, 0, text);
+      assert.equal(merged.canPublish, false, text);
+      assert.equal(review.status, "ready", text);
+      if (review.status === "ready") assert.equal(review.mode, "mixed", text);
+    }
+  });
+}
+
+for (const heading of ["Кампус «Северный Урал»", "Вместимость в 2020 году:", "Первая очередь гостиниц кампуса"]) {
+  test(`a hotel metric stays tied to its document heading: ${heading}`, async () => {
+    for (const [value, verdict] of [["3 400", "supported"], ["9 999", "contradicted"]] as const) {
+      const assertion = hotelCapacity.replace("3 400", value);
+      const text = `${heading}\n${assertion}`;
+      const ordinary = checkFactText(text, [hotelPassport]);
+      const review = await reviewHotelCapacity(text, verdict, assertion);
+      const merged = mergeAiFactReview(ordinary, review);
+      assert.equal(ordinary.summary.red + ordinary.summary.green, 0, text);
+      assert.equal(merged.summary.red + merged.summary.green, 0, text);
+      assert.equal(merged.canPublish, false, text);
+    }
+  });
+}
+
+test("a hotel places count keeps its markdown section and does not borrow a different campus's measure", async () => {
+  const heading = "## Кампус «Северный Урал»";
+  for (const [context, assertion] of [
+    [`${heading}\n\nДанные публикует пресс-служба.\n\n`, hotelCapacity],
+    [`${heading}\n\n### Гостиницы\n\nДанные публикует пресс-служба.\n\n`, hotelCapacity.replace("3 400", "9 999")],
+    ["Кампус «Северный Урал»\n", "Гостиницы кампуса рассчитаны на 9 999 мест."],
+    ["Кампус «Северный Урал».\n", hotelCapacity],
+    ["Кампус «Северный Урал»\nГостиницы\n", hotelCapacity.replace("3 400", "9 999")],
+    ["Поговорим о кампусе «Северный Урал». ", hotelCapacity],
+  ]) {
+    const text = context + assertion;
+    const ordinary = checkFactText(text, [hotelPassport]);
+    const review = await reviewHotelCapacity(text, assertion.includes("9 999") ? "contradicted" : "supported", assertion);
+    assert.equal(ordinary.summary.red + ordinary.summary.green, 0, text);
+    const merged = mergeAiFactReview(ordinary, review);
+    assert.equal(merged.summary.red + merged.summary.green, 0, text);
+    assert.equal(merged.canPublish, false, text);
+  }
+
+  const current = `${heading}\n\n## Кампус «Южный Урал»\n\n${hotelCapacity}`;
+  const review = await reviewHotelCapacity(current, "supported", hotelCapacity);
+  assert.equal(review.status, "ready");
+  if (review.status === "ready") assert.equal(review.claims.find(claim => claim.quote === hotelCapacity)?.verdict, "supported");
+});
+
+test("a current total cannot contradict a conditional, historical or negated hotel metric", async () => {
+  const sentence = hotelCapacity.replace("3 400", "9 999");
+  for (const [text, asserted] of [
+    [`Если достроят остальные корпуса, ${sentence}`, sentence],
+    [`В 2020 г., ${sentence}`, sentence],
+    [sentence.replace("составляет", "не составляет"), undefined],
+  ] as const) {
+    const ordinary = checkFactText(text, [hotelPassport]);
+    const review = await reviewHotelCapacity(text, "contradicted", asserted);
+    const merged = mergeAiFactReview(ordinary, review);
+    assert.equal(ordinary.summary.red + ordinary.summary.green, 0, text);
+    assert.equal(merged.summary.red + merged.summary.green, 0, text);
+    assert.equal(merged.canPublish, false, text);
+  }
+});
+
+test("every hotel places word form found by the scanner receives the same context guard", async () => {
+  for (const unit of ["места", "место", "местами", "местных", "местabc"]) {
+    const assertion = hotelCapacity.replace("3 400 мест", `9 999 ${unit}`);
+    for (const prefix of ["Кампус «Северный Урал».\n", "Вместимость в 2020 году:\n", "Если достроят остальные корпуса, "]) {
+      const text = prefix + assertion;
+      const ordinary = checkFactText(text, [hotelPassport]);
+      const review = await reviewHotelCapacity(text, "contradicted", assertion);
+      const merged = mergeAiFactReview(ordinary, review);
+      assert.equal(ordinary.summary.red + ordinary.summary.green, 0, text);
+      assert.equal(merged.summary.red + merged.summary.green, 0, text);
+    }
   }
 });
 

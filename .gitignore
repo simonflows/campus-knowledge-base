@@ -34,6 +34,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Python release recovery checks
+__pycache__/
+
 # playwright cli
 .playwright-cli
 .playwright-mcp
