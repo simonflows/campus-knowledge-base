@@ -1,0 +1,83 @@
+.mobileCreate {
+  display: none;
+}
+
+.guidance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem 1rem;
+  padding: .8rem clamp(1rem, 2.5vw, 1.5rem);
+  border-bottom: 1px solid var(--desk-line);
+  background: color-mix(in srgb, var(--desk-soft), var(--card) 55%);
+  font-size: .875rem;
+  line-height: 1.5;
+}
+
+.guidance > div {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+
+.guidance h3,
+.jumpTarget {
+  font-weight: 650;
+}
+
+.guidance p {
+  max-width: 64ch;
+  color: var(--muted-foreground);
+}
+
+.returnComment {
+  margin-top: .45rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.guidance button {
+  min-height: 2.75rem;
+}
+
+.resultHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .45rem 1rem;
+}
+
+.resultHeading button {
+  min-height: 2.75rem;
+}
+
+.jumpTarget {
+  scroll-margin-top: 5rem;
+}
+
+.jumpTarget:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: .2rem;
+}
+
+.options > summary {
+  cursor: pointer;
+  font-size: .875rem;
+  font-weight: 650;
+}
+
+@media (max-width: 900px) {
+  .mobileCreate {
+    display: block;
+    padding: 0 .75rem .75rem;
+  }
+
+  .mobileCreate button {
+    min-height: 2.75rem;
+  }
+
+  .desktopCreate {
+    display: none;
+  }
+}

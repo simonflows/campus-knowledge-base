@@ -7,50 +7,31 @@
   pointer-events: none;
 }
 
-.canvas {
-  position: absolute;
-  inset: -18px;
-}
-
-.layer {
+.ridge {
   position: absolute;
   inset-block: 0;
-  width: calc(100% / 3);
-  color: #86afc3;
-}
-
-.layer:first-child {
-  inset-inline-start: 0;
-}
-
-.layer:last-child {
-  inset-inline-end: 0;
-}
-
-.layer svg {
-  display: block;
-  width: 100%;
+  width: 34%;
   height: 100%;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 0.7px;
-  stroke-opacity: 0.24;
 }
 
-.layer .indexLine {
-  stroke-width: 0.95px;
-  stroke-opacity: 0.42;
+.ridge:first-child {
+  inset-inline-start: 0;
+  mask-image: linear-gradient(to right, #000 67%, transparent);
+}
+
+.ridge:last-child {
+  inset-inline-end: 0;
+  mask-image: linear-gradient(to left, #000 67%, transparent);
 }
 
 @media (max-width: 640px) {
-  .canvas {
-    opacity: 0.66;
+  .ridge {
+    opacity: 0.58;
   }
 }
 
 @media (forced-colors: active) {
-  .layer {
-    color: CanvasText;
-    forced-color-adjust: none;
+  .field {
+    display: none;
   }
 }

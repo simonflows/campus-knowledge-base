@@ -81,8 +81,9 @@ export async function getAllKnowledgeCards(signal?: AbortSignal): Promise<Knowle
   return cards;
 }
 
-export async function getCanonicalKnowledgeCards(): Promise<KnowledgeCard[]> {
-  const cards = await getAllKnowledgeCards();
+export async function getCanonicalKnowledgeCards(signal?: AbortSignal): Promise<KnowledgeCard[]> {
+  signal?.throwIfAborted();
+  const cards = await getAllKnowledgeCards(signal);
 
   return cards
     .map(getPublicApprovedCard)

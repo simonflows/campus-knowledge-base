@@ -9,7 +9,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import type { WorkData } from "@/lib/work-data";
 import { WorkEmpty, WorkSelect } from "./work-primitives";
-import { defaultFilters, filterWorkItems, formatWorkDay, workCategories, type WorkFilters } from "./work-state";
+import { defaultFilters, filterWorkItems, formatWorkDay, workActionLabels, workCategories, type WorkFilters } from "./work-state";
 import styles from "./workspace.module.css";
 
 export function WorkQueue({ data }: { data: WorkData }) {
@@ -67,8 +67,13 @@ export function WorkQueue({ data }: { data: WorkData }) {
                   <span>{workCategories[item.kind] ?? "Задача"}</span>
                   {item.state === "waiting" && <Badge variant="outline">В ожидании</Badge>}
                 </div>
-                <h3><Link href={item.href}>{item.title} <ArrowRight size={15} aria-hidden="true" /></Link></h3>
-                <p>{item.reason}</p>
+                <h3>{item.title}</h3>
+                <p>{item.kind === "package" ? "Материалы и источники по общей теме" : item.reason}</p>
+                <Link className={`${styles.textLink} ${styles.queueAction}`} href={item.href}>
+                  {item.state === "waiting" ? "Посмотреть материал" : workActionLabels[item.kind] ?? "Открыть задачу"}
+                  <span className="sr-only"> «{item.title}»</span>
+                  <ArrowRight size={15} aria-hidden="true" />
+                </Link>
               </div>
               <div className={styles.queueMeta}>
                 <span>{item.responsibleName || "Ответственный не назначен"}</span>

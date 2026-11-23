@@ -106,7 +106,7 @@ async function checkDemoRewrite(page: Page, base: string) {
 
   const disclosure = page.locator("details", { has: analysis });
   assert.equal(await disclosure.getAttribute("open"), null);
-  const summary = disclosure.locator("summary");
+  const summary = disclosure.locator(":scope > summary");
   await summary.press("Enter");
   assert.equal(await disclosure.getAttribute("open"), "");
   await summary.press("Space");

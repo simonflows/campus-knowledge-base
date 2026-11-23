@@ -1,128 +1,153 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { contourPeriodMs, contourRidges, paintContours } from "./ural-contours";
 import styles from "./ural-topography.module.css";
 
-const ridges = [
-  {
-    viewBox: "0 0 480 650",
-    transform: "translate(76 514) rotate(31)",
-    outline:
-      "M -23 -249 C 26 -251 68 -213 67 -160 C 66 -113 114 -91 137 -39 C 158 2 129 35 115 74 C 100 119 139 157 100 206 C 61 257 -1 253 -37 205 C -68 164 -107 157 -119 110 C -131 59 -80 34 -87 -12 C -93 -58 -136 -84 -114 -130 C -95 -169 -66 -173 -66 -206 C -66 -235 -46 -248 -23 -249 Z",
-    wave: [
-      { transform: "translate3d(0, 0, 0) scale(1)", opacity: 0.72, offset: 0 },
-      {
-        transform: "translate3d(5.4%, -1.8%, 0) scale(1.05, 1.035)",
-        opacity: 1,
-        offset: 0.28,
-      },
-      {
-        transform: "translate3d(-2.1%, 2.2%, 0) scale(0.985, 1.018)",
-        opacity: 0.52,
-        offset: 0.72,
-      },
-      { transform: "translate3d(0, 0, 0) scale(1)", opacity: 0.72, offset: 1 },
-    ],
-  },
-  {
-    viewBox: "960 0 480 650",
-    transform: "translate(1375 239) rotate(-26)",
-    outline:
-      "M 17 -283 C 64 -267 43 -222 78 -198 C 117 -171 145 -152 141 -106 C 138 -63 104 -46 112 -10 C 121 32 171 54 170 98 C 167 151 109 164 81 204 C 53 244 56 274 8 288 C -40 300 -61 251 -85 214 C -112 173 -151 164 -152 118 C -153 72 -118 58 -125 17 C -133 -25 -166 -57 -149 -102 C -130 -148 -85 -145 -69 -188 C -54 -227 -39 -301 17 -283 Z",
-    wave: [
-      { transform: "translate3d(0, 0, 0) scale(1)", opacity: 0.69, offset: 0 },
-      {
-        transform: "translate3d(1.9%, -1.6%, 0) scale(0.985, 1.015)",
-        opacity: 0.5,
-        offset: 0.2,
-      },
-      {
-        transform: "translate3d(-5.2%, 2%, 0) scale(1.055, 1.038)",
-        opacity: 1,
-        offset: 0.58,
-      },
-      { transform: "translate3d(0, 0, 0) scale(1)", opacity: 0.69, offset: 1 },
-    ],
-  },
-];
-
-const contourScales = [
-  0.43, 0.53, 0.63, 0.74, 0.84, 0.93, 1.02, 1.13, 1.25, 1.37, 1.5,
-];
-const waveDurationMs = 19_000;
+const maxPixelRatio = 1.5;
+const maxPixelsPerRidge = 700_000;
+const frameIntervalMs = 1000 / 60;
 
 export function UralTopography() {
   const fieldRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const field = fieldRef.current;
     if (!field) return;
-    const layers = Array.from(
-      field.querySelectorAll<HTMLElement>("[data-topography-motion]")
-    );
-    if (
-      layers.length !== ridges.length ||
-      layers.some((layer) => typeof layer.animate !== "function")
-    )
-      return;
 
-    const staticMotion = window.matchMedia(
+    const layers = Array.from(
+      field.querySelectorAll("canvas"),
+      (canvas, index) => {
+        const context = canvas.getContext("2d");
+        const ridge = contourRidges[index];
+        return {
+          canvas,
+          context,
+          ridge,
+          points: new Float32Array(ridge.contours[0].length),
+          width: 0,
+          height: 0,
+        };
+      }
+    );
+    if (!layers.some(({ context }) => context)) return;
+
+    const motionPreference = window.matchMedia(
       "(prefers-reduced-motion: reduce), (forced-colors: active)"
     );
     const root = document.documentElement;
-    let animations: Animation[] = [];
+    const motionDisabled = () =>
+      motionPreference.matches || root.dataset.motion === "off";
+    let reduced = motionDisabled();
     let inView = typeof IntersectionObserver !== "function";
-    const cancelWaves = () => {
-      for (const animation of animations) animation.cancel();
-      animations = [];
-    };
+    let frame: number | null = null;
+    let previousFrame: number | null = null;
+    let elapsed = 0;
 
-    const syncMotion = () => {
-      const enabled = !staticMotion.matches && root.dataset.motion !== "off";
-      if (!enabled) {
-        cancelWaves();
-        return;
+    function paint() {
+      for (const { context, ridge, points, width, height } of layers) {
+        if (context && width && height) {
+          paintContours(
+            context,
+            ridge,
+            points,
+            width,
+            height,
+            reduced ? null : elapsed
+          );
+        }
       }
-      const play = inView && !document.hidden;
-      if (play && !animations.length) {
-        // Each side follows its own phase so contours reveal without flashing in unison.
-        animations = layers.map((layer, index) =>
-          layer.animate(
-            ridges[index].wave.map((frame) => ({
-              ...frame,
-              easing: "ease-in-out",
-            })),
-            { duration: waveDurationMs, iterations: Infinity }
-          )
+    }
+
+    function resize() {
+      for (const layer of layers) {
+        const { canvas, context } = layer;
+        const { clientWidth: width, clientHeight: height } = canvas;
+        if (!context || width <= 0 || height <= 0) continue;
+        const ratio = Math.min(
+          window.devicePixelRatio || 1,
+          maxPixelRatio,
+          Math.sqrt(maxPixelsPerRidge / (width * height))
         );
+        const bitmapWidth = Math.max(1, Math.floor(width * ratio));
+        const bitmapHeight = Math.max(1, Math.floor(height * ratio));
+        if (canvas.width !== bitmapWidth) canvas.width = bitmapWidth;
+        if (canvas.height !== bitmapHeight) canvas.height = bitmapHeight;
+        context.setTransform(
+          bitmapWidth / width,
+          0,
+          0,
+          bitmapHeight / height,
+          0,
+          0
+        );
+        layer.width = width;
+        layer.height = height;
       }
-      for (const animation of animations) {
-        if (play && animation.playState === "paused") animation.play();
-        if (!play && animation.playState !== "paused") animation.pause();
-      }
-    };
+      paint();
+    }
 
-    const fieldVisibility =
+    function draw(timestamp: number) {
+      if (
+        previousFrame === null ||
+        timestamp - previousFrame >= frameIntervalMs - 1
+      ) {
+        // Pausing or a busy main thread should never jump across the contour field.
+        const delta = timestamp - (previousFrame ?? timestamp);
+        elapsed = (elapsed + Math.min(delta, 50)) % contourPeriodMs;
+        previousFrame = timestamp;
+        paint();
+      }
+      frame = requestAnimationFrame(draw);
+    }
+
+    function stop() {
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      previousFrame = null;
+    }
+
+    function syncMotion() {
+      const disabled = motionDisabled();
+      if (disabled !== reduced) {
+        reduced = disabled;
+        if (reduced) paint();
+      }
+      if (reduced || !inView || document.hidden) {
+        stop();
+      } else if (frame === null) {
+        frame = requestAnimationFrame(draw);
+      }
+    }
+
+    const visibility =
       typeof IntersectionObserver === "function"
         ? new IntersectionObserver(([entry]) => {
             inView = entry.isIntersecting;
             syncMotion();
           })
         : null;
-    fieldVisibility?.observe(field);
-    syncMotion();
-    staticMotion.addEventListener("change", syncMotion);
-    document.addEventListener("visibilitychange", syncMotion);
+    const sizing = new ResizeObserver(resize);
     const motionAttribute = new MutationObserver(syncMotion);
+    visibility?.observe(field);
+    sizing.observe(field);
     motionAttribute.observe(root, {
       attributes: true,
       attributeFilter: ["data-motion"],
     });
+    motionPreference.addEventListener("change", syncMotion);
+    document.addEventListener("visibilitychange", syncMotion);
+    // Resize also catches a change of display density without a CSS size change.
+    window.addEventListener("resize", resize);
+    resize();
+    syncMotion();
     return () => {
-      fieldVisibility?.disconnect();
+      stop();
+      visibility?.disconnect();
+      sizing.disconnect();
       motionAttribute.disconnect();
-      staticMotion.removeEventListener("change", syncMotion);
+      motionPreference.removeEventListener("change", syncMotion);
       document.removeEventListener("visibilitychange", syncMotion);
-      cancelWaves();
+      window.removeEventListener("resize", resize);
     };
   }, []);
 
@@ -133,30 +158,8 @@ export function UralTopography() {
       aria-hidden="true"
       data-home-topography
     >
-      <div className={styles.canvas}>
-        {ridges.map(({ viewBox, transform, outline, wave }) => (
-          <div
-            key={viewBox}
-            className={styles.layer}
-            style={{ opacity: wave[0].opacity }}
-            data-topography-motion
-          >
-            <svg viewBox={viewBox} preserveAspectRatio="none" focusable="false">
-              <g transform={transform}>
-                {contourScales.map((scale, index) => (
-                  <path
-                    key={scale}
-                    d={outline}
-                    transform={`scale(${scale})`}
-                    className={index % 4 === 0 ? styles.indexLine : undefined}
-                    vectorEffect="non-scaling-stroke"
-                  />
-                ))}
-              </g>
-            </svg>
-          </div>
-        ))}
-      </div>
+      <canvas className={styles.ridge} />
+      <canvas className={styles.ridge} />
     </div>
   );
 }

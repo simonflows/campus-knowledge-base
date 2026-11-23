@@ -15,6 +15,10 @@ import { measurePilotLoad } from "./measure-pilot-load";
 import runRequestBrowserChecks from "./requests-browser-check";
 import { runFollowupBrowserChecks } from "./followup-browser-check";
 import { runFactResultUiChecks } from "./test-fact-result-ui-097";
+import { runFactReportUiChecks } from "./test-fact-report-ui-098";
+import { runAssistantUiChecks } from "./test-assistant-ui-098";
+import { runReleaseNotesUiChecks } from "./test-release-notes-ui-098";
+import { runFactStreamUiChecks } from "./test-fact-stream-ui-098";
 
 async function main() {
   const marker = await requireFixtureDatabase();
@@ -58,8 +62,14 @@ async function main() {
     const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL || "chrome", headless: true });
     try {
       const factResultPage = await browser.newPage();
-      try { await runFactResultUiChecks(factResultPage, base); }
+      try { await runFactResultUiChecks(factResultPage, base); await runFactReportUiChecks(factResultPage, base); }
       finally { await factResultPage.close(); }
+      const releaseUiPage = await browser.newPage();
+      try { await runAssistantUiChecks(releaseUiPage, base); await runReleaseNotesUiChecks(releaseUiPage, base); }
+      finally { await releaseUiPage.close(); }
+      const streamUiPage = await browser.newPage();
+      try { await runFactStreamUiChecks(streamUiPage, base); }
+      finally { await streamUiPage.close(); }
       const analyticsPage = await browser.newPage({ reducedMotion: "reduce" });
       const analyticsLogin = await analyticsPage.request.post(base + "/api/auth/session", {
         headers: { Origin: base },

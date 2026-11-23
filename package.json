@@ -1,6 +1,6 @@
 {
   "name": "vibecraft-template",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "private": true,
   "scripts": {
     "dev": "next dev -p 8080",
@@ -26,7 +26,9 @@
     "test:review-regressions": "tsx scripts/test-review-analysis.ts && tsx scripts/test-review-auth.ts && tsx scripts/test-review-knowledge.ts && tsx scripts/test-review-editorial.ts && tsx scripts/test-review-disk.ts && tsx scripts/test-review-ui.ts",
     "test:interface": "tsx scripts/test-interface.ts",
     "qa:init-fixture": "tsx scripts/init-qa-fixture.ts",
-    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions && npm run test:canon-offline && npm run test:096",
+    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions && npm run test:canon-offline && npm run test:096 && npm run test:098",
+    "test:098": "node --import tsx --test scripts/test-fact-semantics-098.ts scripts/test-semantic-full-098.ts scripts/test-semantic-stream-098.ts scripts/test-fact-stream-reader-098.ts scripts/test-fact-report-098.ts scripts/test-contour-period-098.ts scripts/test-editor-ux-098.ts scripts/test-assistant-examples-098.ts",
+    "test:ui:098": "node --import tsx --test scripts/test-home-motion-098.ts scripts/test-demo-exit-098.ts && tsx scripts/run-ui-098.ts",
     "test:flash-assist": "node --import tsx --test scripts/test-flash-assist.ts",
     "qa:mark-fixture": "tsx scripts/mark-qa-fixture.ts",
     "test:editorial": "tsx scripts/test-editorial.ts",

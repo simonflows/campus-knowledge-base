@@ -120,14 +120,6 @@
   line-height: 1.35;
 }
 
-.queueRow h3 svg {
-  display: inline-block;
-  margin-inline-start: .2rem;
-  color: var(--primary);
-  vertical-align: -.14em;
-}
-
-.queueRow h3 a:hover,
 .textLink:hover {
   text-decoration-thickness: 2px;
   text-decoration-line: underline;
@@ -401,6 +393,11 @@
 
 .textLink svg {
   flex: none;
+}
+
+.queueAction {
+  min-height: 2.75rem;
+  margin-top: .15rem;
 }
 
 .coverageRow {

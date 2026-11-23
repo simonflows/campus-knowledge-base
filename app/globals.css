@@ -220,7 +220,7 @@ html {
 
 .atlas-hero.atlas-hero--topography {
   isolation: isolate;
-  padding-block: clamp(3.2rem, 5.7vw, 5.55rem) clamp(1.9rem, 3.7vw, 3.2rem);
+  padding-block: clamp(3.2rem, 5.2vw, 5.3rem) clamp(1.9rem, 3.6vw, 3.1rem);
 }
 
 .atlas-hero--topography h1 {
@@ -247,13 +247,107 @@ html {
 }
 
 .atlas-hero--topography .atlas-scene {
-  margin-top: clamp(1.5rem, 3.8vw, 2.75rem);
+  margin-top: clamp(1.35rem, 3.4vw, 2.6rem);
   background: #1a2a36;
 }
 
-html:not([data-motion="off"]) .atlas-hero.atlas-hero--topography
-  :is(h1, .atlas-lead, .campus-home-search, .atlas-scene) {
-  animation: none;
+.atlas-passport {
+  padding-block-end: clamp(1.85rem, 4vw, 3.75rem);
+}
+
+.atlas-resources {
+  padding-block: clamp(1.5rem, 3vw, 3rem);
+}
+
+.atlas-universities {
+  padding-block-start: clamp(2rem, 4vw, 4rem);
+}
+
+.atlas-passport .atlas-metric-card dd.atlas-home-metric-value {
+  margin-block: 0.55rem 0.25rem;
+  font-size: clamp(1.125rem, 1.65vw, 1.5rem);
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+
+.atlas-home-metric-part {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 0.4rem;
+}
+
+.atlas-home-metric-group {
+  display: inline-block;
+  max-width: 100%;
+  margin-inline-end: 0.25em;
+}
+
+.atlas-home-metric-part + .atlas-home-metric-part {
+  margin-block-start: 0.2rem;
+}
+
+.atlas-home-metric-part > span {
+  flex: none;
+  white-space: nowrap;
+}
+
+.atlas-home-metric-part small {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.atlas-passport-context {
+  display: grid;
+  gap: 0.25rem;
+  margin-block-start: 1rem;
+  padding-block-start: 0.75rem;
+  border-block-start: 1px solid var(--border);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.atlas-passport-context p {
+  max-width: 72ch;
+  color: var(--muted-foreground);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-motion="off"]) .atlas-hero.atlas-hero--topography
+    :is(h1, .atlas-lead, .campus-home-search, .atlas-scene) {
+    animation: none;
+  }
+
+  html:not([data-motion="off"]) .atlas-hero--topography
+    :is(.atlas-hero-title-accent, .atlas-scene) {
+    transition:
+      opacity 420ms cubic-bezier(0.22, 1, 0.36, 1),
+      transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  @starting-style {
+    html:not([data-motion="off"]) .atlas-hero--topography
+      :is(.atlas-hero-title-accent, .atlas-scene) {
+      opacity: 0.84;
+      transform: translateY(5px);
+    }
+  }
+
+  html:not([data-motion="off"]) .atlas-hero--topography .atlas-card-glyph {
+    transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    html:not([data-motion="off"])
+      .atlas-hero--topography
+      .atlas-scene-card:hover
+      .atlas-card-glyph {
+      transform: translateY(-2px);
+    }
+  }
 }
 
 .atlas-hero--topography .atlas-search button:focus-visible {
@@ -268,6 +362,55 @@ html:not([data-motion="off"]) .atlas-hero.atlas-hero--topography
 
 .campus-search-positioner .campus-search-panel {
   max-height: min(20rem, var(--available-height, 20rem));
+}
+
+.atlas-demo-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.atlas-account.atlas-demo-exit {
+  min-height: 44px;
+  gap: 0.5rem;
+  padding-inline: clamp(0.75rem, 1.2vw, 1rem);
+}
+
+@media (max-width: 460px) {
+  .atlas-header--demo .atlas-header-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.25rem 0.75rem;
+    padding-block: 0.375rem;
+  }
+
+  .atlas-header--demo .brand {
+    justify-self: start;
+  }
+
+  .atlas-header--demo .atlas-controls {
+    display: contents;
+  }
+
+  .atlas-header--demo .atlas-controls > :first-child {
+    grid-area: 1 / 2;
+  }
+
+  .atlas-header--demo .atlas-controls button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .atlas-header--demo .atlas-demo-controls {
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    border-block-start: 1px solid #344553;
+    padding-block-start: 0.375rem;
+  }
+
+  .atlas-header--demo ~ #main-content #university-heading {
+    scroll-margin-block-start: 8.5rem;
+  }
 }
 
 @media (max-width: 480px) {

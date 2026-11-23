@@ -52,14 +52,14 @@ export function WorkRecordList({ section, rows, selected, people }: {
   return (
     <section className="desk-panel" aria-labelledby="work-record-list">
       <header className={styles.panelHeading}>
-        <h2 id="work-record-list">{packages ? "Инфоповоды" : "Разборы источников"}</h2>
+        <h2 id="work-record-list">{packages ? "Подборки для публикаций" : "Разборы источников"}</h2>
         <Button size="sm" nativeButton={false} render={<Link href={workHref(section, undefined, true)} />}>
-          <Plus data-icon="inline-start" aria-hidden="true" />{packages ? "Новый инфоповод" : "Начать разбор"}
+          <Plus data-icon="inline-start" aria-hidden="true" />{packages ? "Создать подборку" : "Начать разбор"}
         </Button>
       </header>
       {rows.length === 0 ? (
-        <WorkEmpty title={packages ? "Инфоповодов пока нет" : "Разборов пока нет"}>
-          {packages ? "Создайте запись, чтобы собрать источники и материалы команды." : "Сопоставьте два источника и зафиксируйте решение."}
+        <WorkEmpty title={packages ? "Подборок пока нет" : "Разборов пока нет"}>
+          {packages ? "Соберите в одной подборке источники, черновики и варианты текста по общей теме." : "Сопоставьте два источника и зафиксируйте решение."}
         </WorkEmpty>
       ) : (
         <ul className={styles.recordList}>
@@ -111,7 +111,7 @@ function PackageDetails({ item, data, editable, busy, save }: {
               </li>
             ))}
           </ul>
-        ) : <p className={styles.muted}>Доступных источников пока нет.</p>}
+        ) : <p className={styles.muted}>{editable && sources.length > 0 ? "Добавьте карточку с фактами для публикации." : "Доступных источников пока нет."}</p>}
         {editable && sources.length > 0 && (
           <div className={styles.addRow}>
             <WorkSelect label="Карточка для добавления" value={pickedSource} onChange={setPickedSource} disabled={busy}
@@ -142,7 +142,7 @@ function PackageDetails({ item, data, editable, busy, save }: {
               </li>
             ))}
           </ul>
-        ) : <p className={styles.muted}>Доступных материалов пока нет.</p>}
+        ) : <p className={styles.muted}>{editable && documents.length > 0 ? "Добавьте черновик или вариант текста из редактора." : "Доступных материалов пока нет."}</p>}
         {editable && documents.length > 0 && (
           <div className={styles.addRow}>
             <WorkSelect label="Материал для добавления" value={pickedDoc} onChange={setPickedDoc} disabled={busy}

@@ -164,7 +164,7 @@ export function CreateWorkflowForm({ kind, data, onCreated, onCancel }: {
       const record = await requestWork<WorkflowPresentation>(workspaceRequest, "/api/workflows", {
         method: "POST", body: JSON.stringify(parsed.data),
       });
-      toast.success(kind === "package" ? "Инфоповод создан" : "Разбор открыт");
+      toast.success(kind === "package" ? "Подборка создана" : "Разбор открыт");
       onCreated(record);
     } catch (failure) {
       setError((failure as Error).message);
@@ -176,7 +176,8 @@ export function CreateWorkflowForm({ kind, data, onCreated, onCancel }: {
 
   return (
     <section className={`desk-panel ${styles.formPanel}`} aria-labelledby="work-create-title">
-      <h2 id="work-create-title">{kind === "package" ? "Новый инфоповод" : "Новый разбор источников"}</h2>
+      <h2 id="work-create-title">{kind === "package" ? "Новая подборка для публикаций" : "Новый разбор источников"}</h2>
+      {kind === "package" && <p className={styles.muted}>Дайте подборке название и назначьте ответственного. Источники и черновики можно добавить сейчас или позже.</p>}
       <form className={styles.form} onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <MetadataFields value={meta} onChange={setMeta} people={data.people} disabled={busy} />
         {kind === "package" ? (
