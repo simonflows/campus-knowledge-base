@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""One-shot 0.9.7 -> 0.9.8 cutover; run only after CI and independent review.
+
+No runtime credential is read by this program. Docker passes the protected env
+file directly to the existing application backup CLI. Records stay root-only.
+"""
+import fcntl
+from contextlib import ExitStack
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import sys
+
+BASE_REV = "027db7bbe925d254bdd76a0ebec94aeb92beda41"
+BASE_IMAGE = "sha256:e6b8fd15c573624a9f7750f61fe1fbcada6ca31431e56b155df969c2dc7b80e1"
+REPO = Path("/opt/campus-knowledge-base/app")
+STATE = Path("/var/lib/canon")
+RUNTIME = "/run/campus/runtime.env"
+APP = "campus-kb-prod-app-1"
+UNIT = "kanon.service"
+DROPINS = Path("/etc/systemd/system/kanon.service.d")
+PIN = DROPINS / "25-release-098.conf"
+BASE_OVERRIDE = STATE / "ui097-f097n23a/image.override.yml"
+BASE_GATE = STATE / "ui097-f097n23a/compat-gate.json"
+OLD_NAMES = ["10-disk-release.conf", "20-release-095.conf", "21-ui-release-095.conf",
+             "22-release-096.conf", "23-workflows-096.conf", "24-ui-097.conf"]
+COMPOSE = ["/usr/bin/docker", "compose", "--env-file", "/dev/null", "-f", "deploy/compose.prod.yml"]
+phase = "arguments"
+
+
+def check(ok):
+    if not ok:
+        raise RuntimeError("gate")
+
+
+def run(args, timeout=30, cwd=REPO):
+    # Never surface arbitrary subprocess output (application errors can contain data).
+    result = subprocess.run(args, cwd=cwd, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+    return result.stdout.decode().strip()
+
+
+def private(path, directory=False):
+    s = path.lstat()
+    check(not path.is_symlink() and s.st_uid == 0)
+    check((s.st_mode & 0o777) == (0o700 if directory else 0o600))
+    check(path.is_dir() if directory else path.is_file())
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def write(path, value):
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(value)
+        handle.flush()
+        os.fsync(handle.fileno())
+    private(path)
+
+
+def prop(name):
+    return run(["systemctl", "show", "--value", "-p", name, UNIT])
+
+
+def command(prop_name, commands):
+    actual = re.findall(r"argv\[\]=(.*?) ; ignore_errors=", prop(prop_name))
+    check(actual == commands)
+
+
+def health(image, revision, version, policy, label=None):
+    # The service may have only one production container, including stopped ones.
+    rows = run(["docker", "ps", "-a", "--no-trunc", "--filter",
+                "label=com.docker.compose.project=campus-kb-prod", "--format", "{{.ID}} {{.Names}}"])
+    check(len(rows.splitlines()) == 1 and rows.split()[1] == APP)
+    fmt = ('{{.Image}} {{.State.Running}} {{.State.Health.Status}} '
+           '{{.HostConfig.RestartPolicy.Name}} {{index .Config.Labels "org.opencontainers.image.revision"}} '
+           '{{index .Config.Labels "org.opencontainers.image.version"}}')
+    check(run(["docker", "inspect", "--format", fmt, APP]) ==
+          f"{image} true healthy {policy} {revision} {version}")
+    if label:
+        check(run(["docker", "inspect", "--format", '{{index .Config.Labels "canon.release098.run"}}', APP]) == label)
+    check(prop("ActiveState") == "active" and prop("NeedDaemonReload") == "no")
+    check(run(["systemctl", "is-active", "kanon-runtime.service"]) == "active")
+    payload = json.loads(run(["curl", "--fail", "--silent", "--max-time", "12",
+                              "http://127.0.0.1:8080/api/version"]))
+    check(payload.get("version") == version and payload.get("revision") == revision)
+    run(["curl", "--fail", "--silent", "--max-time", "12", "http://127.0.0.1:8080/api/ready"])
+    return rows.split()[0]
+
+
+def freeze(expected):
+    headers = run(["curl", "--silent", "--max-time", "10", "-i", "-X", "POST",
+                   "http://127.0.0.1:8080/api/ready"])
+    first = headers.splitlines()[0]
+    check(("503" in first and "x-canon-deploy-freeze: writes" in headers.lower()) if expected
+          else ("405" in first and "x-canon-deploy-freeze:" not in headers.lower()))
+
+
+def main():
+    with ExitStack() as cleanup:
+        return cutover(cleanup)
+
+
+def cutover(cleanup):
+    global phase
+    os.umask(0o077)
+    check(os.geteuid() == 0 and len(sys.argv) == 4)
+    revision, image, run_id = sys.argv[1:]
+    check(bool(re.fullmatch(r"[a-f0-9]{40}", revision)) and revision != BASE_REV)
+    check(bool(re.fullmatch(r"sha256:[a-f0-9]{64}", image)) and image != BASE_IMAGE)
+    check(bool(re.fullmatch(r"[a-z0-9]{8,24}", run_id)))
+    for key in ["DOCKER_HOST", "DOCKER_CONTEXT", "NODE_OPTIONS", "COMPOSE_FILE", "COMPOSE_PROJECT_NAME"]:
+        os.environ.pop(key, None)
+    private(BASE_OVERRIDE)
+    private(BASE_GATE)
+    check(not PIN.exists() and not PIN.is_symlink())
+    lock = cleanup.enter_context((STATE / "backup096.lock").open("r+"))
+    private(STATE / "backup096.lock")
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    work = STATE / f"release098-{run_id}"
+    work.mkdir(mode=0o700)  # Never reuse/overwrite an earlier attempt.
+    private(work, True)
+    override = work / "image.override.yml"
+    gate = work / "reviewed-release.json"
+    source = STATE / f"build098-{revision}" / "source"
+    check(source.is_dir() and source.resolve() == source)
+    private(source, True)
+    check(digest(source / "deploy/compose.prod.yml") == digest(REPO / "deploy/compose.prod.yml"))
+    old_hashes = {name: digest(DROPINS / name) for name in OLD_NAMES}
+    base_command = " ".join(COMPOSE + ["-f", str(BASE_OVERRIDE)])
+    candidate_command = " ".join(COMPOSE + ["-f", str(override)])
+    old_conditions = ["/usr/bin/test -f /var/lib/canon/precutover096-f096n23b/new-writer-attempted.json",
+                      "/usr/bin/test ! -e /var/lib/canon/precutover096-f096n23b/new-writer-blocked.json",
+                      f"/usr/bin/test -f {BASE_GATE}"]
+
+    def unit(candidate=False):
+        expected = [str(DROPINS / name) for name in OLD_NAMES] + ([str(PIN)] if candidate else [])
+        check(prop("DropInPaths").split() == expected)
+        check(prop("WorkingDirectory") == str(REPO) and prop("NeedDaemonReload") == "no" and prop("Restart") == "no")
+        check(all(digest(DROPINS / name) == sha for name, sha in old_hashes.items()))
+        cmd = candidate_command if candidate else base_command
+        command("ExecStart", [cmd + " up --wait --wait-timeout 90"])
+        command("ExecStop", [cmd + " stop"])
+        command("ExecCondition", old_conditions + ([f"/usr/bin/test -f {gate}"] if candidate else []))
+
+    def image_check(ref, expected_image, rev, version):
+        check(run(["docker", "image", "inspect", "--format",
+                   '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.version"}}', ref]) ==
+              f"{expected_image} {rev} {version}")
+
+    def replace_override(frozen):
+        value = (f'services:\n  app:\n    image: "{image}"\n    restart: "no"\n'
+                 f'    labels:\n      canon.release098.run: "{run_id}"\n    environment:\n'
+                 f'      CANON_DEPLOY_FREEZE_WRITES: "{str(frozen).lower()}"\n'
+                 f'      CANON_DISK_RECOVERY: "{str(not frozen).lower()}"\n')
+        temp = work / ("frozen.yml" if frozen else "open.yml")
+        write(temp, value)
+        os.replace(temp, override)
+
+    def stopped():
+        check(not run(["docker", "ps", "--filter", "label=com.docker.compose.project=campus-kb-prod", "-q"]))
+        check(prop("ActiveState") in ["inactive", "failed"])
+
+    def maintenance(name, args, network=True):
+        path = work / (name + ".json")
+        container = f"kanon098-{run_id}-{name}"
+        check(not run(["docker", "ps", "-a", "--filter", f"name=^/{container}$", "-q"]))
+        cmd = ["docker", "run", "--rm", "--pull", "never", "--name", container,
+               "--label", f"canon.release098.maintenance={run_id}",
+               "--read-only", "--tmpfs", "/tmp:mode=1777", "--user", "0:0", "--cap-drop", "ALL",
+               "--security-opt", "no-new-privileges", "--memory", "768m", "--cpus", "1",
+               "--env-file", RUNTIME, "-e", "USE_DATABASE=true", "-e", "CANON_DISK_RECOVERY=false",
+               "-e", "NODE_OPTIONS=", "-e", "YANDEX_AI_STUDIO_API_KEY=", "-e", "YANDEX_DISK_OAUTH_TOKEN=",
+               "-e", "ALIBABA_DASHSCOPE_API_KEY=", "-v", f"{work}:/backup"]
+        if not network:
+            cmd += ["--network", "none"]
+        try:
+            result = run(cmd + [image, "node", "--import", "tsx", "scripts/database-backup.ts"] + args, timeout=600)
+        finally:
+            remains = run(["docker", "ps", "-a", "--filter", f"name=^/{container}$", "-q"])
+            if remains:
+                check(run(["docker", "inspect", "--format",
+                           '{{.Image}} {{index .Config.Labels "canon.release098.maintenance"}}', container]) == f"{image} {run_id}")
+                run(["docker", "rm", "-f", container])
+        parsed = json.loads(result)
+        check(parsed.get("status") in ["saved", "verified", "restored"])
+        write(path, json.dumps(parsed) + "\n")
+        return parsed
+
+    phase = "preflight"
+    image_check(image, image, revision, "0.9.8")
+    image_check(BASE_IMAGE, BASE_IMAGE, BASE_REV, "0.9.7")
+    unit()
+    old_container = health(BASE_IMAGE, BASE_REV, "0.9.7", "unless-stopped")
+    proof = {"revision": revision, "image": image, "run": run_id,
+             "previousRevision": BASE_REV, "previousImage": BASE_IMAGE, "oldContainer": old_container}
+    write(gate, json.dumps(proof) + "\n")
+    replace_override(True)
+    pin_bytes = (f"[Service]\nEnvironment=CAMPUS_RELEASE_TAG={revision}\nEnvironment=CAMPUS_RUNTIME_ENV_FILE={RUNTIME}\n"
+                 f"ExecCondition=/usr/bin/test -f {gate}\nExecStart=\nExecStart={candidate_command} up --wait --wait-timeout 90\n"
+                 f"ExecStop=\nExecStop={candidate_command} stop\n")
+    # Prepare the complete ignored staging file before touching the running writer.
+    # Hard-link publication below is atomic and cannot overwrite another pin.
+    staged_pin = DROPINS / f".25-release-098.{run_id}"
+    check(not staged_pin.exists() and not staged_pin.is_symlink())
+    cleanup.callback(lambda: staged_pin.unlink(missing_ok=True))
+    write(staged_pin, pin_bytes)
+    armed = False
+    try:
+        phase = "stop-writers"
+        armed = True
+        run(["systemctl", "stop", UNIT], timeout=120)
+        stopped()
+        phase = "fresh-snapshot"
+        snapshot = maintenance("snapshot", ["snapshot", "/backup/before.json", "--writers-stopped"])
+        private(work / "before.json")
+        phase = "verify-snapshot"
+        verified = maintenance("verify", ["verify", "/backup/before.json"], network=False)
+        check(snapshot["sha256"] == verified["sha256"])
+        phase = "restore-isolated"
+        restored = maintenance("restore", ["restore", "/backup/before.json", "--prefix", f"qa095-098-{run_id}-"])
+        check(restored["sha256"] == verified["sha256"])
+        stopped()
+        phase = "frozen-start"
+        os.link(staged_pin, PIN)
+        private(PIN)
+        run(["systemctl", "daemon-reload"])
+        unit(True)
+        run(["systemctl", "start", UNIT], timeout=120)
+        frozen_id = health(image, revision, "0.9.8", "no", run_id)
+        freeze(True)
+        phase = "verify-production-unchanged"
+        frozen = maintenance("frozen-snapshot", ["snapshot", "/backup/frozen.json", "--writers-stopped"])
+        before = json.loads((work / "before.json").read_text())
+        after = json.loads((work / "frozen.json").read_text())
+        check(before["sourceSha256"] == after["sourceSha256"])
+        check({t["name"]: t["sha256"] for t in before["tables"]} ==
+              {t["name"]: t["sha256"] for t in after["tables"]})
+        check(snapshot["tableCounts"] == frozen["tableCounts"])
+        phase = "open-writes"
+        unit(True)
+        run(["systemctl", "stop", UNIT], timeout=120)
+        stopped()
+        replace_override(False)
+        run(["systemctl", "start", UNIT], timeout=120)
+        active_id = health(image, revision, "0.9.8", "no", run_id)
+        freeze(False)
+        # Persist restart policy in both Compose and Docker only after acceptance.
+        content = override.read_text().replace('restart: "no"', 'restart: "unless-stopped"')
+        temp = work / "accepted-override.yml"
+        write(temp, content)
+        os.replace(temp, override)
+        run(["docker", "update", "--restart", "unless-stopped", APP])
+        check(health(image, revision, "0.9.8", "unless-stopped", run_id) == active_id)
+        unit(True)
+        proof.update(status="accepted", container=active_id, frozenContainer=frozen_id,
+                     backupSha256=verified["sha256"], restored=True, inventoryUnchanged=True)
+        write(work / "accepted.json", json.dumps(proof) + "\n")
+        armed = False
+        print(json.dumps(proof))
+    except BaseException:
+        if armed:
+            phase_failed = phase
+            phase = "rollback"
+            # Only adopt/stop our exact candidate; otherwise leave an explicit failure.
+            def pin_candidate():
+                present = run(["docker", "ps", "-a", "--filter", f"name=^/{APP}$", "-q"])
+                current_image = run(["docker", "inspect", "--format", "{{.Image}}", APP]) if present else None
+                check(current_image in [None, BASE_IMAGE, image])
+                if current_image != image:
+                    return None
+                candidate_id = run(["docker", "inspect", "--format", '{{.Id}}', APP])
+                check(bool(re.fullmatch(r"[a-f0-9]{64}", candidate_id)))
+                check(run(["docker", "inspect", "--format", '{{.Image}} {{index .Config.Labels "canon.release098.run"}}', candidate_id]) == f"{image} {run_id}")
+                run(["docker", "update", "--restart", "no", candidate_id])
+                return candidate_id
+
+            pin_candidate()
+            if gate.exists():
+                gate.rename(work / "blocked-release.json")
+            run(["systemctl", "stop", UNIT], timeout=120)
+            # A create job may finish while systemctl stop is cancelling the start.
+            # Re-discover after cancellation, including candidates absent beforehand.
+            candidate_id = pin_candidate()
+            if candidate_id:
+                check(run(["docker", "inspect", "--format", '{{.Image}} {{index .Config.Labels "canon.release098.run"}}', candidate_id]) == f"{image} {run_id}")
+                run(["docker", "container", "stop", "--time", "20", candidate_id], timeout=35)
+            stopped()
+            if PIN.exists():
+                check(PIN.read_text() == pin_bytes)
+                PIN.unlink()
+            run(["systemctl", "daemon-reload"])
+            unit()
+            run(["systemctl", "start", UNIT], timeout=120)
+            health(BASE_IMAGE, BASE_REV, "0.9.7", "unless-stopped")
+            write(work / "rollback.json", json.dumps({"status": "rolled-back", "phase": phase_failed,
+                                                       "dataRestored": False}) + "\n")
+            phase = phase_failed + ":rolled-back-to-097"
+        raise
+
+
+if __name__ == "__main__":
+    def interrupt(_signum, _frame):
+        raise InterruptedError("release interrupted")
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGHUP, interrupt)
+    try:
+        main()
+    except BaseException:
+        print(json.dumps({"status": "failed", "phase": phase}), file=sys.stderr)
+        sys.exit(1)

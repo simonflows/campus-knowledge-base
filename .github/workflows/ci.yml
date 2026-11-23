@@ -38,6 +38,8 @@ jobs:
         run: docker compose --env-file /dev/null -f deploy/compose.prod.yml config --quiet
       - name: Test production preflight
         run: node --import tsx --test deploy/preflight.test.ts
+      - name: Test release recovery with injected failures
+        run: python3 -B -m unittest discover -s deploy -p test_release_098.py
       - name: Run offline regressions
         run: npm run test:offline
       - name: Build pilot bundle
@@ -125,3 +127,22 @@ jobs:
             -e CAMPUS_RELEASE_STORAGE_TEST=yes \
             -e "CAMPUS_RELEASE_QA_PREFIX=qa095-ci-release096-${GITHUB_RUN_ID}-" \
             "campus-kb:$CAMPUS_RELEASE_TAG" node --import tsx scripts/test-release-storage.ts
+      - name: Export the verified release image
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          docker tag campus-kb:ci "campus-kb:$GITHUB_SHA"
+          docker save "campus-kb:$GITHUB_SHA" | gzip -1 > "$RUNNER_TEMP/canon-release-image.tar.gz"
+          (cd "$RUNNER_TEMP" && sha256sum canon-release-image.tar.gz > canon-release-image.sha256)
+          docker image inspect --format '{{.Id}}' "campus-kb:$GITHUB_SHA" > "$RUNNER_TEMP/canon-release-image.id"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
+        with:
+          name: canon-release-image
+          path: |
+            ${{ runner.temp }}/canon-release-image.tar.gz
+            ${{ runner.temp }}/canon-release-image.sha256
+            ${{ runner.temp }}/canon-release-image.id
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
