@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { buildCanonSources, validateCanonQuote, resolveCanonReference, type CanonCitation, type CanonSource } from "./canon-context";
-import { checkFactText, currentLabPlacementVerdict, deniesCurrentOperation, factCheckClaimSpans, hasNamedPastActionRelation, isRelevantFactFragment, FACT_CHECK_CHECKPOINTS, type FactCheckFinding, type FactCheckResult } from "./fact-check";
+import { checkFactText, currentLabPlacementVerdict, deniesCurrentOperation, factCheckClaimSpans, hasNamedPastActionRelation, isRelevantFactFragment, permitsHotelCapacityProof, FACT_CHECK_CHECKPOINTS, type FactCheckFinding, type FactCheckResult } from "./fact-check";
 import { claimCoverage, concreteClaimForm, makeClaim, nonFactualForm, omitsAssertionQualification, opinionAssertionRemainder, type ClaimVerdict } from "./fact-claims";
 import { askFlash, runLimitedAi } from "./flash-assist";
 import {
@@ -560,8 +560,15 @@ function semanticBatchClaims(
     const frameStart = original.frameStart ?? original.quoteStart;
     const frameEnd = original.frameEnd ?? original.quoteEnd;
     const omitted = omitsAssertionQualification(text.slice(frameStart, start), text.slice(end, frameEnd));
+    const unsupportedCapacityContext = () => citations.some(({ cardId }) => {
+      const card = cards.find(item => item.id === cardId);
+      const approved = card && getApprovedVersion(card);
+      return approved?.type === "campus" && !permitsHotelCapacityProof(text, {
+        quote, quoteStart: start, quoteEnd: end, frameStart, frameEnd,
+      }, approved);
+    });
     let discardedProof = uncertain || (extractedVerdict === "supported" || extractedVerdict === "contradicted") &&
-      (!citations.length || omitted);
+      (!citations.length || omitted || unsupportedCapacityContext());
     const rawVerdict = discardedProof ? "unknown" : extractedVerdict;
     const grounded = ordinary.findings.filter(finding =>
       (finding.quoteStart ?? -1) < end && (finding.quoteEnd ?? -1) > start

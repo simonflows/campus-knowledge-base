@@ -1124,6 +1124,44 @@ function namesOtherCampus(sentence: string, card: CampusCard): boolean {
   }) || /кампус\p{L}*\s+(?:в\s+)?(?!Челябинск|Южн\p{L}*\s+Урал|МИДиС|ЮУрГУ|ЧелГУ|ЮУГМУ|ЮУрГАУ|МГТУ|ЮУрГГПУ)[А-ЯЁ][а-яё]{2,}(?=\s|[,.)]|$)/u.test(sentence);
 }
 
+const hotelCapacityStatement =
+  /^(?:(?:общая|проектная)\s+)?вместимость\s+гостиниц(?:\s+кампуса)?(?:\s+составляет\s+|\s*[:—–-]\s*|\s+)\d[\d\s]*\s+мест[.!]?$/iu;
+const hotelCapacityQueue =
+  /(?<![\p{L}\p{N}])(?:[123][- ]?[яей]|перв\p{L}*|втор\p{L}*|трет\p{L}*)\s+(?:очеред|этап)\p{L}*/iu;
+
+/** A total capacity measurement requires the same standalone statement and heading scope. */
+export function permitsHotelCapacityProof(text: string, span: StatementSpan, campus: CampusCard): boolean {
+  if (!/\d/u.test(span.quote) || !/гостини[цч]/iu.test(span.quote) || !/(?<!\p{L})мест[а-яё]*/iu.test(span.quote)) return true;
+  if (!hotelCapacityStatement.test(span.quote) || text.slice(span.frameStart, span.frameEnd).trim() !== span.quote) return false;
+
+  let campusResolved = false;
+  let includePlainContext = true;
+  let sectionDepth = 7;
+  const previous = text.slice(0, span.frameStart).split(/\r\n|[\r\n]/u);
+  for (let index = previous.length - 1; index >= 0; index--) {
+    const line = previous[index].trim();
+    if (!line) continue;
+    const depth = /^(#{1,6})[ \t]+/u.exec(line)?.[1].length ?? 0;
+    if (depth) {
+      if (depth >= sectionDepth) continue;
+      sectionDepth = depth;
+      includePlainContext = false;
+    } else if (!includePlainContext) continue;
+
+    const namedCampus = line.match(campusName) !== null;
+    const heading = depth > 0 || !/[.!?…]$/u.test(line) || /\d\s*г\.$/iu.test(line);
+    if ((heading || namedCampus) && (hotelCapacityQueue.test(line) || omitsAssertionQualification(line, ""))) return false;
+    if (!campusResolved) {
+      if (namesOtherCampus(line, campus)) return false;
+      if (namedCampus) {
+        campusResolved = true;
+        includePlainContext = false;
+      }
+    }
+  }
+  return true;
+}
+
 function unitRoot(value: string): string {
   return normalize(value)
     .split(" ")
@@ -2059,15 +2097,15 @@ export function checkFactText(
 
     const placesRegex =
       /(\d[\d\s.,]*)\s*(?:учебн[а-яё]*\s+|жилых\s+)?мест[а-яё]*/gi;
-    const hotelCapacityStatement =
-      /^(?:(?:общая|проектная)\s+)?вместимость\s+гостиниц(?:\s+кампуса)?\s*[:—–-]?\s*\d[\d\s]*\s+мест[.!]?$/iu;
     let placesMatch: RegExpExecArray | null;
 
     while ((placesMatch = placesRegex.exec(draft)) !== null) {
-      const sentence = relevantQuoteAt(placesMatch.index);
-
-      if (!sentence || !isCampusClaim(draft, placesMatch.index) || namesOtherCampus(sentence, campusCard) ||
-        /(?:в|к|до|после)\s+(?:19|20|21)\d{2}\s+год|раньше|ранее|историческ/iu.test(sentence)) continue;
+      const span = relevantSpanAt(placesMatch.index);
+      if (!span) continue;
+      const sentence = span.quote;
+      if (!isCampusClaim(draft, placesMatch.index) || namesOtherCampus(sentence, campusCard) ||
+        /(?:в|к|до|после)\s+(?:19|20|21)\d{2}\s+год|раньше|ранее|историческ/iu.test(sentence) ||
+        !permitsHotelCapacityProof(input, span, campusCard)) continue;
 
       const value = parseNumeric(placesMatch[1] ?? "");
 
@@ -2095,21 +2133,18 @@ export function checkFactText(
             ...sourceFromCard(campusCard),
           })
         );
-      } else {
-        const clause = claimClause(draft, placesMatch.index);
-        if (hotelCapacityStatement.test(clause) &&
-          isOfficialCampusMeasure(campusCard, "places", value, clause)) {
-          confirmedFigures.add(evidenceKey(clause));
-          findings.push(createFinding({
-            level: "green",
-            checkpoint: "campus",
-            title: "Вместимость гостиниц подтверждена паспортом",
-            quote: clause,
-            explanation: "Число относится к проектной вместимости гостиниц кампуса.",
-            suggestion: "Сохраните вид показателя и ссылку на официальный паспорт.",
-            ...sourceFromCard(campusCard),
-          }));
-        }
+      } else if (hotelCapacityStatement.test(sentence) && isOfficialCampusMeasure(campusCard, "places", value, sentence)) {
+        confirmedFigures.add(evidenceKey(sentence));
+        findings.push(createFinding({
+          level: "green",
+          checkpoint: "campus",
+          title: "Вместимость гостиниц подтверждена паспортом",
+          quote: sentence,
+          quoteStart: span.quoteStart,
+          explanation: "Число относится к проектной вместимости гостиниц кампуса.",
+          suggestion: "Сохраните вид показателя и ссылку на официальный паспорт.",
+          ...sourceFromCard(campusCard),
+        }));
       }
     }
 

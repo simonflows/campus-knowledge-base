@@ -178,7 +178,20 @@ export function findAssistantGuide(
     )
     .sort((left, right) => right.rank - left.rank);
   const best = matches[0];
-  if (!best || best.rank === matches[1]?.rank) return null;
+  if (!best || best.rank === matches[1]?.rank) {
+    // A count alone cannot answer which institutions are members. Offer the
+    // resident section without inventing a list or dropping an extra constraint.
+    const requestsList = tokenizeKnowledgeText(question).some(word => /^(?:какие|каких|состав)$/u.test(word));
+    const singularCampus = words.some(word => /^кампус(?:а|у|ом|е)?$/u.test(word));
+    if (membership && requestsList && singularCampus && !words.includes("сколько") &&
+        subject.every(word => has(["университет", "состав"], word)))
+      return {
+        message: "Откройте раздел «Вузы-резиденты», чтобы найти утверждённые карточки.",
+        citations: [],
+        actions: [{ label: "Вузы-резиденты", href: `/knowledge?folder=${encodeURIComponent(folderIds.universities)}` }],
+      };
+    return null;
+  }
   const citation = resolveCanonReference(best, sources);
   if (!citation) return null;
   return {
