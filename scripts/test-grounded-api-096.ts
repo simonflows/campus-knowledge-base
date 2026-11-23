@@ -42,6 +42,10 @@ function setup(
 ) {
   let cards = initialCards;
   let storageOffline = false;
+  let scans = 0;
+  let startRefresh = (_signal: AbortSignal) => {};
+  const refreshStarted = new Promise<AbortSignal>(resolve => { startRefresh = resolve; });
+  let releaseRefresh = () => {};
   const settings = {
     USE_DATABASE: "true", DOCUMENT_API_ENDPOINT: origin, CAMPUS_PUBLIC_ORIGIN: origin,
     CAMPUS_DEMO_LOGIN: "false", CAMPUS_LOCAL_DEMO: "false", SESSION_SECRET: randomBytes(32).toString("hex"),
@@ -54,10 +58,20 @@ function setup(
   };
   Object.assign(process.env, settings);
   resetDbAvailableCache();
-  context.mock.method(docClient, "send", async (command: unknown) => {
+  context.mock.method(docClient, "send", async (command: unknown, options?: { abortSignal?: AbortSignal }) => {
     if (command instanceof ListTablesCommand) return {};
     if (command instanceof ScanCommand && command.input.TableName === TableName.KNOWLEDGE_CARDS) {
-      if (storageOffline) throw new Error("Synthetic storage outage during rewrite");
+      if (storageOffline) throw new Error("Synthetic storage outage during source refresh");
+      if (++scans > 1 && mode === "stream-cancel-refresh") {
+        const signal = options?.abortSignal;
+        assert.ok(signal);
+        startRefresh(signal);
+        await new Promise<void>(resolve => {
+          releaseRefresh = resolve;
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      }
       return { Items: structuredClone(cards) };
     }
     if (command instanceof ScanCommand && command.input.TableName === TableName.KNOWLEDGE_CARD_TYPES) return { Items: [] };
@@ -65,6 +79,12 @@ function setup(
   });
   const provider = context.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
     assert.equal(url, "https://ai.api.cloud.yandex.net/v1/chat/completions");
+    if (mode === "stream-cancel") {
+      const signal = options.signal;
+      assert.ok(signal);
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      throw new Error("Synthetic provider cancellation");
+    }
     const body = JSON.parse(String(options.body));
     const data = JSON.parse(body.messages[1].content);
     if (mode === "rewrite-transport-error" && data.candidates) throw new Error("Synthetic verifier outage");
@@ -75,7 +95,10 @@ function setup(
     const output = rewriteReply ? rewriteReply(data, source) : data.claims
       ? { claims: data.claims.map((claim: { id: number }) => ({ id: claim.id, verdict: "supported", explanation: "Совпадает с описанием карточки.", correction: "", evidence: [quote] })) }
       : { quotes: [quote], service: null, clarify: false };
-    if (mode === "stale") cards = [{ ...cards[0], referenceDescription: "Карточка обновлена после запроса." }];
+    if (mode === "stale" || mode === "stream-stale") {
+      cards = [{ ...cards[0], referenceDescription: "Карточка обновлена после запроса." }];
+    }
+    if (mode === "added") cards = [...cards, { ...structuredClone(cards[0]), id: "new-approved-evidence", title: "Новый утверждённый источник" }];
     if (mode === "rewrite-stale" && data.candidates) {
       cards = cards.map(card => card.id === "lab-midis-kuka"
         ? { ...card, referenceDescription: "На площадке МИДиС указан промышленный робот-манипулятор KUKA." }
@@ -84,18 +107,19 @@ function setup(
     if (mode === "rewrite-deleted" && data.candidates) {
       cards = cards.filter(card => card.id !== "lab-midis-kuka");
     }
-    if (mode === "rewrite-offline" && data.candidates) storageOffline = true;
+    if ((mode === "rewrite-offline" && data.candidates) || mode === "stream-offline") storageOffline = true;
     return Response.json({
       choices: [{ finish_reason: "stop", message: { content: JSON.stringify(output) } }],
       usage: { prompt_tokens: 100, completion_tokens: 20 },
     });
   });
-  context.after(() => { for (const name of Object.keys(settings)) delete process.env[name]; resetDbAvailableCache(); });
-  return { provider };
+  context.after(() => { releaseRefresh(); for (const name of Object.keys(settings)) delete process.env[name]; resetDbAvailableCache(); });
+  return { provider, refreshStarted };
 }
-function run(route: typeof factCheck | typeof analytics | typeof assistant, body: unknown, login?: string) {
+function run(route: typeof factCheck | typeof analytics | typeof assistant, body: unknown, login?: string, accept?: string) {
   const request = new NextRequest(origin + "/api/test", { method: "POST", headers: {
     origin, "content-type": "application/json", ...(login ? { cookie: `${SESSION_COOKIE}=${signSessionToken("pilot-" + login)}` } : {}),
+    ...(accept ? { accept } : {}),
   }, body: JSON.stringify(body) });
   const store = createRequestStoreForAPI(request, request.nextUrl, { tags: [], expirationsByCacheKind: new Map() }, undefined, undefined, undefined);
   return workAsyncStorage.run({} as NonNullable<ReturnType<typeof workAsyncStorage.getStore>>, () => workUnitAsyncStorage.run(store, () => route(request)));
@@ -122,6 +146,112 @@ test("a source changed during AI execution is rechecked with current canon", asy
   const result = await (await run(factCheck, { text, useAi: true }, "stale")).json();
   assert.equal(result.ai.status, "failed");
   assert.equal(result.ai.reason, "sources-changed");
+});
+
+const streamAccept = "application/x-ndjson";
+
+async function readStreamRecords(response: Response) {
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("Content-Type") ?? "", /^application\/x-ndjson/u);
+  return (await response.text()).trim().split("\n").map(line => JSON.parse(line));
+}
+
+test("the streamed route authorizes before work and streams the versioned JSON result after progress", async context => {
+  const { provider } = setup(context, "stream-ready");
+  for (const [body, login, status] of [
+    [{ text, useAi: true }, undefined, 401],
+    [{ text, useAi: true }, "guest", 403],
+    [{ text: "", useAi: true }, "stream-ready", 400],
+    [{ text }, undefined, 200],
+  ] as const) {
+    const response = await run(factCheck, body, login, streamAccept);
+    assert.equal(response.status, status);
+    assert.match(response.headers.get("Content-Type") ?? "", /^application\/json/u);
+  }
+  assert.equal(provider.mock.callCount(), 0);
+  const response = await run(factCheck, { text, useAi: true }, "stream-ready", streamAccept);
+  const records = await readStreamRecords(response);
+  assert.equal(response.headers.get("X-Accel-Buffering"), "no");
+  assert.deepEqual(records.slice(0, -1), [
+    { type: "heartbeat" },
+    { type: "progress", stage: "verify", completed: 0, total: 1 },
+    { type: "progress", stage: "verify", completed: 1, total: 1 },
+  ]);
+  assert.equal(records.at(-1).type, "result");
+  assert.equal(records.at(-1).result.ai.status, "ready");
+  assert.match(records.at(-1).result.ai.claims[0].evidence[0].href, /version=cv-/u);
+  assert.equal(provider.mock.callCount(), 1);
+});
+
+test("the streamed route discards stale evidence before the terminal result", async context => {
+  setup(context, "stream-stale");
+  const records = await readStreamRecords(await run(factCheck, { text, useAi: true }, "stream-stale", streamAccept));
+  const terminal = records.at(-1);
+  assert.equal(terminal.type, "result");
+  assert.deepEqual(terminal.result.ai, { status: "failed", reason: "sources-changed" });
+  assert.ok(terminal.result.findings.every((finding: { method?: string }) => finding.method !== "ai"));
+});
+
+test("a source refresh outage after progress returns one safe terminal stream error", async context => {
+  setup(context, "stream-offline");
+  const records = await readStreamRecords(await run(factCheck, { text, useAi: true }, "stream-offline", streamAccept));
+  assert.ok(records.some(record => record.type === "progress"));
+  assert.equal(records.filter(record => record.type === "error" || record.type === "result").length, 1);
+  const terminal = records.at(-1);
+  assert.equal(terminal.type, "error");
+  assert.equal(terminal.status, 503);
+  assert.doesNotMatch(terminal.error, /Synthetic|outage/u);
+});
+
+test("cancelling a streamed route reaches the provider signal", async context => {
+  const { provider } = setup(context, "stream-cancel");
+  const response = await run(factCheck, { text, useAi: true }, "stream-cancel", streamAccept);
+  assert.match(response.headers.get("Content-Type") ?? "", /^application\/x-ndjson/u);
+  const reader = response.body!.getReader();
+  await reader.read();
+  await reader.read();
+  assert.equal(provider.mock.callCount(), 1);
+  const signal = provider.mock.calls[0].arguments[1]?.signal;
+  assert.equal(signal?.aborted, false);
+  await reader.cancel();
+  assert.equal(signal?.aborted, true);
+  assert.equal((await reader.read()).done, true);
+});
+
+test("cancelling a streamed route also aborts the current source refresh", async context => {
+  const { refreshStarted } = setup(context, "stream-cancel-refresh");
+  const response = await run(factCheck, { text, useAi: true }, "stream-cancel-refresh", streamAccept);
+  const reader = response.body!.getReader();
+  const signal = await refreshStarted;
+  assert.equal(signal.aborted, false);
+  await reader.cancel();
+  assert.equal(signal.aborted, true);
+  assert.equal((await reader.read()).done, true);
+});
+
+test("a source added during AI execution invalidates the previous semantic snapshot", async context => {
+  setup(context, "added");
+  const result = await (await run(factCheck, { text, useAi: true }, "added")).json();
+  assert.equal(result.ai.status, "failed");
+  assert.equal(result.ai.reason, "sources-changed");
+  assert.ok(result.findings.every((finding: { method?: string }) => finding.method !== "ai"));
+  assert.ok(result.findings.filter((finding: { sourceCardId?: string }) => finding.sourceCardId)
+    .every((finding: { sourceVersionId?: string }) => finding.sourceVersionId?.startsWith("cv-")));
+});
+
+test("a preserved rewrite pins each source to the same version used for its findings", async context => {
+  setup(context, "preserved-versions", knowledgeSeedCards);
+  const article = "Беседа о кампусе\n\n— Что вам нравится в городе?\n— Мне нравится его характер.\n\nОбщая площадь кампуса составляет 114 тыс. кв. метров.";
+  const response = await run(factCheck, { text: article, mode: "rewrite" });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.ok(result.rewrite?.preservedText);
+  assert.ok(result.rewrite.sourceCardIds.length > 0);
+  for (const id of result.rewrite.sourceCardIds) {
+    assert.ok(result.rewrite.sourceVersions[id]?.startsWith("cv-"));
+    const finding = result.findings.find((finding: { sourceCardId: string }) => finding.sourceCardId === id);
+    if (finding) assert.equal(finding.sourceVersionId, result.rewrite.sourceVersions[id]);
+  }
 });
 test("analytics requires a staff identity and keeps guest access read-only", async context => {
   const { provider } = setup(context, "chat");

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { buildAnalyticsReport } from "./analytics";
+import { findAssistantGuide } from "./assistant-query";
 import { approvedDemoCards, demoUser, visibleDemoCards } from "./browser-demo";
 import { demoError, type DemoHandler } from "./browser-demo-http";
 import { demoCardVersionId } from "./browser-demo-version";
@@ -108,13 +109,24 @@ export const handleDemoTools: DemoHandler = (call) => {
     });
   }
   const { message } = chatInput.parse(call.body());
-  const matched = searchKnowledgeCards(cards, message).slice(0, 4);
-  const selected = buildCanonSources(
-    matched,
-    Object.fromEntries(
-      matched.map((card) => [card.id, demoCardVersionId(card)])
-    )
+  const asSources = (selected: typeof cards) =>
+    buildCanonSources(
+      selected,
+      Object.fromEntries(
+        selected.map((card) => [card.id, demoCardVersionId(card)])
+      )
+    );
+  const guide = findAssistantGuide(
+    message,
+    asSources(cards.filter(({ type }) => type === "campus"))
   );
+  if (guide)
+    return Response.json({
+      status: "local",
+      ...guide,
+    } satisfies CanonChatAnswer);
+  const matched = searchKnowledgeCards(cards, message).slice(0, 4);
+  const selected = asSources(matched);
   const citations = selected.flatMap((source) => {
     const fact = source.facts.find(
       ({ field, text }) =>

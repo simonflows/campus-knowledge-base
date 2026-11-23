@@ -7,7 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { FlaskConical, RotateCcw } from "lucide-react";
+import { FlaskConical, LogOut, RotateCcw } from "lucide-react";
 import { CampusChrome } from "@/components/navigation/campus-chrome";
 import { DemoNavigationContext } from "@/components/navigation/workspace-navigation";
 import { Button } from "@/components/ui/button";
@@ -79,20 +79,17 @@ function readLocalState() {
   }
 }
 
-function ExitDemo({
-  href,
-  compact = false,
-}: {
-  href: string;
-  compact?: boolean;
-}) {
+function ExitDemo({ href }: { href: string }) {
   return (
     <a
-      className={buttonVariants({ variant: "outline", size: "sm", className: "atlas-account atlas-login" })}
+      className={buttonVariants({
+        variant: "outline",
+        className: "atlas-account atlas-login atlas-demo-exit",
+      })}
       href={href}
-      aria-label="Выйти из демо"
     >
-      {compact ? <>Выйти<span className="hidden sm:inline"> из демо</span></> : "Выйти из демо"}
+      <LogOut data-icon="inline-start" aria-hidden="true" />
+      <span>Выйти из демо</span>
     </a>
   );
 }
@@ -246,14 +243,14 @@ function DemoSession({ exitHref }: { exitHref: string }) {
           }}
           demo
           account={
-            <div className="flex items-center gap-1.5">
+            <div className="atlas-demo-controls">
               <span
                 className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-slate-950"
                 aria-label="Демо-режим"
               >
                 Демо
               </span>
-              <ExitDemo href={exitHref} compact />
+              <ExitDemo href={exitHref} />
             </div>
           }
           banner={banner}

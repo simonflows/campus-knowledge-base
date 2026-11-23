@@ -1,9 +1,15 @@
 "use client";
 
-import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import {
+  useWorkspaceMode,
+  useWorkspaceRequest,
+} from "@/components/demo/workspace-transport";
 
-import { useEffect, useRef, useState } from "react";
-import { AppLink as Link, useWorkspacePathname } from "@/components/navigation/workspace-navigation";
+import { useEffect, useId, useRef, useState } from "react";
+import {
+  AppLink as Link,
+  useWorkspacePathname,
+} from "@/components/navigation/workspace-navigation";
 import { MessageCircle, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { CanonChatAnswer } from "@/lib/canon-ai";
 
 import { parseAssistantAnswer } from "./assistant-answer";
+import styles from "./assistant-widget.module.css";
 
 type Turn = {
   id: string;
@@ -29,6 +36,23 @@ type Turn = {
 
 const MAX_MESSAGE_LENGTH = 2000;
 const MAX_TURNS = 12;
+const exampleSets = [
+  [
+    "Какова общая площадь кампуса?",
+    "Какие вузы входят в кампус?",
+    "Как проверить текст по справочнику?",
+  ],
+  [
+    "Сколько мест для проживания в кампусе?",
+    "Где открыть паспорт кампуса?",
+    "Как найти карточку университета?",
+  ],
+  [
+    "Какие лаборатории проектируют в учебно-научном корпусе?",
+    "Какие этапы строительства указаны в паспорте?",
+    "Где подготовить черновик публикации?",
+  ],
+];
 const statusLabels = {
   ready: "",
   local: "Поиск по карточкам без нейросети.",
@@ -47,14 +71,20 @@ export function AssistantWidget({ staff }: { staff: boolean }) {
 
 function AssistantSession({ staff }: { staff: boolean }) {
   const workspaceRequest = useWorkspaceRequest();
+  const demo = useWorkspaceMode() === "demo";
+  const exampleHeadingId = useId();
   const [open, setOpen] = useState(false);
+  const [exampleSet, setExampleSet] = useState(exampleSets.length - 1);
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<Turn[]>([]);
   const [validation, setValidation] = useState("");
+  const [exampleHelp, setExampleHelp] = useState("");
+  const selectedExample = useRef<string | null>(null);
   const active = useRef<{ id: string; controller: AbortController } | null>(
     null
   );
   const composer = useRef<HTMLTextAreaElement>(null);
+  const title = useRef<HTMLHeadingElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const transcript = useRef<HTMLDivElement>(null);
   const sending = turns.some((turn) => !turn.answer && !turn.issue);
@@ -62,11 +92,15 @@ function AssistantSession({ staff }: { staff: boolean }) {
   useEffect(() => () => active.current?.controller.abort(), []);
   useEffect(() => {
     const view = transcript.current;
-    if (view && open) view.scrollTop = view.scrollHeight;
-  }, [turns, open]);
+    if (view && turns.length) view.scrollTop = view.scrollHeight;
+  }, [turns]);
 
   function changeOpen(nextOpen: boolean) {
     setOpen(nextOpen);
+    if (nextOpen && !open) {
+      setExampleSet((current) => (current + 1) % exampleSets.length);
+      if (transcript.current) transcript.current.scrollTop = 0;
+    }
     if (!nextOpen && active.current) {
       const { id, controller } = active.current;
       active.current = null;
@@ -79,6 +113,20 @@ function AssistantSession({ staff }: { staff: boolean }) {
     }
   }
 
+  function chooseExample(question: string) {
+    if (input.trim() && input !== selectedExample.current) {
+      setExampleHelp(
+        "Отправьте свой вопрос или очистите поле, чтобы выбрать пример."
+      );
+    } else {
+      selectedExample.current = question;
+      setInput(question);
+      setValidation("");
+      setExampleHelp("");
+    }
+    composer.current?.focus({ preventScroll: true });
+  }
+
   async function ask(message: string, retryId?: string) {
     if (active.current) return;
     const normalized = message.trim();
@@ -89,6 +137,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
       return;
     }
     setValidation("");
+    setExampleHelp("");
     const id = retryId ?? crypto.randomUUID();
     const retryIndex = turns.findIndex((turn) => turn.id === retryId);
     const history = (retryIndex >= 0 ? turns.slice(0, retryIndex) : turns)
@@ -148,39 +197,55 @@ function AssistantSession({ staff }: { staff: boolean }) {
         render={
           <Button
             ref={trigger}
-            size="icon"
             type="button"
-            className="fixed right-4 bottom-4 z-40 size-12 rounded-full border border-primary-foreground/20 shadow-lg sm:right-6 sm:bottom-6"
+            className={styles.launcher}
             aria-label="Открыть помощник Канона"
           />
         }
       >
-        <MessageCircle aria-hidden="true" />
+        <MessageCircle data-icon="inline-start" aria-hidden="true" />
+        <span className={styles.launcherLabel}>Помощник</span>
       </DialogTrigger>
       <DialogContent
-        initialFocus={composer}
+        initialFocus={title}
         finalFocus={trigger}
-        className="top-auto right-4 bottom-20 left-auto flex max-h-[calc(100dvh-6rem)] w-[380px] max-w-[calc(100%-2rem)] translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden p-0 shadow-xl sm:right-6 sm:bottom-24 sm:max-w-[380px] data-open:animate-none data-closed:animate-none"
+        className={`${styles.panel} data-open:animate-none data-closed:animate-none`}
       >
-        <DialogHeader className="flex-none border-b px-4 py-3 pr-11">
-          <DialogTitle>Помощник Канона</DialogTitle>
+        <DialogHeader className={styles.header}>
+          <DialogTitle ref={title} tabIndex={-1}>
+            Помощник Канона
+          </DialogTitle>
           <DialogDescription>
-            Сведения из утверждённых карточек и помощь с разделами справочника.
+            {demo
+              ? "Учебный поиск по карточкам и разделам."
+              : staff
+                ? "Сведения из утверждённых карточек и разделов."
+                : "Поиск по карточкам. Для ответов с ИИ войдите."}
           </DialogDescription>
         </DialogHeader>
         <div
           ref={transcript}
-          tabIndex={0}
+          tabIndex={turns.length ? 0 : undefined}
           aria-label="Переписка с помощником"
-          className="min-h-24 flex-1 space-y-4 overflow-y-auto px-4 py-3 outline-ring"
+          className={styles.transcript}
         >
-          {turns.length === 0 && (
-            <p className="text-muted-foreground">
-              {staff
-                ? "Укажите объект, вуз или показатель."
-                : "Доступен поиск по карточкам. Для ответов с ИИ войдите."}
-            </p>
-          )}
+          <section
+            aria-labelledby={exampleHeadingId}
+            className={styles.examples}
+          >
+            <h3 id={exampleHeadingId}>Примеры вопросов</h3>
+            {exampleSets[exampleSet].map((question) => (
+              <Button
+                key={question}
+                type="button"
+                variant="ghost"
+                className={styles.example}
+                onClick={() => chooseExample(question)}
+              >
+                {question}
+              </Button>
+            ))}
+          </section>
           {turns.map((turn) => (
             <article key={turn.id} className="space-y-2 break-words">
               <p className="ml-6 rounded-lg bg-muted px-3 py-2 font-medium whitespace-pre-wrap">
@@ -218,7 +283,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
           ))}
         </div>
         <form
-          className="flex-none border-t p-3"
+          className={styles.form}
           onSubmit={(event) => {
             event.preventDefault();
             void ask(input);
@@ -231,12 +296,14 @@ function AssistantSession({ staff }: { staff: boolean }) {
                 ref={composer}
                 rows={2}
                 maxLength={MAX_MESSAGE_LENGTH}
-                className="min-h-14 resize-none"
+                className={styles.input}
                 value={input}
                 placeholder="Введите вопрос"
                 onChange={(event) => {
+                  selectedExample.current = null;
                   setInput(event.target.value);
                   setValidation("");
+                  setExampleHelp("");
                 }}
                 onKeyDown={(event) => {
                   if (
@@ -245,7 +312,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
                     !event.nativeEvent.isComposing
                   ) {
                     event.preventDefault();
-                    if (!sending) void ask(input);
+                    if (!sending) event.currentTarget.form?.requestSubmit();
                   }
                 }}
               />
@@ -262,6 +329,11 @@ function AssistantSession({ staff }: { staff: boolean }) {
           {validation && (
             <p role="alert" className="mt-2 text-destructive">
               {validation}
+            </p>
+          )}
+          {exampleHelp && (
+            <p role="status" className="mt-2 text-sm text-muted-foreground">
+              {exampleHelp}
             </p>
           )}
         </form>

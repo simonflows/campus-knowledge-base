@@ -19,7 +19,7 @@ import styles from "./workspace.module.css";
 
 const sections = [
   { id: "queue", title: "Очередь" },
-  { id: "packages", title: "Инфоповоды" },
+  { id: "packages", title: "Подборки для публикаций" },
   { id: "disputes", title: "Разбор источников" },
   { id: "coverage", title: "Полнота данных" },
 ] satisfies { id: WorkSection; title: string }[];
@@ -85,7 +85,7 @@ export function WorkWorkspace({ section, record, create, admin }: {
   return (
     <div className={`atlas-wrap campus-workspace ${styles.workspace}`}>
       <WorkspaceMasthead id="work-title" title="Моя работа" icon={ClipboardList}
-        description="Согласования, запросы и материалы, которым нужна сверка." />
+        description="Здесь видно, что нужно согласовать, уточнить или проверить." />
       <nav className={styles.sectionNav} aria-label="Рабочие разделы">
         {sections.filter(({ id }) => id !== "coverage" || admin).map(({ id, title }) => (
           <Link key={id} href={workHref(id)} aria-current={section === id ? "page" : undefined}>{title}</Link>
@@ -109,8 +109,8 @@ export function WorkWorkspace({ section, record, create, admin }: {
                     data={data} onChanged={changed} />
                 ) : rows.length > 0 ? (
                   <div className="desk-panel">
-                    <WorkEmpty title={kind === "package" ? "Выберите инфоповод" : "Выберите разбор"}>
-                      {kind === "package" ? "Откройте запись, чтобы увидеть источники, материалы и ответственного." : "Откройте запись, чтобы сравнить источники и посмотреть решение."}
+                    <WorkEmpty title={kind === "package" ? "Выберите подборку" : "Выберите разбор"}>
+                      {kind === "package" ? "В подборке можно посмотреть источники, черновики и ответственного." : "Откройте запись, чтобы сравнить источники и посмотреть решение."}
                     </WorkEmpty>
                   </div>
                 ) : null}

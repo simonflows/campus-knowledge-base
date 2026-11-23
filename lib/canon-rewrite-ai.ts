@@ -123,6 +123,7 @@ export async function rewriteCanonWithAi({ request, accountId, original, rewrite
   rewrite: CanonicalRewrite;
   cards: KnowledgeCard[];
 }): Promise<RewriteAttempt> {
+  if (rewrite.preservedText !== undefined) return { status: "local" };
   if (!isYandexAiConfigured() || getYandexModelLabel() !== "aliceai-llm-flash") {
     return { status: "unavailable" };
   }

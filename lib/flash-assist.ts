@@ -99,6 +99,7 @@ export async function runLimitedAi<T>(
   request: Request,
   accountId: string,
   operation: (signal: AbortSignal) => Promise<T>,
+  options: { timeoutMs?: number } = {},
 ): Promise<Unavailable | { status: "ready"; value: T }> {
   if (request.signal.aborted) return { status: "failed" };
   const now = Date.now();
@@ -112,7 +113,8 @@ export async function runLimitedAi<T>(
   activeAccounts.add(accountId);
   usage.active++;
   try {
-    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(20_000)]);
+    const timeout = Math.max(1, Math.min(184_000, options.timeoutMs ?? 20_000));
+    const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
     const value = await operation(signal);
     return signal.aborted ? { status: "failed" } : { status: "ready", value };
   } catch {

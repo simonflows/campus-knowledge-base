@@ -28,7 +28,11 @@ test("model field references resolve to canonical text without trusting a model-
     assert.equal(result.status, "ready");
     if (result.status === "ready") {
       assert.equal(result.claims[0].verdict, expected);
-      assert.equal(result.claims[0].evidence[0].quote, card.equipment[0]);
+      if (expected === "supported") assert.equal(result.claims[0].evidence[0].quote, card.equipment[0]);
+      else {
+        assert.deepEqual(result.claims[0].evidence, []);
+        assert.equal(result.claims[0].evidenceRejected, true);
+      }
     }
   }
 });
@@ -90,7 +94,8 @@ test("ID-only chat answers and fact evidence retain the full field and its quali
   assert.equal(review.status, "ready");
   if (review.status === "ready") {
     assert.equal(review.claims[0].verdict, "unknown");
-    assert.equal(review.claims[0].evidence[0].quote, card.referenceDescription);
+    assert.deepEqual(review.claims[0].evidence, []);
+    assert.equal(review.claims[0].evidenceRejected, true);
   }
 });
 
@@ -359,7 +364,8 @@ test("an extracted positive substring of a denial cannot become confirmed eviden
   assert.equal(result.status, "ready");
   if (result.status === "ready") {
     assert.equal(result.claims[0].verdict, "unknown");
-    assert.ok(result.claims[0].evidence[0].quote.startsWith("Неверно утверждать"));
+    assert.deepEqual(result.claims[0].evidence, []);
+    assert.equal(result.claims[0].evidenceRejected, true);
   }
 });
 

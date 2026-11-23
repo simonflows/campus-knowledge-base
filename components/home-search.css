@@ -29,6 +29,11 @@
   color: #ffc3a0;
   text-decoration-color: #ffc3a0;
 }
+.campus-search-examples button:focus-visible {
+  outline: 2px solid var(--atlas-sky);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
 .campus-search-positioner {
   width: var(--anchor-width);
   max-width: var(--available-width);
@@ -132,4 +137,13 @@
   .campus-search-option:is(:hover, [data-highlighted]) svg:last-child {
     transform: none;
   }
+}
+
+html[data-motion="off"] .campus-search-panel {
+  animation: none;
+}
+
+html[data-motion="off"] .campus-home-search .atlas-search button:hover svg,
+html[data-motion="off"] .campus-search-option:is(:hover, [data-highlighted]) svg:last-child {
+  transform: none;
 }

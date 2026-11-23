@@ -14,6 +14,7 @@ export function PageContent({ children }: { children: ReactNode }) {
     previousPathname.current = pathname;
 
     if (
+      document.hidden ||
       window.matchMedia("(prefers-reduced-motion: reduce)").matches ||
       document.documentElement.dataset.motion === "off"
     ) {
@@ -22,23 +23,23 @@ export function PageContent({ children }: { children: ReactNode }) {
 
     const pageTransition = main.current?.animate?.(
       [
-        { opacity: 0, transform: "translateY(12px) scale(0.996)" },
-        { opacity: 1, transform: "translateY(0) scale(1)" },
+        { opacity: 0.9, transform: "translateY(4px)" },
+        { opacity: 1, transform: "translateY(0)" },
       ],
       {
-        duration: 320,
+        duration: 240,
         easing: "cubic-bezier(0.22, 1, 0.36, 1)",
       }
     );
 
     const barTransition = progressRef.current?.animate?.(
       [
-        { opacity: 0.95, transform: "scaleX(0.08)" },
-        { opacity: 1, transform: "scaleX(0.82)", offset: 0.45 },
+        { opacity: 0.68, transform: "scaleX(0.12)" },
+        { opacity: 0.76, transform: "scaleX(0.82)", offset: 0.45 },
         { opacity: 0, transform: "scaleX(1)" },
       ],
       {
-        duration: 520,
+        duration: 380,
         easing: "cubic-bezier(0.22, 1, 0.36, 1)",
       }
     );

@@ -102,9 +102,14 @@ async function main() {
     assert.ok(checkFactText(scenario.correctText, [storedCard]).findings.some(
       (finding) => finding.level === "green" && finding.sourceCardId === card.id,
     ));
-    assert.ok(checkFactText(scenario.incorrectText, [storedCard]).findings.some(
-      (finding) => finding.level === "red" && finding.sourceCardId === card.id,
-    ));
+    // The dated demonstration does not establish where the centre operates now.
+    const unsupported = checkFactText(scenario.incorrectText, [storedCard]);
+    assert.ok(unsupported.findings.some(
+      (finding) => finding.level === "yellow" && finding.quote === scenario.incorrectText,
+    ), "Current operation in the campus building requires separate evidence");
+    assert.ok(!unsupported.findings.some((finding) => finding.level === "red" ||
+      (finding.level === "green" && finding.quote === scenario.incorrectText)));
+    assert.equal(unsupported.canPublish, false);
     const report = buildAnalyticsReport(scenario.analyticsQuery, await getCanonicalKnowledgeCards());
     assert.ok(report.cards.some((row) => row.id === card.id && row.sourceHref.includes(card.id)));
 

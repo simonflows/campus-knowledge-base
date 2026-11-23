@@ -216,7 +216,7 @@ export function EditorialReadinessPanel({
       onToggle={(event) => setOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer text-sm font-semibold">
-        Паспорт готовности
+        Состояние редакции и источников
       </summary>
       {dirty && !conflict && (
         <p className="text-sm text-muted-foreground">

@@ -43,7 +43,7 @@ import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/ca
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +58,7 @@ import {
 } from "@/components/ui/select";
 import { EditorialLibrary } from "./editorial-library";
 import { EditorialReadinessPanel } from "./editorial-readiness-panel";
+import styles from "./editor-workflow.module.css";
 import "@/app/campus-workspaces.css";
 import { universities } from "@/lib/data";
 import type { SessionUser } from "@/lib/auth";
@@ -252,6 +253,41 @@ function recoveryList(ownerId?: string) {
 }
 const getServerRecoveries = () => emptyRecoveries;
 
+export function editorNextAction({ document, viewerId, editable, dirty, conflict, missingText, checked, contradictions }: {
+  document: Pick<EditorialDocument, "status" | "ownerId" | "reviewerId" | "submittedRevisionId" | "revisionId"> | null;
+  viewerId: string | undefined;
+  editable: boolean;
+  dirty: boolean;
+  conflict: boolean;
+  missingText: boolean;
+  checked: boolean;
+  contradictions: boolean;
+}) {
+  if (conflict) return "resolve";
+  if (viewerId && document?.status === "submitted" && document.ownerId !== viewerId && document.reviewerId === viewerId &&
+    document.submittedRevisionId === document.revisionId) return "review";
+  if (document?.status === "approved" && !dirty) return "approved";
+  if (!editable) return "history";
+  if (document?.status === "submitted" && !dirty) return "waiting";
+  if (missingText) return "edit";
+  if (!checked) return "check";
+  if (contradictions) return "check-result";
+  return document ? "submit" : "save";
+}
+
+const editorGuidance = {
+  edit: { text: "Добавьте заголовок, вуз, короткое вступление и основной текст. Для основного текста добавьте раздел.", label: "Перейти к тексту" },
+  check: { text: "Приложите карточки, на которые опирается текст, и проверьте факты.", label: "К проверке фактов" },
+  "check-result": { text: "Проверка нашла противоречия. Посмотрите замечания перед отправкой.", label: "Посмотреть замечания" },
+  save: { text: "Сохраните черновик, чтобы выбрать согласующего и отправить ему текст.", label: "К сохранению" },
+  submit: { text: "Просмотрите замечания проверки и выберите, кому отправить материал.", label: "К согласованию" },
+  review: { text: "Прочитайте отправленную редакцию. Согласуйте её или укажите, что нужно доработать.", label: "Рассмотреть редакцию" },
+  waiting: { text: "Материал отправлен. Решение и замечания появятся в истории.", label: "Посмотреть историю" },
+  approved: { text: "Материал согласован. Редакции, комментарии и скачивание доступны в истории.", label: "Посмотреть историю" },
+  history: { text: "В истории доступны редакции и комментарии к материалу.", label: "Посмотреть историю" },
+  resolve: { text: "Сравните свой текст с сохранённой редакцией, чтобы продолжить.", label: "К сравнению редакций" },
+} as const;
+
 export function SmartEditorWorkspace(props: Props) {
   return <EditorSession key={props.currentUser?.id} {...props} />;
 }
@@ -278,6 +314,8 @@ function EditorSession({
   );
   const [mobileDrafts, setMobileDrafts] = useState(false);
   const draftHeading = useRef<HTMLHeadingElement>(null);
+  const historyHeading = useRef<HTMLHeadingElement>(null);
+  const checkResult = useRef<HTMLHeadingElement>(null);
   const generationPanel = useRef<HTMLDetailsElement>(null);
   const generationQuery = useRef<HTMLTextAreaElement>(null);
   const [generationBasis, setGenerationBasis] = useState<ArticleBasisReference | null>(null);
@@ -290,7 +328,7 @@ function EditorSession({
     Array<{ id: string; title: string; versionId: string }>
   >([]);
   const [reviewers, setReviewers] = useState<
-    Array<{ id: string; name: string; organization: string }>
+    Array<{ id: string; name: string; organization?: string }>
   >([]);
   const [reviewerId, setReviewerId] = useState("");
   const [doc, setDoc] = useState<EditorialDocument | null>(null),
@@ -329,6 +367,12 @@ function EditorSession({
   const [check, setCheck] = useState<(FactCheckResult & { ai?: FactAiReview }) | null>(null),
     [channel, setChannel] = useState("Telegram"),
     [provider, setProvider] = useState(flashAssistAvailable ? "auto" : "canonical");
+  useEffect(() => {
+    if (check) checkResult.current?.focus();
+  }, [check]);
+  useEffect(() => {
+    if (surface === "history") historyHeading.current?.focus();
+  }, [surface]);
   const checkRequest = useRef<AbortController | null>(null);
   const editorAssistRequest = useRef<AbortController | null>(null);
   const [editorAssistBusy, setEditorAssistBusy] = useState(false);
@@ -1080,6 +1124,32 @@ function EditorSession({
       })
       .catch((error) => toast.error(error.message));
   };
+  const missingTextTarget = !content.title.trim() ? "editor-title"
+    : !content.universityId ? "editor-university"
+      : !content.lead.trim() ? "editor-lead"
+        : content.sections.some((section) => section.chunks.some((chunk) => chunk.content.trim()))
+          ? undefined
+          : content.sections[0]?.chunks[0] ? `paragraph-${content.sections[0].chunks[0].id}` : "editor-add-section";
+  const nextAction = editorNextAction({ document: doc, viewerId: currentUser?.id, editable, dirty, conflict,
+    missingText: Boolean(missingTextTarget), checked: Boolean(check), contradictions: Boolean(check?.summary.red),
+  });
+  const lastReviewEvent = editable && doc?.events.findLast(({ action }) =>
+    action === "returned" || action === "submitted" || action === "approved");
+  const returnComment = lastReviewEvent && lastReviewEvent.action === "returned" && lastReviewEvent.comment;
+  const openHistory = (submissionId?: string | null) => {
+    if (submissionId) setReviewRevision(submissionId);
+    setSurface("history");
+    refreshHistory();
+  };
+  const followNextAction = () => {
+    if (nextAction === "review" || nextAction === "history" || nextAction === "waiting" || nextAction === "approved") {
+      openHistory(nextAction === "review" ? doc?.submittedRevisionId : undefined);
+      return;
+    }
+    const targets = { edit: missingTextTarget, check: "editor-facts", "check-result": "editor-check-result", save: "editor-save", submit: "editor-approval", resolve: "editor-conflict" };
+    const target = targets[nextAction];
+    if (target) document.getElementById(target)?.focus();
+  };
   const importArchive = async (article: ReadyArticle) => {
     setBusy(true);
     try {
@@ -1180,8 +1250,8 @@ function EditorSession({
               aria-pressed={surface === id}
               onClick={() => {
                 if (id !== "write") checkRequest.current?.abort();
-                setSurface(id);
-                if (id === "history") refreshHistory();
+                if (id === "history") openHistory(nextAction === "review" && !reviewRevision ? doc?.submittedRevisionId : undefined);
+                else setSurface(id);
               }}
             >
               <Icon aria-hidden="true" /> {label}
@@ -1227,9 +1297,14 @@ function EditorSession({
               aria-controls="draft-index"
               onClick={() => setMobileDrafts((open) => !open)}
             >
-              <Files size={17} /> Мои черновики <span>{documents.length}</span>
-              <ChevronDown size={16} className="desk-chevron" />
+              <Files size={17} aria-hidden="true" /> Черновики <span>{documents.length}</span>
+              <ChevronDown size={16} className="desk-chevron" aria-hidden="true" />
             </button>
+            <div className={styles.mobileCreate}>
+              <Button disabled={busy} onClick={() => void switchDocument()}>
+                <Plus data-icon="inline-start" aria-hidden="true" /> Новый черновик
+              </Button>
+            </div>
             <div id="draft-index">
               <div className="desk-panel-head">
                 <h2>Мои черновики</h2>
@@ -1244,7 +1319,7 @@ function EditorSession({
                   <RefreshCw />
                 </Button>
               </div>
-              <div className="desk-draft-add">
+              <div className={`desk-draft-add ${styles.desktopCreate}`}>
                 <Button disabled={busy} onClick={() => void switchDocument()}>
                   <Plus data-icon="inline-start" /> Новый черновик
                 </Button>
@@ -1377,6 +1452,7 @@ function EditorSession({
                     </Badge>
                   ) : null}
                   <Button
+                    id="editor-save"
                     disabled={!editable || busy || conflict}
                     variant="outline"
                     onClick={() => void save()}
@@ -1394,10 +1470,22 @@ function EditorSession({
                   )}
                 </div>
               </div>
+              {!linkOpening && (editable || doc) && (
+                <div className={styles.guidance}>
+                  <div>
+                    <h3>Следующий шаг</h3>
+                    <p>{editorGuidance[nextAction].text}</p>
+                    {returnComment && <p className={styles.returnComment}><strong>Замечание согласующего.</strong> {returnComment}</p>}
+                  </div>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={followNextAction}>
+                    {editorGuidance[nextAction].label} <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                  </Button>
+                </div>
+              )}
               <div className="desk-manuscript-grid">
                 <div className="desk-manuscript-body">
                   {conflict ? (
-                    <Alert variant="destructive">
+                    <Alert id="editor-conflict" tabIndex={-1} variant="destructive">
                       <AlertTitle>Сохранена другая редакция</AlertTitle>
                       <AlertDescription>
                         Автосохранение приостановлено. Сравните серверный текст
@@ -1458,8 +1546,7 @@ function EditorSession({
 
                   <details className="desk-disclosure desk-generation" ref={generationPanel}>
                     <summary>
-                      <Sparkles size={17} aria-hidden="true" /> Подготовить
-                      текст по данным
+                      <Sparkles size={17} aria-hidden="true" /> Подготовить текст по данным базы
                       <ChevronDown size={17} className="desk-chevron" />
                     </summary>
                     <div className="desk-generation-form">
@@ -1710,6 +1797,7 @@ function EditorSession({
                     </Card>
                   ))}
                   <Button
+                    id="editor-add-section"
                     variant="outline"
                     disabled={
                       !editable || busy || content.sections.length >= 20
@@ -1732,11 +1820,11 @@ function EditorSession({
                 </div>
                 <aside
                   className="desk-inspector"
-                  aria-label="Параметры черновика"
+                  aria-label="Проверка и согласование материала"
                 >
                   <div className="desk-inspector-section">
-                    <h3>
-                      <BookOpen size={17} aria-hidden="true" /> Источники
+                    <h3 id="editor-facts" tabIndex={-1} className={styles.jumpTarget}>
+                      <BookOpen size={17} aria-hidden="true" /> Источники и проверка фактов
                     </h3>
                     <Field>
                       <Select
@@ -1868,7 +1956,7 @@ function EditorSession({
                     </Button>
                   </div>
                   <div className="desk-inspector-section">
-                    <h3>
+                    <h3 id="editor-approval" tabIndex={-1} className={styles.jumpTarget}>
                       <ClipboardCheck size={17} aria-hidden="true" />{" "}
                       Согласование
                     </h3>
@@ -1882,12 +1970,12 @@ function EditorSession({
                     ) : null}
                     {editable && doc ? (
                       <Field>
-                        <FieldLabel>Ответственный за согласование</FieldLabel>
+                        <FieldLabel htmlFor="editor-reviewer">Кто согласует материал</FieldLabel>
                         <Select
                           value={reviewerId}
                           onValueChange={(id) => id && setReviewerId(id)}
                         >
-                          <SelectTrigger aria-label="Руководитель для согласования">
+                          <SelectTrigger id="editor-reviewer">
                             <SelectValue>
                               {reviewers.find((r) => r.id === reviewerId)
                                 ?.name || "Нет доступного адресата"}
@@ -1897,7 +1985,7 @@ function EditorSession({
                             <SelectGroup>
                               {reviewers.map((r) => (
                                 <SelectItem value={r.id} key={r.id}>
-                                  {r.name} · {r.organization}
+                                  {r.name}{r.organization ? ` · ${r.organization}` : ""}
                                 </SelectItem>
                               ))}
                             </SelectGroup>
@@ -1915,16 +2003,6 @@ function EditorSession({
                       <Send data-icon="inline-start" /> Отправить на
                       согласование
                     </Button>
-                    {doc ? (
-                      <Button
-                        variant="outline"
-                        disabled={dirty || busy}
-                        {...downloadProps}
-                      >
-                        <Download data-icon="inline-start" /> Скачать DOCX с
-                        источниками
-                      </Button>
-                    ) : null}
                   </div>
                   {doc && (
                     <EditorialReadinessPanel
@@ -1934,10 +2012,13 @@ function EditorSession({
                       onRefreshDraft={(signal) => refreshDraft(doc, signal)}
                     />
                   )}
-                  {doc && editable ? (
-                    <div className="desk-inspector-section">
-                      {" "}
-                      <div className="flex flex-col gap-2">
+                  {doc ? (
+                    <details className={`desk-inspector-section ${styles.options}`}>
+                      <summary>{editable ? "Варианты текста и скачивание" : "Скачать материал"}</summary>
+                      <Button variant="outline" disabled={dirty || busy} {...downloadProps}>
+                        <Download data-icon="inline-start" /> Скачать DOCX с источниками
+                      </Button>
+                      {editable && <div className="flex flex-col gap-2">
                         <Field className="max-w-xs">
                           <FieldLabel htmlFor="editor-channel">
                             Вариант для канала
@@ -1966,6 +2047,7 @@ function EditorSession({
                             <p className="desk-footnote">
                               {demo ? "Учебный вариант готовится в браузере без внешней нейросети. Проверьте его перед применением." : "Текст и актуальные утверждённые карточки будут переданы в Yandex AI Studio. Предложение можно проверить перед применением."}
                             </p>
+                            {!selectedFragment && <p className="desk-footnote">Для точечной правки выделите текст во вступлении или абзаце.</p>}
                             <Button variant="outline" disabled={busy || editorAssistBusy || conflict || !selectedFragment}
                               onClick={() => void requestEditorialAssist("rewrite")}>
                               <Sparkles data-icon="inline-start" /> Переписать выделенное с ИИ
@@ -1993,17 +2075,26 @@ function EditorSession({
                             )}
                           </>
                         )}
-                      </div>
-                    </div>
+                      </div>}
+                    </details>
                   ) : null}
                 </aside>
                 {check ? (
                   <div className="desk-editor-check flex min-w-0 flex-col gap-3">
+                    <div className={styles.resultHeading}>
+                      <h3 id="editor-check-result" ref={checkResult} tabIndex={-1} className={styles.jumpTarget}>Результат проверки фактов</h3>
+                      {(nextAction === "save" || nextAction === "submit") && (
+                        <Button size="sm" variant="outline" disabled={busy} onClick={followNextAction}>
+                          {nextAction === "save" ? "Перейти к сохранению" : "Выбрать согласующего"}
+                          <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                        </Button>
+                      )}
+                    </div>
                     <Alert
                       variant={check.summary.red ? "destructive" : "default"}
                     >
                       <AlertTitle>
-                        Красных: {check.summary.red} · Требуют уточнения:{" "}
+                        Противоречия: {check.summary.red} · Требуют уточнения:{" "}
                         {check.summary.yellow} · Подтверждено:{" "}
                         {check.summary.green}
                       </AlertTitle>
@@ -2030,7 +2121,7 @@ function EditorSession({
           >
             <div className="desk-panel-head">
               <div>
-                <h2>История редакций</h2>
+                <h2 ref={historyHeading} tabIndex={-1} className={styles.jumpTarget}>История редакций</h2>
                 {doc ? (
                   <p className="desk-footnote">
                     {doc.content.title || "Без заголовка"}
@@ -2106,6 +2197,9 @@ function EditorSession({
                     value={comment}
                     onChange={(e) => setComment(e.target.value)}
                   />
+                  {nextAction === "review" && reviewRevision === doc.submittedRevisionId && (
+                    <FieldDescription>Для возврата на доработку напишите, что нужно изменить.</FieldDescription>
+                  )}
                 </Field>
                 <div className="flex flex-wrap gap-2">
                   <Button
@@ -2118,9 +2212,7 @@ function EditorSession({
                     <MessageSquare data-icon="inline-start" />
                     Сохранить комментарий
                   </Button>
-                  {doc.reviewerId === currentUser.id &&
-                  doc.ownerId !== currentUser.id &&
-                  doc.status === "submitted" ? (
+                  {nextAction === "review" && reviewRevision === doc.submittedRevisionId && selectedRevision ? (
                     <>
                       <Button
                         variant="outline"
@@ -2143,6 +2235,11 @@ function EditorSession({
                     </>
                   ) : null}
                 </div>
+                {nextAction === "review" && reviewRevision !== doc.submittedRevisionId && (
+                  <Button variant="outline" onClick={() => setReviewRevision(doc.submittedRevisionId)}>
+                    Открыть отправленную редакцию для согласования
+                  </Button>
+                )}
                 {doc.events.map((event) => (
                   <div className="desk-history-event" key={event.id}>
                     <p>

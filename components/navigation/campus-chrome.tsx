@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ArrowUpRight } from "lucide-react";
-import { version as appVersion } from "@/package.json";
+import { ReleaseNotes } from "@/components/navigation/release-notes";
 import { CampusBrand } from "@/components/navigation/campus-brand";
 import { HeaderNav } from "@/components/navigation/header-nav";
 import { PageContent } from "@/components/navigation/page-content";
@@ -12,6 +12,7 @@ import {
 import { AssistantWidget } from "@/components/assistant/assistant-widget";
 import { universities } from "@/lib/data";
 import { campusServices } from "@/lib/campus-services";
+import { cn } from "@/lib/utils";
 
 export const appName = "Справочник кампуса «Южный Урал»";
 
@@ -38,7 +39,7 @@ export function CampusChrome({
       <AppLink className="skip atlas-skip" href="#main-content">
         Перейти к содержимому
       </AppLink>
-      <header className="nav atlas-header">
+      <header className={cn("nav atlas-header", demo && "atlas-header--demo")}>
         <div className="wrap atlas-wrap atlas-header-row">
           <AppLink
             className="brand"
@@ -103,7 +104,10 @@ export function CampusChrome({
             <span>
               © {new Date().getFullYear()} {appName}
             </span>
-            <span>Версия {appVersion} · г. Челябинск</span>
+            <span className="inline-flex items-center gap-2">
+              <ReleaseNotes />
+              <span>· г. Челябинск</span>
+            </span>
           </div>
         </div>
       </footer>

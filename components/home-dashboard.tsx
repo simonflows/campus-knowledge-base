@@ -52,6 +52,35 @@ function metricIcon(label: string) {
   return Landmark;
 }
 
+function MetricValue({ value }: { value: string }) {
+  const display = value.replace(/(?<=\d)\p{Zs}(?=\d{3}\b)/gu, "\u202f");
+  const capacity = display.match(
+    /^(\d[\d\u202f]*) мест(?: проживания)?\s*\/\s*(\d[\d\u202f]*) (?:уч\.|обучающихся)$/i
+  );
+  const parts = display.split(/\s+\/\s+/);
+  return (
+    <dd className="atlas-home-metric-value">
+      {capacity ? (
+        <>
+          <span className="atlas-home-metric-part">
+            <span>{capacity[1]}</span> <small>мест проживания</small>
+          </span>
+          <span className="atlas-home-metric-part">
+            <span>{capacity[2]}</span> <small>обучающихся</small>
+          </span>
+        </>
+      ) : (
+        parts.map((part, index) => (
+          <span key={`${index}:${part}`} className="atlas-home-metric-group">
+            {part}
+            {index < parts.length - 1 ? " / " : ""}
+          </span>
+        ))
+      )}
+    </dd>
+  );
+}
+
 export function HomeDashboard({
   passport,
   universities,
@@ -112,6 +141,12 @@ export function HomeDashboard({
         .filter((m) => /площад|вместим|этап|очеред|стоим|апартамент/i.test(m.label))
         .slice(0, 4)
     : [];
+  const research = passport?.campusMetrics.find(
+    (metric) =>
+      /лаборатор/i.test(metric.label) &&
+      metric.note &&
+      !passportMetrics.includes(metric)
+  );
 
   const searchExamples = [
     "Редактор",
@@ -181,7 +216,7 @@ export function HomeDashboard({
                           <MetricIcon size={18} strokeWidth={1.75} />
                         </span>
                       </div>
-                      <dd>{m.value}</dd>
+                      <MetricValue value={m.value} />
                       {m.note && (
                         <dd className="atlas-metric-note">
                           <details>
@@ -208,6 +243,12 @@ export function HomeDashboard({
                 ? "Сводные показатели ещё не опубликованы. Откройте паспорт кампуса, чтобы посмотреть доступные сведения."
                 : "Утверждённый паспорт пока не опубликован."}
             </p>
+          )}
+          {research && (
+            <div className="atlas-passport-context">
+              <strong>{research.label}</strong>
+              <p>{research.note}</p>
+            </div>
           )}
         </div>
       </section>

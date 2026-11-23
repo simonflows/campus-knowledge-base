@@ -10,7 +10,20 @@ export const workCategories: Record<string, string> = {
   "card-approval": "Подтверждение карточки", "card-return": "Карточка на доработке",
   "card-request": "Правка карточки", freshness: "Срок сверки", "article-approval": "Согласование текста",
   "article-return": "Текст на доработке", "source-change": "Сверка источников",
-  request: "Межвузовский запрос", package: "Инфоповод", dispute: "Разбор источников",
+  request: "Межвузовский запрос", package: "Подборка для публикаций", dispute: "Разбор источников",
+};
+
+export const workActionLabels: Record<string, string> = {
+  "card-approval": "Рассмотреть карточку",
+  "card-return": "Открыть карточку для правки",
+  "card-request": "Посмотреть запрос на правку",
+  freshness: "Открыть карточку для сверки",
+  "article-approval": "Открыть текст для согласования",
+  "article-return": "Открыть текст для доработки",
+  "source-change": "Открыть материал и сверить источники",
+  request: "Открыть запрос",
+  package: "Открыть подборку",
+  dispute: "Сопоставить источники",
 };
 
 export function filterWorkItems(items: WorkItem[], filter: WorkFilters, viewer: string, today: string) {

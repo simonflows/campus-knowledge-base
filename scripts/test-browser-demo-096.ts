@@ -459,11 +459,11 @@ test("ordinary demo check, analytics and assistant operate on approved browser e
     )
   );
   const check = await json("/api/fact-check", "POST", {
-    text: "Неподтверждённый показатель — 900000000 студентов.",
+    text: "В кампусе «Южный Урал» обучается 900000000 студентов.",
     useAi: true,
   });
   assert.equal(check.status, 200);
-  assert.ok((await check.json()).summary.total > 0);
+  assert.ok((await check.json()).summary.yellow > 0);
   const analytics = await json("/api/analytics", "POST", {
     query: "Покажи проекты МИДиС",
     useAi: true,
