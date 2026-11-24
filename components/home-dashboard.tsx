@@ -1,7 +1,9 @@
 import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import {
   ArrowUpRight,
+  BedDouble,
   BookOpenText,
+  Building2,
   CalendarRange,
   ChartNoAxesColumnIncreasing,
   ChevronDown,
@@ -45,6 +47,12 @@ function metricIcon(label: string) {
   }
   if (/вместим|континг/i.test(label)) {
     return Users;
+  }
+  if (/^(?:первая|1-я)\s+очередь/i.test(label)) {
+    return BedDouble;
+  }
+  if (/^(?:вторая|2-я)\s+очередь/i.test(label)) {
+    return Building2;
   }
   if (/этап|очеред|срок/i.test(label)) {
     return CalendarRange;

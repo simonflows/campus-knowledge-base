@@ -98,7 +98,7 @@ function setup(
     if (mode === "stale" || mode === "stream-stale") {
       cards = [{ ...cards[0], referenceDescription: "Карточка обновлена после запроса." }];
     }
-    if (mode === "added") cards = [...cards, { ...structuredClone(cards[0]), id: "new-approved-evidence", title: "Новый утверждённый источник" }];
+    if (mode === "added" || (mode === "rewrite-added" && data.candidates)) cards = [...cards, { ...structuredClone(cards[0]), id: "new-approved-evidence", title: "Новый утверждённый источник" }];
     if (mode === "rewrite-stale" && data.candidates) {
       cards = cards.map(card => card.id === "lab-midis-kuka"
         ? { ...card, referenceDescription: "На площадке МИДиС указан промышленный робот-манипулятор KUKA." }
@@ -306,6 +306,32 @@ test("opt-in staff AI rewrite accepts a verified thematic paraphrase and retains
   assert.equal(result.rewriteAi.usageComplete, true);
   assert.equal(result.rewriteAi.attempts, 2);
   assert.equal(provider.mock.callCount(), 2);
+});
+
+test("099 rewrite reports the findings of the new text separately from the original", async context => {
+  setup(context, "chat", pilotCards);
+  const result = await (await run(factCheck, { text: kukaDraft, mode: "rewrite" }, "guest")).json();
+  assert.ok(result.summary.red > 0);
+  assert.ok(Array.isArray(result.rewriteCheck.findings));
+  assert.ok(result.rewriteCheck.findings.some((finding: { level: string }) => finding.level === "green"));
+  assert.equal(result.rewriteCheck.findings.filter((finding: { level: string }) => finding.level === "red").length, 0);
+  for (const finding of result.rewriteCheck.findings) {
+    assert.ok(result.rewrite.plainText.includes(finding.quote));
+    if (finding.sourceCardId) assert.match(finding.sourceVersionId, /^cv-/u);
+  }
+});
+
+test("099 adding an approved source during AI rewrite invalidates the entire source snapshot", async context => {
+  setup(context, "rewrite-added", pilotCards, (data, source) => {
+    const fact = source.facts.find(({ field }) => field === "referenceDescription")!;
+    const evidence = [{ sourceId: source.id, factId: fact.id }];
+    return data.candidates
+      ? { reviews: [{ id: 1, verdict: "supported" }, { id: 2, verdict: "supported" }] }
+      : { sentences: [{ text: rewrittenKuka, evidence }, { text: planKuka, evidence }] };
+  });
+  const result = await (await run(factCheck, { text: kukaDraft, mode: "rewrite", useAi: true }, "rewrite-added")).json();
+  assert.equal(result.rewriteAi.status, "failed");
+  assert.equal(result.rewriteAi.reason, "sources-changed");
 });
 
 test("a verifier transport failure reports known usage without filling in missing billing data", async context => {

@@ -79,9 +79,10 @@ import {
   type FactCheckFinding,
   type FactCheckLevel,
   type FactCheckResult,
-  type FactCheckSummary,
 } from "@/lib/fact-check";
 import { replaceCheckedFragment } from "@/lib/fact-check-edit";
+import { previewFindings, type RewriteCheck } from "@/lib/fact-report";
+import { RewriteCheckSummary } from "./rewrite-check-summary";
 import type { RewriteAiReview } from "@/lib/canon-rewrite-ai";
 import { factCheckInputSchema } from "@/lib/validation/fact-check";
 import { factCheckResultSchema } from "@/lib/validation/fact-check-result";
@@ -91,12 +92,6 @@ import {
   FactCheckResponseError,
   readFactCheckResponse,
 } from "@/lib/read-fact-check-response";
-
-type RewriteCheck = {
-  summary: FactCheckSummary;
-  canPublish: boolean;
-  isClean: boolean;
-};
 
 type FactCheckResponse = FactCheckResult & {
   ai?: FactAiReview;
@@ -233,7 +228,7 @@ function FindingCard({
   index = 0,
 }: {
   finding: FactCheckFinding;
-  onReplace: (finding: FactCheckFinding, replacement: string) => void;
+  onReplace?: (finding: FactCheckFinding, replacement: string) => void;
   busy: boolean;
   index?: number;
 }) {
@@ -340,7 +335,7 @@ function FindingCard({
             Официальный источник не найден. Уточните сведения перед публикацией.
           </p>
         )}
-        {finding.level !== "green" && finding.quote && (
+        {onReplace && finding.level !== "green" && finding.quote && (
           <form
             className="mt-4 flex flex-col gap-2"
             onSubmit={(event) => {
@@ -394,6 +389,7 @@ export function FactCheckWorkspace({
   const [isRewriting, setIsRewriting] = useState(false);
   const [filter, setFilter] = useState<LevelFilter>("all");
   const [showAllFindings, setShowAllFindings] = useState(false);
+  const [showAllRewriteFindings, setShowAllRewriteFindings] = useState(false);
   const [aiEnabled, setAiEnabled] = useState(true);
   const requestRevision = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -441,7 +437,7 @@ export function FactCheckWorkspace({
   const hasYellow = (result?.summary.yellow ?? 0) > 0;
   const displayedFindings = showAllFindings
     ? visibleFindings
-    : visibleFindings.slice(0, 6);
+    : previewFindings(visibleFindings);
   const omittedFindings = useMemo(() => {
     if (!result || !rewrite) return [];
     const byQuote = new Map<string, FactCheckFinding>();
@@ -482,6 +478,7 @@ export function FactCheckWorkspace({
     setError(null);
     setFilter("all");
     setShowAllFindings(false);
+    setShowAllRewriteFindings(false);
   };
 
   const handleTextChange = (value: string) => {
@@ -653,6 +650,7 @@ export function FactCheckWorkspace({
       setResult(data);
       setFilter("all");
       setShowAllFindings(false);
+      setShowAllRewriteFindings(false);
 
       if (mode === "rewrite") {
         const nextRewrite = data.rewrite?.plainText.trim()
@@ -1128,9 +1126,7 @@ export function FactCheckWorkspace({
                     ) : (
                       <ShieldQuestion className="size-3" />
                     )}
-                    {rewriteCheck.isClean && rewriteCheck.summary.green > 0
-                      ? "Распознанные факты проверены · 0 красных · 0 жёлтых"
-                      : `Красных: ${rewriteCheck.summary.red}, жёлтых: ${rewriteCheck.summary.yellow}`}
+                    <RewriteCheckSummary check={rewriteCheck} />
                   </Badge>
                 ) : null}
                 <Button
@@ -1230,6 +1226,45 @@ export function FactCheckWorkspace({
                     )}
                   </div>
                 </>
+              )}
+
+              {rewriteCheck?.findings && (
+                <details className="mt-5 border-t pt-3 text-sm" open>
+                  <summary className="cursor-pointer py-2 font-medium">
+                    Результаты проверки новой редакции ·{" "}
+                    {rewriteCheck.findings.length}
+                  </summary>
+                  <div className="mt-3 space-y-3">
+                    {(showAllRewriteFindings
+                      ? rewriteCheck.findings
+                      : previewFindings(rewriteCheck.findings)
+                    ).map((finding, index) => (
+                      <FindingCard
+                        key={finding.id}
+                        finding={finding}
+                        index={index}
+                        busy={false}
+                      />
+                    ))}
+                    {!showAllRewriteFindings &&
+                      rewriteCheck.findings.length > 6 && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setShowAllRewriteFindings(true)}
+                        >
+                          Показать остальные результаты новой редакции ·{" "}
+                          {rewriteCheck.findings.length - 6}
+                        </Button>
+                      )}
+                    {rewriteCheck.findings.length === 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Распознанных фактов для сверки нет. Это не подтверждает
+                        весь текст.
+                      </p>
+                    )}
+                  </div>
+                </details>
               )}
 
               {rewrite.changes && rewrite.changes.length > 0 && (
@@ -1345,7 +1380,7 @@ export function FactCheckWorkspace({
           {rewrite ? (
             <summary className="cursor-pointer list-inside rounded-2xl p-4 text-muted-foreground sm:px-5">
               <h2 className="inline font-heading text-xl font-semibold text-foreground">
-                Разбор по уровням
+                Разбор исходного текста по уровням
               </h2>
             </summary>
           ) : null}

@@ -27,7 +27,7 @@ async function checkDemoRewrite(page: Page, base: string) {
   const check = page.getByRole("button", { name: "Проверить текст" });
   const rewrite = page.getByRole("button", { name: rewriteButton });
   const proposal = page.getByRole("heading", { name: rewriteHeading });
-  const analysis = page.getByRole("heading", { name: "Разбор по уровням" });
+  const analysis = page.getByRole("heading", { name: /^Разбор(?: исходного текста)? по уровням$/u });
   const originalWarning = page.getByText("Публикация запрещена до правки", {
     exact: true,
   });
@@ -49,7 +49,7 @@ async function checkDemoRewrite(page: Page, base: string) {
     await proposal.evaluate((heading) => {
       const headings = Array.from(document.querySelectorAll("h2"));
       const analysis = headings.find((item) =>
-        item.textContent?.includes("Разбор по уровням")
+        item.textContent?.trim() === "Разбор исходного текста по уровням"
       );
       return (
         analysis &&

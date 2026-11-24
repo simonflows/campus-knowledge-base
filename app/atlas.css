@@ -295,16 +295,39 @@
   font-size: 13px;
   min-height: 33px;
 }
-.atlas-footer a:hover {
+.atlas-footer a:hover,
+.atlas-footer .atlas-release-notes:hover {
   color: #ffc3a0;
 }
+.atlas-release-notes {
+  color: inherit;
+}
+.atlas-release-notes:focus-visible {
+  border-color: transparent;
+  outline: 2px solid #d3e8fd;
+  outline-offset: 2px;
+  box-shadow: none;
+}
 .atlas-copyright {
+  --atlas-footer-clearance: calc(9rem + max(1.5rem, env(safe-area-inset-right)));
   padding-block: 19px;
+  /* The centred footer already provides part of the launcher's clearance. */
+  padding-inline-end: max(
+    0px,
+    calc(var(--atlas-footer-clearance) - (100vw - 100%) / 2)
+  );
   border-top: 1px solid #354d5a;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   font-size: 11px;
+}
+@media (max-width: 30rem) {
+  .atlas-copyright {
+    --atlas-footer-clearance: calc(3.5rem + max(1rem, env(safe-area-inset-right)));
+  }
 }
 body:has(.atlas-hero) {
   background: var(--background);
@@ -773,9 +796,6 @@ body:has(.atlas-hero) .atlas-footer {
   }
   .atlas-footer-grid li a {
     min-height: 44px;
-  }
-  .atlas-copyright {
-    flex-wrap: wrap;
   }
 }
 @media (max-width: 380px) {

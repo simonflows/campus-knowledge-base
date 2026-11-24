@@ -39,7 +39,7 @@ jobs:
       - name: Test production preflight
         run: node --import tsx --test deploy/preflight.test.ts
       - name: Test release recovery with injected failures
-        run: python3 -B -m unittest discover -s deploy -p test_release_098.py
+        run: python3 -B -m unittest discover -s deploy -p 'test_release_09*.py'
       - name: Run offline regressions
         run: npm run test:offline
       - name: Build pilot bundle

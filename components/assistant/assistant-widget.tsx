@@ -355,26 +355,61 @@ function AssistantReply({
     answer.status === "local" && !staff
       ? "Поиск без нейросети. Для ИИ войдите."
       : statusLabels[answer.status];
+  const compact =
+    answer.presentation === "summary" && answer.citations.length > 0;
+  const quotes = answer.citations.map((citation, index) => (
+    <blockquote
+      key={`${citation.sourceId}:${citation.factId}:${index}`}
+      className="rounded-md border bg-card px-3 py-2"
+    >
+      <p className="whitespace-pre-wrap">«{citation.quote}»</p>
+      {!compact && (
+        <Link
+          href={citation.href}
+          prefetch={false}
+          onNavigate={onNavigate}
+          className="mt-1 inline-block text-xs font-medium text-primary underline underline-offset-2"
+        >
+          {citation.title} · версия источника
+        </Link>
+      )}
+    </blockquote>
+  ));
+  const sources = [
+    ...new Map(
+      answer.citations.map((citation) => [citation.href, citation])
+    ).values(),
+  ];
   return (
     <>
       {label && <p className="text-xs text-muted-foreground">{label}</p>}
       <p className="whitespace-pre-wrap">{answer.message}</p>
-      {answer.citations.map((citation, index) => (
-        <blockquote
-          key={`${citation.sourceId}:${citation.factId}:${index}`}
-          className="rounded-md border bg-card px-3 py-2"
-        >
-          <p className="whitespace-pre-wrap">«{citation.quote}»</p>
-          <Link
-            href={citation.href}
-            prefetch={false}
-            onNavigate={onNavigate}
-            className="mt-1 inline-block text-xs font-medium text-primary underline underline-offset-2"
-          >
-            {citation.title} · версия источника
-          </Link>
-        </blockquote>
-      ))}
+      {compact ? (
+        <>
+          <ul className="space-y-1 text-xs font-medium text-primary">
+            {sources.map(({ href, title }) => (
+              <li key={href}>
+                <Link
+                  href={href}
+                  prefetch={false}
+                  onNavigate={onNavigate}
+                  className="underline underline-offset-2"
+                >
+                  {title} · версия источника
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <details className="text-xs text-muted-foreground">
+            <summary className="w-fit cursor-pointer font-medium">
+              Цитаты из карточек
+            </summary>
+            <div className="mt-2 space-y-2">{quotes}</div>
+          </details>
+        </>
+      ) : (
+        quotes
+      )}
       {answer.actions.length > 0 && (
         <ul className="flex flex-wrap gap-2">
           {answer.actions.map((action) => (

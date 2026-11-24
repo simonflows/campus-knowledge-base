@@ -103,34 +103,33 @@ const rewrite = z.object({
   sourceVersions: z.record(z.string(), z.string()).optional(),
 });
 
+const finding = z.object({
+  id: text,
+  level,
+  checkpoint,
+  checkpointLabel: text,
+  title: text,
+  quote: text,
+  explanation: text,
+  suggestion: text,
+  sourceCardId: text.nullable(),
+  sourceCardTitle: text.nullable(),
+  sourceFolder: text.nullable(),
+  sourceVersionId: text.optional(),
+  sourceField: text.optional(),
+  sourceUrl: text.nullish(),
+  quoteStart: count.optional(),
+  quoteEnd: count.optional(),
+  replacement: text.optional(),
+});
+
 /** Validate fields consumed by the report before rendering either wire format. */
 export const factCheckResultSchema = z.object({
   checkedChars: z.number().int().min(0).max(60_000),
   canPublish: z.boolean(),
   coverage: z.enum(["confirmed", "partial", "unverified"]),
   summary,
-  findings: z
-    .array(
-      z.object({
-        id: text,
-        level,
-        checkpoint,
-        checkpointLabel: text,
-        title: text,
-        quote: text,
-        explanation: text,
-        suggestion: text,
-        sourceCardId: text.nullable(),
-        sourceCardTitle: text.nullable(),
-        sourceFolder: text.nullable(),
-        sourceVersionId: text.optional(),
-        sourceUrl: text.nullish(),
-        quoteStart: count.optional(),
-        quoteEnd: count.optional(),
-        replacement: text.optional(),
-      })
-    )
-    .max(5000),
+  findings: z.array(finding).max(5000),
   checkpoints: z
     .array(
       z.object({
@@ -161,7 +160,12 @@ export const factCheckResultSchema = z.object({
   ai: ai.optional(),
   rewrite: rewrite.nullish(),
   rewriteCheck: z
-    .object({ summary, canPublish: z.boolean(), isClean: z.boolean() })
+    .object({
+      summary,
+      canPublish: z.boolean(),
+      isClean: z.boolean(),
+      findings: z.array(finding).max(5000).optional(),
+    })
     .nullish(),
   rewriteAi: z
     .object({

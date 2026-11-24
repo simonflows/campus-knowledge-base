@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { storageUnavailableMessage, unavailableStorageResponse } from "@/lib/runtime-storage-policy";
+import {
+  storageUnavailableMessage,
+  unavailableStorageResponse,
+} from "@/lib/runtime-storage-policy";
 import {
   buildCanonicalRewrite,
   checkFactText,
@@ -20,18 +23,12 @@ import { mergeAiFactReview, reviewFactsWithAi } from "@/lib/canon-ai";
 import { currentCanonSources } from "@/lib/canon-ai";
 import type { KnowledgeCard } from "@/lib/knowledge";
 import { JsonBodyError, readBoundedJson } from "@/lib/http-json";
-import { acceptsFactCheckStream, streamFactCheck } from "@/lib/fact-check-stream";
+import {
+  acceptsFactCheckStream,
+  streamFactCheck,
+} from "@/lib/fact-check-stream";
 import type { FactCheckProgress } from "@/lib/fact-check-progress";
-
-function rewriteSummary(
-  result: Pick<FactCheckResult, "summary" | "canPublish">
-) {
-  return {
-    summary: result.summary,
-    canPublish: result.canPublish,
-    isClean: result.summary.red === 0 && result.summary.yellow === 0,
-  };
-}
+import { summarizeRewrite } from "@/lib/fact-report";
 
 function withSourceVersions(
   result: FactCheckResult,
@@ -56,22 +53,51 @@ function withSourceVersions(
 }
 
 async function runSemanticCheck(
-  request: Request, accountId: string, text: string, cards: KnowledgeCard[],
-  ordinary: FactCheckResult, onProgress?: (value: FactCheckProgress) => void
+  request: Request,
+  accountId: string,
+  text: string,
+  cards: KnowledgeCard[],
+  ordinary: FactCheckResult,
+  onProgress?: (value: FactCheckProgress) => void
 ) {
   const ai = await reviewFactsWithAi({
-    request, accountId, text, cards, ordinary,
-    streaming: !!onProgress, onProgress,
+    request,
+    accountId,
+    text,
+    cards,
+    ordinary,
+    streaming: !!onProgress,
+    onProgress,
   });
-  const cancelled = () => ({ ok: false as const, status: 499, error: "Проверка отменена." });
+  const cancelled = () => ({
+    ok: false as const,
+    status: 499,
+    error: "Проверка отменена.",
+  });
   if (request.signal.aborted) return cancelled();
   if (ai.status === "ready") {
-    const latest = await getCanonicalKnowledgeCards(request.signal).catch(() => null);
+    const latest = await getCanonicalKnowledgeCards(request.signal).catch(
+      () => null
+    );
     if (request.signal.aborted) return cancelled();
-    if (!latest) return { ok: false as const, status: 503, error: storageUnavailableMessage };
-    const versions = new Map(currentCanonSources(latest).map(source => [source.cardId, source.versionId]));
-    if (versions.size !== ai.sources.length ||
-      ai.sources.some(source => versions.get(source.cardId) !== source.versionId)) {
+    if (!latest)
+      return {
+        ok: false as const,
+        status: 503,
+        error: storageUnavailableMessage,
+      };
+    const versions = new Map(
+      currentCanonSources(latest).map((source) => [
+        source.cardId,
+        source.versionId,
+      ])
+    );
+    if (
+      versions.size !== ai.sources.length ||
+      ai.sources.some(
+        (source) => versions.get(source.cardId) !== source.versionId
+      )
+    ) {
       return {
         ok: true as const,
         result: {
@@ -81,7 +107,10 @@ async function runSemanticCheck(
       };
     }
   }
-  return { ok: true as const, result: { ...mergeAiFactReview(ordinary, ai), ai } };
+  return {
+    ok: true as const,
+    result: { ...mergeAiFactReview(ordinary, ai), ai },
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -116,7 +145,9 @@ export async function POST(request: NextRequest) {
       ? await authorizeFlashAssist(request)
       : null;
   if (account instanceof Response) return account;
-  const cards = await getCanonicalKnowledgeCards(request.signal).catch(() => null);
+  const cards = await getCanonicalKnowledgeCards(request.signal).catch(
+    () => null
+  );
   if (!cards) return unavailableStorageResponse();
   const result = withSourceVersions(checkFactText(text, cards), cards);
 
@@ -127,7 +158,13 @@ export async function POST(request: NextRequest) {
           runSemanticCheck(scoped, account, text, cards, result, progress)
         );
       }
-      const answer = await runSemanticCheck(request, account, text, cards, result);
+      const answer = await runSemanticCheck(
+        request,
+        account,
+        text,
+        cards,
+        result
+      );
       const headers = { "Cache-Control": "private, no-store", Vary: "Accept" };
       return NextResponse.json(
         answer.ok ? answer.result : { error: answer.error },
@@ -153,8 +190,7 @@ export async function POST(request: NextRequest) {
   let rewriteAi: RewriteAiReview & { reason?: "sources-changed" } = {
     status: "local",
   };
-  let verifiedResult: Pick<FactCheckResult, "summary" | "canPublish"> | null =
-    null;
+  let verifiedResult: FactCheckResult | null = null;
 
   if (rewrite && useAi && account) {
     const basis = rewrite;
@@ -181,6 +217,10 @@ export async function POST(request: NextRequest) {
     );
     rewriteAi = { status: status === "ready" ? "failed" : status, ...metrics };
     if (
+      versions.size !== previousVersions.size ||
+      [...previousVersions].some(
+        ([id, version]) => versions.get(id) !== version
+      ) ||
       !rewrite ||
       rewrite.plainText !== basis.plainText ||
       rewrite.sourceCardIds.length !== basis.sourceCardIds.length ||
@@ -203,7 +243,8 @@ export async function POST(request: NextRequest) {
       const checked = checkVerifiedRewrite(
         proposed.plainText,
         attempt.sentences,
-        latest
+        latest,
+        attempt.sentenceEvidence
       );
       if (checked.canPublish) {
         rewrite = proposed;
@@ -234,7 +275,9 @@ export async function POST(request: NextRequest) {
         ),
       },
       rewriteAi,
-      rewriteCheck: rewriteResult && rewriteSummary(rewriteResult),
+      rewriteCheck:
+        rewriteResult &&
+        summarizeRewrite(withSourceVersions(rewriteResult, currentCards)),
       ...(!rewrite && {
         rewriteError:
           "В утверждённых карточках недостаточно сведений по теме текста. Уточните название объекта или добавьте официальный источник к его карточке.",
