@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { buildAnalyticsReport } from "./analytics";
-import { findAssistantGuide } from "./assistant-query";
+import {
+  assistantQuestion,
+  findAssistantGuide,
+  isCampusStatisticQuestion,
+} from "./assistant-query";
 import { approvedDemoCards, demoUser, visibleDemoCards } from "./browser-demo";
 import { demoError, type DemoHandler } from "./browser-demo-http";
 import { demoCardVersionId } from "./browser-demo-version";
@@ -8,6 +12,7 @@ import type { CanonChatAnswer } from "./canon-ai";
 import { buildCanonSources, resolveCanonReference } from "./canon-context";
 import { findCampusServices } from "./campus-services";
 import { buildCanonicalRewrite, checkFactText } from "./fact-check";
+import { summarizeRewrite } from "./fact-report";
 import { findHomeCards } from "./home-card-search";
 import { searchKnowledgeCards } from "./knowledge-search";
 import { analyticsQuerySchema } from "./validation/analytics";
@@ -41,21 +46,35 @@ export const handleDemoTools: DemoHandler = (call) => {
     const { text, mode, flashAssist, useAi } = factCheckInputSchema.parse(
       call.body()
     );
-    const result = checkFactText(text, cards);
+    const versions = new Map(
+      cards.map((card) => [card.id, demoCardVersionId(card)])
+    );
+    const versioned = (report: ReturnType<typeof checkFactText>) => ({
+      ...report,
+      findings: report.findings.map((finding) => ({
+        ...finding,
+        ...(finding.sourceCardId &&
+          versions.has(finding.sourceCardId) && {
+            sourceVersionId: versions.get(finding.sourceCardId),
+          }),
+      })),
+    });
+    const result = versioned(checkFactText(text, cards));
     if (mode === "rewrite") {
       const rewrite = buildCanonicalRewrite(text, cards);
       const checked = rewrite ? checkFactText(rewrite.plainText, cards) : null;
       return Response.json({
         ...result,
-        rewrite,
+        rewrite: rewrite && {
+          ...rewrite,
+          sourceVersions: Object.fromEntries(
+            rewrite.sourceCardIds.flatMap((id) =>
+              versions.has(id) ? [[id, versions.get(id)!]] : []
+            )
+          ),
+        },
         rewriteAi: { status: "local" },
-        rewriteCheck: checked
-          ? {
-              summary: checked.summary,
-              canPublish: checked.canPublish,
-              isClean: checked.summary.red + checked.summary.yellow === 0,
-            }
-          : null,
+        rewriteCheck: checked ? summarizeRewrite(versioned(checked)) : null,
         ...(!rewrite && {
           rewriteError:
             "В учебных карточках недостаточно сведений по теме текста.",
@@ -125,7 +144,9 @@ export const handleDemoTools: DemoHandler = (call) => {
       status: "local",
       ...guide,
     } satisfies CanonChatAnswer);
-  const matched = searchKnowledgeCards(cards, message).slice(0, 4);
+  const matched = isCampusStatisticQuestion(message)
+    ? []
+    : searchKnowledgeCards(cards, assistantQuestion(message)).slice(0, 4);
   const selected = asSources(matched);
   const citations = selected.flatMap((source) => {
     const fact = source.facts.find(

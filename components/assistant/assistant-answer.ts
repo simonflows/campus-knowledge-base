@@ -35,6 +35,7 @@ const answerSchema = z.object({
     "too-long",
   ]),
   message: z.string().max(8000),
+  presentation: z.literal("summary").optional(),
   citations: z
     .array(
       z.object({
