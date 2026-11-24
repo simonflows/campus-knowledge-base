@@ -78,9 +78,9 @@ export function assistantFactSummary(citation: CanonCitation) {
     // now-empty labels are not part of the factual narrative; the full field
     // remains unchanged in the citation disclosure.
     const paragraphs = quote.trim().split(/\r?\n[\t ]*\r?\n/u);
-    const emptyReference = /^(?<label>[\p{L}][\p{L}\p{N}«»"'.-]{1,31})(?:\s*\(\d{4}-\d{2}-\d{2}\))?\s+[—–-]\s*$/u;
+    const emptyReference = /^([\p{L}][\p{L}\p{N}«»"'.-]{1,31})(?:\s*\(\d{4}-\d{2}-\d{2}\))?\s+[—–-]\s*$/u;
     while (paragraphs.length > 1 && paragraphs.at(-1)!.split(/\r?\n/u).every(line => {
-      const label = emptyReference.exec(line.trim())?.groups?.label;
+      const label = emptyReference.exec(line.trim())?.[1];
       return !!label && (label.match(/[\p{Lu}]/gu)?.length ?? 0) >= 2;
     })) paragraphs.pop();
     description = paragraphs.join("\n\n").trim();
