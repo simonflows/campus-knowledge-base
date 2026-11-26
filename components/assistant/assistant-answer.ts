@@ -26,6 +26,12 @@ export function safeAssistantHref(href: string) {
 }
 
 const answerSchema = z.object({
+  mode: z.enum(["canon", "web"]).optional(),
+  externalSources: z.array(z.object({
+    id: z.string().min(1).max(160),
+    title: z.string().min(1).max(500),
+    url: z.string().max(2000),
+  })).max(10).optional(),
   status: z.enum([
     "ready",
     "local",
@@ -64,6 +70,19 @@ const answerSchema = z.object({
 export function parseAssistantAnswer(input: unknown): CanonChatAnswer | null {
   const parsed = answerSchema.safeParse(input);
   if (!parsed.success) return null;
+  if (parsed.data.mode === "web") {
+    if (parsed.data.citations.length || parsed.data.actions.length) return null;
+    const externalSources = (parsed.data.externalSources ?? []).filter(source => {
+      try {
+        const url = new URL(source.url);
+        return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password &&
+          url.hostname.includes(".") && !/^[\d.]+$|:|\.(?:localhost|local|internal|lan)$/iu.test(url.hostname);
+      } catch { return false; }
+    });
+    if (parsed.data.status === "ready" && !externalSources.length) return null;
+    return { ...parsed.data, externalSources };
+  }
+  if (parsed.data.externalSources?.length) return null;
   const citations = parsed.data.citations.flatMap((citation) => {
     const href = safeAssistantHref(citation.href);
     const expected = `/knowledge?card=${encodeURIComponent(citation.cardId)}&version=${encodeURIComponent(citation.versionId)}`;

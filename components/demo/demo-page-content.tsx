@@ -10,6 +10,8 @@ import { WorkWorkspace } from "@/components/work/work-workspace";
 import { normalizeWorkSection } from "@/components/work/work-state";
 import { AppLink } from "@/components/navigation/workspace-navigation";
 import { getAnalyticsExamples } from "@/lib/analytics";
+import { buildApprovedFactExample } from "@/lib/fact-training-example";
+import { demoCardVersionId } from "@/lib/browser-demo-version";
 import { demoAccounts } from "@/lib/auth";
 import {
   approvedDemoCards,
@@ -109,6 +111,7 @@ export function DemoPageContent({
         <FactCheckWorkspace
           cardsCount={cards.length}
           flashAssistAvailable={staff}
+          approvedExample={buildApprovedFactExample(cards, demoCardVersionId)}
         />
       );
     case "/analytics":

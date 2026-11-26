@@ -1,6 +1,7 @@
 import type { ZodType } from "zod";
 import {
   canSeeCard,
+  canUseStaffWorkflow,
   demoAccounts,
   toSessionUser,
   type SessionUser,
@@ -22,13 +23,14 @@ import {
   canAnswerInformationRequest,
   canSeeInformationRequest,
   createInformationRequestSchema,
+  informationRequestCardOwner,
   presentInformationRequest,
   updateInformationRequestSchema,
   type InformationRequest,
 } from "./information-requests";
-import { folderIds, getApprovedVersion, type ProjectCard } from "./knowledge";
+import { folderIds, getApprovedVersion, getUniversityFullName, type ProjectCard } from "./knowledge";
 import type { SourceVersionReference } from "./source-references";
-import { evidenceUrlSchema } from "./validation/knowledge";
+import { knowledgeSourceSchema } from "./validation/knowledge";
 import { createWorkflowSchema, workflowMutationSchema } from "./validation/workflow";
 import { buildUniversityCoverage, buildWorkQueue, type QueueReadiness } from "./work-queue";
 import type { WorkData } from "./work-data";
@@ -143,20 +145,21 @@ function readableRequest(state: BrowserDemoState, user: SessionUser, id: string)
 function requestCandidate(state: BrowserDemoState, user: SessionUser, item: InformationRequest, now: string): ProjectCard {
   if (item.status !== "answered" || !item.answer || !item.evidenceUrl)
     throw new WorkflowError("Сначала нужен ответ с источником", 409);
+  const source = knowledgeSourceSchema.safeParse({ title: "Источник из ответа", url: item.evidenceUrl });
+  if (!source.success)
+    throw new WorkflowError("Источник из ответа должен быть HTTPS-ссылкой без логина и пароля", 409);
   const id = `request-${item.id}`;
   if (getDemoCard(state, id)) throw new WorkflowError("Данные изменились. Обновите страницу.", 409);
-  const recipients = recipientPeople(item.recipientUniversityId);
-  const leads = recipients.filter(person => person.role === "university_owner");
-  const owner = leads.length === 1 ? leads[0] : recipients.find(person => person.id === item.answeredBy);
+  const owner = informationRequestCardOwner(item, people);
   return {
     id,
     type: "project",
     title: item.subject,
     folderId: folderIds.subfolder(item.recipientUniversityId, "products"),
-    owners: [owner?.ownershipLabel ?? item.recipientUniversityId],
+    owners: [owner?.ownershipLabel ?? getUniversityFullName(item.recipientUniversityId)],
     ownerIds: owner ? [owner.id] : [],
     referenceDescription: item.answer,
-    sources: [{ title: "Источник из ответа", url: item.evidenceUrl }],
+    sources: [source.data],
     stopFormula: "Учебный ответ на запрос. Использовать после подтверждения координатором.",
     status: "pending",
     submittedBy: user.id,
@@ -214,7 +217,7 @@ async function updateRequest(call: DemoCall, user: SessionUser, id: string) {
     case "answer":
       if (item.status !== "open") throw new WorkflowError("На этот запрос уже ответили", 409);
       Object.assign(next, {
-        answer: input.answer, evidenceUrl: evidenceUrlSchema.parse(input.evidenceUrl),
+        answer: input.answer, evidenceUrl: input.evidenceUrl,
         answeredBy: user.id, status: "answered",
       });
       break;
@@ -307,7 +310,7 @@ function listWorkflows(state: BrowserDemoState, user: SessionUser) {
 const workPeople = people.map(({ id, name, organization }) => ({ id, name, organization }));
 
 function workData(state: BrowserDemoState, user: SessionUser): WorkData {
-  if (user.role === "guest") throw new WorkflowError("Эта работа доступна сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Эта работа доступна сотрудникам", 403);
   const cards = allDemoCards(state);
   const workflows = listWorkflows(state, user);
   const editorialRows = visibleEditorialRows(state, user);

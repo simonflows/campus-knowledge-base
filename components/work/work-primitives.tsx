@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AiActivity } from "@/components/ui/ai-activity";
 import styles from "./workspace.module.css";
 
 export type Choice = { value: string; label: string; detail?: string };
@@ -104,8 +105,8 @@ export function WorkError({ title = "Не удалось выполнить де
 
 export function WorkLoading({ label }: { label: string }) {
   return (
-    <div className={styles.loading} role="status">
-      <span className="sr-only">{label}</span>
+    <div className={styles.loading}>
+      <AiActivity label={label} />
       <Skeleton className="h-6 w-3/5" aria-hidden="true" />
       <Skeleton className="h-12 w-full" aria-hidden="true" />
       <Skeleton className="h-12 w-full" aria-hidden="true" />

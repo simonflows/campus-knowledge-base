@@ -157,7 +157,7 @@ export const editorialEventLabels: Record<EditorialEvent["action"], string> = {
 export function canReadEditorial(user: SessionUser, doc: EditorialDocument) {
   if (user.role === "guest" || doc.deletedAt) return false;
   if (doc.ownerId === user.id) return true;
-  if (doc.status === "draft") return false;
+  if (user.role === "author" || doc.status === "draft") return false;
   if (!doc.reviewerId) return user.role === "admin";
   return doc.reviewerId === user.id && (
     user.role === "admin" ||
@@ -190,6 +190,10 @@ export class EditorialError extends Error {
     super(message);
   }
 }
+function actionRequiresEditorialStaff(action: EditorialMutation["action"]) {
+  return action === "submit" || action === "return" || action === "approve" || action === "comment";
+}
+
 export function validateEditorialAction(
   user: SessionUser,
   doc: EditorialDocument,
@@ -197,6 +201,8 @@ export function validateEditorialAction(
 ) {
   if (!canReadEditorial(user, doc))
     throw new EditorialError("Черновик не найден", 404);
+  if (user.role === "author" && actionRequiresEditorialStaff(mutation.action))
+    throw new EditorialError("Согласования доступны сотрудникам кампуса", 403);
   if (doc.version !== mutation.version)
     throw new EditorialError(
       "В другой вкладке сохранена новая версия. Ваш текст сохранён на устройстве: откройте актуальную версию и сравните изменения.",

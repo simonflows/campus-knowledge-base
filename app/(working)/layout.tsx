@@ -4,6 +4,7 @@ import { CampusChrome } from "@/components/navigation/campus-chrome";
 import { BridgeProvider } from "@/components/bridge-provider";
 import { getIntegrationStatus } from "@/lib/integration-status";
 import { getSessionUser } from "@/lib/auth-server";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { demoLoginEnabled } from "@/lib/pilot-auth";
 import { countIncomingRequests } from "@/lib/information-requests-models";
 import { getStorageMode } from "@/lib/db";
@@ -37,7 +38,7 @@ export default async function WorkingLayout({
     storageMode,
     ...getIntegrationStatus(),
   };
-  const staff = Boolean(user && user.role !== "guest");
+  const staff = canUseStaffWorkflow(user);
   const storageMessage = localReadProblem
     ? `${localReadProblem} Запись отключена.`
     : storageMode === "local-json"
@@ -57,6 +58,7 @@ export default async function WorkingLayout({
       )}
       <CampusChrome
         staff={staff}
+        author={user?.role === "author"}
         status={initialStatus}
         showIntegrationStatus={
           process.env.NODE_ENV !== "production" && demoLoginEnabled()

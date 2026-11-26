@@ -9,6 +9,7 @@ import {
   ResourceNotFoundException,
   ScanCommand,
   type AttributeValue,
+  type ScanCommandInput,
   type TableDescription,
   waitUntilTableExists,
 } from "@aws-sdk/client-dynamodb";
@@ -114,6 +115,7 @@ export type DatabaseArchive = ArchiveBody & { sha256: string };
 type DatabaseConnection = { client: DynamoDBClient; endpoint: string };
 type RestoreTarget = { prefix?: string; disasterRecovery?: boolean };
 type TargetTable = { table: ArchivedTable; name: string };
+type ScanFilter = Pick<ScanCommandInput, "FilterExpression" | "ExpressionAttributeNames" | "ExpressionAttributeValues">;
 
 function commandOptions() {
   return { abortSignal: AbortSignal.timeout(COMMAND_TIMEOUT) };
@@ -187,7 +189,7 @@ function expectedSchema(name: TableName) {
   }));
 }
 
-function observedSchema(table: TableDescription | undefined) {
+function observedSchema(table: TableDescription | undefined, name: TableName) {
   if (
     table?.TableStatus !== "ACTIVE" ||
     table.LocalSecondaryIndexes?.length ||
@@ -205,7 +207,17 @@ function observedSchema(table: TableDescription | undefined) {
     })),
   });
   if (!parsed.success) throw new DatabaseBackupError("source-schema");
-  return canonicalSchema(parsed.data);
+  const shape = parsed.data;
+  const ttl = TABLE_SCHEMAS[name].ttlAttribute;
+  if (ttl) {
+    const definitions = shape.attributes.filter(attribute => attribute.AttributeName === ttl);
+    const keys = [...shape.keys, ...shape.indexes.flatMap(index => index.KeySchema)];
+    // YDB lists the numeric TTL column even though it is not part of CreateTable.
+    if (definitions.length === 1 && definitions[0].AttributeType === "N" && !keys.some(key => key.AttributeName === ttl)) {
+      shape.attributes = shape.attributes.filter(attribute => attribute.AttributeName !== ttl);
+    }
+  }
+  return canonicalSchema(shape);
 }
 
 function invalid(): never {
@@ -376,6 +388,7 @@ async function scan(
   client: DynamoDBClient,
   name: string,
   budget: { rows: number; bytes: number },
+  filter?: ScanFilter,
 ) {
   const items: ArchiveItem[] = [];
   const seenCursors = new Set<string>();
@@ -385,6 +398,7 @@ async function scan(
       TableName: name,
       ConsistentRead: true,
       ExclusiveStartKey: cursor,
+      ...filter,
     }), commandOptions());
     for (const found of response.Items ?? []) {
       const item = encodeItem(found, true);
@@ -409,6 +423,8 @@ export async function captureDatabase({
   timestamp = new Date(),
 }: DatabaseConnection & { scope?: ArchiveScope; timestamp?: Date }): Promise<DatabaseArchive> {
   const sourceSha256 = hash(validateDatabaseEndpoint(endpoint));
+  const createdAt = timestamp.toISOString();
+  const cutoff = { N: String(Date.parse(createdAt) / 1000) };
   const tables: ArchivedTable[] = [];
   const budget = { rows: 0, bytes: 0 };
   try {
@@ -418,11 +434,18 @@ export async function captureDatabase({
       }
     }
     for (const name of tableNames(scope)) {
-      const schema = observedSchema(await describe(client, name));
+      const schema = observedSchema(await describe(client, name), name);
       if (checksum(schema) !== checksum(expectedSchema(name))) {
         throw new DatabaseBackupError("source-schema");
       }
-      const items = await scan(client, name, budget);
+      const ttlAttribute = TABLE_SCHEMAS[name].ttlAttribute;
+      // TTL deletion is asynchronous. Preserve permanent and nonnumeric rows,
+      // and compare numeric expiry with the same instant on every page.
+      const items = await scan(client, name, budget, ttlAttribute ? {
+        FilterExpression: "NOT (attribute_type(#expiresAt, :numberType) AND #expiresAt <= :cutoff)",
+        ExpressionAttributeNames: { "#expiresAt": ttlAttribute },
+        ExpressionAttributeValues: { ":numberType": { S: "N" }, ":cutoff": cutoff },
+      } : undefined);
       const body = { name, schema, count: items.length, items };
       tables.push({ ...body, sha256: checksum(body) });
     }
@@ -430,7 +453,7 @@ export async function captureDatabase({
     if (error instanceof DatabaseBackupError) throw error;
     throw new DatabaseBackupError("source-read");
   }
-  const body: ArchiveBody = { version: 1, createdAt: timestamp.toISOString(), scope, sourceSha256, tables };
+  const body: ArchiveBody = { version: 1, createdAt, scope, sourceSha256, tables };
   return { ...body, sha256: checksum(body) };
 }
 
@@ -506,7 +529,7 @@ export async function restoreDatabase({
   try {
     const budget = { rows: 0, bytes: 0 };
     for (const { table, name } of tables) {
-      const schema = observedSchema(await describe(client, name));
+      const schema = observedSchema(await describe(client, name), table.name);
       const items = await scan(client, name, budget);
       const measured = { name: table.name, schema, count: items.length, items };
       if (checksum(measured) !== table.sha256) throw new DatabaseBackupError("target-verification");

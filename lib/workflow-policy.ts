@@ -1,4 +1,4 @@
-import type { SessionUser } from "./auth";
+import { canUseStaffWorkflow, type SessionUser } from "./auth";
 import type { SourceVersionReference } from "./source-references";
 import type { CreateWorkflowInput, WorkflowMutation } from "./validation/workflow";
 import type { WorkflowRecord } from "./workflow";
@@ -6,13 +6,13 @@ import type { WorkflowRecord } from "./workflow";
 export class WorkflowError extends Error { constructor(message: string, public status = 400) { super(message); } }
 
 export function canReadWorkflow(user: SessionUser | null, record: WorkflowRecord): boolean {
-  return !!user && user.role !== "guest" && (user.role === "admin" || record.creatorId === user.id || record.responsibleId === user.id || record.participantIds.includes(user.id));
+  return canUseStaffWorkflow(user) && (user.role === "admin" || record.creatorId === user.id || record.responsibleId === user.id || record.participantIds.includes(user.id));
 }
 export function canEditWorkflow(user: SessionUser | null, record: WorkflowRecord): boolean {
   return canReadWorkflow(user, record) && !!user && (user.role === "admin" || record.creatorId === user.id || record.responsibleId === user.id);
 }
 function participants(creatorId: string, responsibleId: string, ids: string[], people: SessionUser[]) {
-  if (![responsibleId, ...ids].every(id => people.some(person => person.id === id && person.role !== "guest")))
+  if (![responsibleId, ...ids].every(id => people.some(person => person.id === id && canUseStaffWorkflow(person))))
     throw new WorkflowError("Выберите действующих сотрудников");
   return [...new Set([creatorId, responsibleId, ...ids])];
 }
@@ -20,7 +20,7 @@ function uniqueSources(sources: SourceVersionReference[]) {
   return [...new Map(sources.map(source => [`${source.cardId}\n${source.versionId}`, source])).values()];
 }
 export function makeWorkflowRecord(user: SessionUser, input: CreateWorkflowInput, people: SessionUser[], digest: (value: unknown) => string, now = new Date().toISOString()): WorkflowRecord {
-  if (user.role === "guest") throw new WorkflowError("Эта работа доступна сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Эта работа доступна сотрудникам", 403);
   const { operationId, ...data } = input;
   return { ...data, id: `workflow-${operationId}`, creatorId: user.id, creatorName: user.name,
     participantIds: participants(user.id, input.responsibleId, input.participantIds, people),

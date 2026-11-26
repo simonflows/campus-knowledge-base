@@ -1,5 +1,6 @@
 "use client";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
+import { AccountRoleForm, EmailAccountForm, useAuthFormHydrated, type AccountMode } from "@/components/auth/email-account-form";
 
 import { useState } from "react";
 import Link from "next/link";
@@ -40,10 +41,29 @@ type LoginScreenProps = {
   returnTo?: string;
   staffRequired?: boolean;
   demoHref: string;
+  emailEnabled?: boolean;
+  yandexEnabled?: boolean;
+  oauthStatus?: "invalid" | "cancelled";
+  accountMode?: AccountMode;
+  basePath?: string;
 };
 
-export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffRequired = false, demoHref }: LoginScreenProps) {
+export function LoginScreen({
+  currentUser,
+  demo,
+  returnTo = "/knowledge",
+  staffRequired = false,
+  demoHref,
+  emailEnabled = false,
+  yandexEnabled = false,
+  oauthStatus,
+  accountMode = "login",
+  basePath = "",
+}: LoginScreenProps) {
   const router = useRouter();
+  const hydrated = useAuthFormHydrated();
+  const proofMode = accountMode === "verify" || accountMode === "reset";
+  const blockedDestination = currentUser?.role === "author" && ["/requests", "/work"].includes(returnTo);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [pinForAdmin, setPinForAdmin] = useState("");
   const [showPinInput, setShowPinInput] = useState(false);
@@ -54,6 +74,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
   );
 
   const handleLogin = async (accountId: string, pin?: string) => {
+    if (!hydrated) return;
     setBusyId(accountId);
 
     try {
@@ -134,7 +155,11 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
           description={
             demo
               ? "Выберите демонстрационный аккаунт, чтобы посмотреть права доступа каждой роли."
-              : "Логин и персональный ключ выдаёт координатор кампуса."
+              : yandexEnabled
+                ? "Войдите через Яндекс, чтобы сохранять личные черновики и пользоваться редактором."
+                : emailEnabled
+                  ? "Войдите по электронной почте или с ключом сотрудника."
+                : "Логин и персональный ключ выдаёт координатор кампуса."
           }
         >
           <Link href="/knowledge" className="desk-text-link">
@@ -144,7 +169,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
         <div className="desk-access-body">
           {staffRequired && (
             <p className="text-sm text-muted-foreground" role="status">
-              Аналитика доступна сотрудникам. Войдите с персональным доступом или попробуйте локальное демо.
+              Войдите, чтобы открыть аналитику, или попробуйте локальное демо.
             </p>
           )}
           {currentUser ? (
@@ -157,6 +182,11 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
                 <p className="desk-footnote">
                   {roleLabels[currentUser.role]} · {currentUser.organization}
                 </p>
+                {currentUser.id.startsWith("author-") && (
+                  <p className="desk-footnote">
+                    Код аккаунта <code className="break-all select-all">{currentUser.id}</code>
+                  </p>
+                )}
               </div>
               <Button
                 variant="outline"
@@ -167,8 +197,33 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
               </Button>
             </div>
           ) : null}
+          {yandexEnabled && !currentUser && (!proofMode || !emailEnabled) && (
+            <form method="post" action={basePath + "/api/auth/yandex/start?next=" + encodeURIComponent(returnTo)}>
+              <Button type="submit" size="lg">
+                Войти через Яндекс <ArrowRight aria-hidden="true" />
+              </Button>
+              {oauthStatus && (
+                <p className="mt-3 text-sm text-muted-foreground" role="status">
+                  {oauthStatus === "cancelled" ? "Вход через Яндекс отменён." : "Ссылка входа недействительна или устарела. Попробуйте снова."}
+                </p>
+              )}
+            </form>
+          )}
+          {emailEnabled && (!currentUser || proofMode) && (
+            yandexEnabled && !proofMode ? (
+              <details>
+                <summary className="desk-text-link cursor-pointer">Вход по электронной почте</summary>
+                <EmailAccountForm initialMode={accountMode} basePath={basePath} returnTo={returnTo} />
+              </details>
+            ) : (
+              <EmailAccountForm key={accountMode} initialMode={accountMode} basePath={basePath} returnTo={returnTo} currentUserId={currentUser?.id} />
+            )
+          )}
+          {(emailEnabled || yandexEnabled) && currentUser?.role === "admin" && <AccountRoleForm basePath={basePath} />}
           {!demo && !currentUser ? (
-            <div className="desk-credentials">
+            <details open={!(emailEnabled || yandexEnabled)}>
+              <summary className="desk-text-link cursor-pointer">У меня есть ключ сотрудника</summary>
+              <div className="desk-credentials">
               <div>
                 <p className="desk-kicker">
                   <ShieldCheck size={15} /> Доступ сотрудников
@@ -176,6 +231,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
                 <h2>Вход по ключу</h2>
               </div>
               <form
+                method="post"
                 onSubmit={(event) => {
                   event.preventDefault();
                   void handleLogin(login.trim());
@@ -206,19 +262,20 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
                     onChange={(event) => setKey(event.target.value)}
                   />
                 </Field>
-                <Button type="submit" disabled={!!busyId}>
+                <Button type="submit" disabled={!hydrated || !!busyId}>
                   {busyId ? "Входим…" : "Войти"}
                   <ArrowRight data-icon="inline-end" />
                 </Button>
               </form>
-            </div>
+              </div>
+            </details>
           ) : null}
           <div className="flex flex-wrap items-center gap-4">
             <a href={demoHref} className={cn(buttonVariants({ variant: "outline", className: "gap-2 text-foreground" }))}>
               <FlaskConical aria-hidden="true" />
               Попробовать в демо-режиме
             </a>
-            {!demo && currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && (
+            {!demo && currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && !blockedDestination && (
               <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
             )}
           </div>
@@ -293,6 +350,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
                           </div>
                         </div>
                         <form
+                          method="post"
                           onSubmit={(event) => {
                             event.preventDefault();
                             void handleLogin(
@@ -329,7 +387,7 @@ export function LoginScreen({ currentUser, demo, returnTo = "/knowledge", staffR
                                 ? "Текущий аккаунт"
                                 : `Войти под ролью: ${account.name}`
                             }
-                            disabled={busyId !== null || isCurrent}
+                            disabled={!hydrated || busyId !== null || isCurrent}
                           >
                             {isCurrent
                               ? "Текущий аккаунт"

@@ -10,23 +10,30 @@ import {
   recordFailedLogin,
   SESSION_COOKIE,
   sessionCookieOptions,
+  revokeAccountSession,
+  signAccountSessionToken,
   signSessionToken,
   verifyAdminPin,
   verifySameOrigin,
 } from "@/lib/auth-server";
 import { authenticatePilot, demoLoginEnabled, getSessionIdentity, pilotLoginReady } from "@/lib/pilot-auth";
 import { loginSchema } from "@/lib/validation/access";
+import { accountFailure, accountJson, accountService, readAccountBody, requireEmailAccounts } from "@/lib/account-server";
+import { emailLoginSchema } from "@/lib/account-validation";
 
 const sessionResponseOptions = { headers: { "Cache-Control": "private, no-store" } };
 
 export async function GET() {
-  const user = await getSessionUser();
-
-  return NextResponse.json({
-    user,
-    adminPinRequired: demoLoginEnabled() && isAdminPinRequired(),
-    demoLogin: demoLoginEnabled(),
-  }, sessionResponseOptions);
+  try {
+    const user = await getSessionUser();
+    return NextResponse.json({
+      user,
+      adminPinRequired: demoLoginEnabled() && isAdminPinRequired(),
+      demoLogin: demoLoginEnabled(),
+    }, sessionResponseOptions);
+  } catch (error) {
+    return accountFailure(error);
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -40,12 +47,26 @@ export async function POST(request: NextRequest) {
   let body: unknown;
 
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json(
-      { error: "Некорректный JSON в теле запроса" },
-      { status: 400 }
-    );
+    body = await readAccountBody(request);
+  } catch (error) {
+    return accountFailure(error);
+  }
+
+  if (body && typeof body === "object" && "method" in body && body.method === "email") {
+    const parsed = emailLoginSchema.safeParse(body);
+    if (!parsed.success) return accountJson({ error: parsed.error.issues[0]?.message ?? "Проверьте данные формы." }, 400);
+    try {
+      requireEmailAccounts();
+      const { email, password } = parsed.data;
+      const { token, user } = await accountService.login(email, password, getClientIp(request));
+      const signed = signAccountSessionToken(token);
+      await revokeAccountSession(request.cookies.get(SESSION_COOKIE)?.value);
+      const response = accountJson({ user });
+      response.cookies.set(SESSION_COOKIE, signed, sessionCookieOptions);
+      return response;
+    } catch (error) {
+      return accountFailure(error);
+    }
   }
 
   const parsed = loginSchema.safeParse(body);
@@ -88,6 +109,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Введите ПИН-код администратора", requiresPin: true }, { status: 401 });
   }
 
+  try {
+    await revokeAccountSession(request.cookies.get(SESSION_COOKIE)?.value);
+  } catch (error) {
+    return accountFailure(error);
+  }
   clearLoginFailures(accountKey);
   const response = NextResponse.json({ user }, sessionResponseOptions);
   response.cookies.set(
@@ -105,6 +131,12 @@ export async function DELETE(request: NextRequest) {
       { error: "Запрещён кросс-доменный запрос завершения сессии" },
       { status: 403 }
     );
+  }
+
+  try {
+    await revokeAccountSession(request.cookies.get(SESSION_COOKIE)?.value);
+  } catch (error) {
+    return accountFailure(error);
   }
 
   const response = NextResponse.json({ user: null }, sessionResponseOptions);

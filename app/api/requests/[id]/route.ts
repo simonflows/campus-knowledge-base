@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
-import { isDatabaseAvailable } from "@/lib/db";
+import { staffDirectory } from "@/lib/account-directory";
+import { canUseStaffWorkflow } from "@/lib/auth";
+import { verifySameOrigin } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
+import { getStorageMode } from "@/lib/db";
 import { canSeeInformationRequest, updateInformationRequestSchema } from "@/lib/information-requests";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   mutateInformationRequest,
   getInformationRequest,
@@ -10,13 +13,17 @@ import {
   RequestError,
 } from "@/lib/information-requests-models";
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user) return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
-  if (!(await isDatabaseAvailable())) return NextResponse.json({ error: "Общая база временно недоступна" }, { status: 503 });
+  if (!canUseStaffWorkflow(user))
+    return NextResponse.json({ error: "Запросы доступны сотрудникам" }, { status: 403 });
+  if (await getStorageMode() !== "dynamodb") return unavailableStorageResponse();
   try {
     const item = await getInformationRequest((await params).id);
     if (!item || !canSeeInformationRequest(user, item)) return NextResponse.json({ error: "Запрос не найден" }, { status: 404 });
-    const directory = sessionDirectory();
+    const directory = await staffDirectory();
     const people = directory.filter(person => person.universityId === item.recipientUniversityId && ["university_pr", "university_owner"].includes(person.role)).map(person => ({ id: person.id, name: person.name }));
     const participants = (item.participantIds ?? [item.authorId]).map(id => ({ id, name: directory.find(person => person.id === id)?.name ?? "Учётная запись недоступна" }));
     return NextResponse.json({ item: await presentRequestFor(user, item), people, participants }, { headers: { "Cache-Control": "private, no-store" } });
@@ -31,14 +38,14 @@ export async function PATCH(
       { error: "Недопустимый источник запроса" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
-  if (!(await isDatabaseAvailable()))
-    return NextResponse.json(
-      { error: "База данных временно недоступна" },
-      { status: 503 }
-    );
+  if (!canUseStaffWorkflow(user))
+    return NextResponse.json({ error: "Запросы доступны сотрудникам" }, { status: 403 });
+  if (await getStorageMode() !== "dynamodb") return unavailableStorageResponse();
   const parsed = updateInformationRequestSchema.safeParse(
     await request.json().catch(() => null)
   );

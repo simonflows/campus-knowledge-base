@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { canSeeCard, type SessionUser } from "./auth";
+import { canSeeCard, canUseStaffWorkflow, type SessionUser } from "./auth";
 import { getApprovedVersion, getCardStatus, type KnowledgeCard } from "./knowledge";
 import { universities } from "./data";
+import { evidenceUrlSchema } from "./validation/knowledge";
 export const requestStatusLabels = {
   open: "Ожидает ответа",
   answered: "Получен ответ",
@@ -73,10 +74,7 @@ export const updateInformationRequestSchema = z.discriminatedUnion("action", [
     operationId: z.uuid(),
     revision: z.number().int().min(0),
     answer: z.string().trim().min(10).max(10000),
-    evidenceUrl: z
-      .url()
-      .max(2000)
-      .refine((value) => value.startsWith("https://"), "Нужна HTTPS-ссылка"),
+    evidenceUrl: z.string().trim().max(2000).pipe(evidenceUrlSchema),
   }),
   z.object({
     action: z.literal("submit"),
@@ -89,14 +87,20 @@ export function canSeeInformationRequest(
   item: InformationRequest
 ): boolean {
   return (
-    !!user &&
-    user.role !== "guest" &&
+    canUseStaffWorkflow(user) &&
     (user.role === "admin" ||
       item.authorId === user.id ||
       (!!user.universityId &&
         user.universityId === item.recipientUniversityId &&
         ["university_owner", "university_pr"].includes(user.role)))
   );
+}
+
+export function informationRequestCardOwner(item: InformationRequest, directory: SessionUser[]): SessionUser | undefined {
+  const leads = directory.filter(user => user.role === "university_owner" && user.universityId === item.recipientUniversityId);
+  return leads.find(user => user.id === item.responsibleId) ??
+    leads.find(user => user.id === item.answeredBy) ??
+    (leads.length === 1 ? leads[0] : undefined);
 }
 export function canAnswerInformationRequest(
   user: SessionUser,

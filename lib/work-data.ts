@@ -1,4 +1,4 @@
-import type { SessionUser } from "./auth";
+import { canUseStaffWorkflow, type SessionUser } from "./auth";
 import { isDatabaseAvailable } from "./db";
 import { listEditorial } from "./editorial-models";
 import { getEditorialReadiness } from "./editorial-readiness";
@@ -6,13 +6,13 @@ import { listInformationRequests } from "./information-requests-models";
 import { getApprovedVersion } from "./knowledge";
 import { getCardVersionId } from "./knowledge-versions";
 import { getAllKnowledgeCards } from "./models";
-import { sessionDirectory } from "./pilot-auth";
+import { staffDirectory } from "./account-directory";
 import { buildUniversityCoverage, buildWorkQueue, type QueueReadiness } from "./work-queue";
 import { listWorkflowRecords } from "./workflow-models";
 import { WorkflowError } from "./workflow";
 
 export async function getWorkData(user: SessionUser) {
-  if (user.role === "guest") throw new WorkflowError("Работа с материалами доступна сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Работа с материалами доступна сотрудникам", 403);
   if (!(await isDatabaseAvailable())) throw new WorkflowError("Общая база временно недоступна", 503);
   const [cards, documents, requests, workflows] = await Promise.all([
     getAllKnowledgeCards(), listEditorial(user), listInformationRequests(user), listWorkflowRecords(user),
@@ -31,7 +31,7 @@ export async function getWorkData(user: SessionUser) {
       }
     }
   }));
-  const people = sessionDirectory().filter(person => person.role !== "guest").map(person => ({ id: person.id, name: person.name, organization: person.organization }));
+  const people = (await staffDirectory()).filter(canUseStaffWorkflow).map(person => ({ id: person.id, name: person.name, organization: person.organization }));
   const names = new Map(people.map(person => [person.id, person.name]));
   const items = buildWorkQueue(user, { cards, documents: currentDocuments, requests, workflows: workflows.map(item => item.record), readiness });
   return {

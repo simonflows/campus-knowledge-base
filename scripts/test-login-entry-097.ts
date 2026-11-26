@@ -31,4 +31,7 @@ for (const demo of [false, true]) test(`browser-local demo entry remains availab
   }));
   assert.equal((html.match(/href="\/canon\/demo"/g) ?? []).length, 1);
   assert.match(html, /Попробовать в демо-режиме/);
+  const forms = html.match(/<form\b[^>]*>/gi) ?? [];
+  assert.ok(forms.length > 0);
+  for (const form of forms) assert.match(form, /\bmethod="post"/i);
 });

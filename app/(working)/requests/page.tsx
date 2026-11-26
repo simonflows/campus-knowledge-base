@@ -1,4 +1,5 @@
 import { getSessionUser } from "@/lib/auth-server";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { getStorageMode } from "@/lib/db";
 import { listInformationRequests } from "@/lib/information-requests-models";
 import { mockInformationRequests } from "@/lib/information-requests";
@@ -13,7 +14,7 @@ export default async function RequestsPage({
   const [user, params] = await Promise.all([getSessionUser(), searchParams]);
   let items = mockInformationRequests;
   let available = false;
-  if (user && user.role !== "guest") {
+  if (canUseStaffWorkflow(user)) {
     const mode = await getStorageMode();
     if (mode === "read-only") return <StorageUnavailable title="Межвузовские запросы" />;
     if (mode === "dynamodb") {

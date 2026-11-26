@@ -3,18 +3,26 @@
 import { useMemo, useState } from "react";
 import {
   BookOpen,
+  Boxes,
   ChevronRight,
+  ContactRound,
+  FileCheck2,
+  FlaskConical,
   Folder,
   FolderOpen,
-  FlaskConical,
   GraduationCap,
   Handshake,
+  HardHat,
+  Landmark,
   Layers,
+  Network,
+  Rocket,
 } from "lucide-react";
 
 import { getFolderDisplayName } from "./folder-labels";
 import { Badge } from "@/components/ui/badge";
 import {
+  folderIds,
   getCardsForFolder,
   type KnowledgeCard,
   type KnowledgeFolderKind,
@@ -23,14 +31,31 @@ import {
 import { cn } from "@/lib/utils";
 
 const folderIcons: Record<KnowledgeFolderKind, typeof Folder> = {
-  campus: Layers,
+  campus: Landmark,
   "universities-root": GraduationCap,
   university: BookOpen,
-  subfolder: FlaskConical,
+  subfolder: Folder,
   joint: Handshake,
   "custom-root": Layers,
   "custom-type": Folder,
 };
+
+const universitySectionIcons = {
+  passport: ContactRound,
+  infrastructure: FlaskConical,
+  products: Boxes,
+  partners: Network,
+  articles: FileCheck2,
+} as const;
+
+function getFolderIcon(node: KnowledgeFolderNode) {
+  if (node.id === folderIds.chkkParameters) return HardHat;
+  if (node.id === folderIds.rioProjects) return Rocket;
+  const section = Object.entries(universitySectionIcons).find(
+    ([key]) => node.kind === "subfolder" && node.id.endsWith(`/${key}`)
+  );
+  return section?.[1] ?? folderIcons[node.kind];
+}
 
 type KnowledgeTreeProps = {
   cards: KnowledgeCard[];
@@ -73,7 +98,7 @@ export function KnowledgeTree({
   }, [cards, tree]);
 
   const renderNode = (node: KnowledgeFolderNode, depth: number) => {
-    const Icon = folderIcons[node.kind];
+    const Icon = getFolderIcon(node);
     const name = getFolderDisplayName(node);
     const hasChildren = Boolean(node.children?.length);
     const isExpanded = !collapsed.has(node.id);
@@ -137,8 +162,9 @@ export function KnowledgeTree({
             )}
           >
             <Icon
+              aria-hidden="true"
               className={cn(
-                "h-4 w-4 shrink-0 transition-transform duration-200 group-hover:scale-110",
+                "h-4 w-4 shrink-0",
                 isSelected ? "text-primary" : "text-muted-foreground"
               )}
             />

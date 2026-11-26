@@ -1,4 +1,7 @@
+import { isDeepStrictEqual } from "node:util";
 import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
+import { conditionalTransactionCancellation } from "./account-transaction";
+import { authorStorageFailure, authorStorageWrites, readAuthorStorageFailure } from "./author-storage-budget";
 import {
   GetCommand,
   ScanCommand,
@@ -7,7 +10,7 @@ import {
   type ScanCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
 import type { SessionUser } from "./auth";
-import { sessionDirectory } from "./pilot-auth";
+import { staffDirectory } from "./account-directory";
 import { docClient, isDatabaseAvailable } from "./db";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
@@ -55,6 +58,56 @@ function isEditorialWriteConflict(error: unknown) {
   );
 }
 
+type EditorialWrites = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>;
+const NEW_EDITORIAL_ROW = "attribute_not_exists(id)";
+const EDITORIAL_VERSION = "#version = :version";
+const EDITORIAL_BASIS_VERSION = "approval.revisionId = :basisRevision AND updatedAt = :basisUpdated";
+
+async function authorEditorialGuardsChanged(writes: EditorialWrites, abortSignal: AbortSignal) {
+  const changed = await Promise.all(writes.map(async ({ Put, ConditionCheck }) => {
+    const guard = Put ?? ConditionCheck;
+    const id = Put?.Item?.id ?? ConditionCheck?.Key?.id;
+    const expression = guard?.ConditionExpression;
+    if (!guard || (expression !== NEW_EDITORIAL_ROW && expression !== EDITORIAL_VERSION && expression !== EDITORIAL_BASIS_VERSION))
+      throw new Error("Unexpected author editorial condition");
+    const { Item } = await docClient.send(new GetCommand({
+      TableName: guard.TableName, Key: { id }, ConsistentRead: true,
+      ProjectionExpression: "id, #version, approval, updatedAt", ExpressionAttributeNames: { "#version": "version" },
+    }), { abortSignal });
+    if (expression === NEW_EDITORIAL_ROW) return Item !== undefined;
+    const values = guard.ExpressionAttributeValues!;
+    if (expression === EDITORIAL_VERSION) return Item?.version !== values[":version"];
+    return Item?.approval?.revisionId !== values[":basisRevision"] || Item?.updatedAt !== values[":basisUpdated"];
+  }));
+  return changed.some(Boolean);
+}
+
+async function writeChargedEditorial(
+  writes: EditorialWrites,
+  storage: ReturnType<typeof authorStorageWrites>,
+  conflict: () => EditorialError,
+) {
+  const input = { TransactItems: [...writes, ...storage] };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await docClient.send(new TransactWriteCommand(input));
+      return;
+    } catch (error) {
+      const cancellation = conditionalTransactionCancellation(error);
+      if (!cancellation) throw error;
+      if (cancellation.kind === "condition") throw authorStorageFailure(cancellation.codes, writes.length) ?? conflict();
+      if (cancellation.kind === "unknown") {
+        const abortSignal = AbortSignal.timeout(3500);
+        if (await authorEditorialGuardsChanged(writes, abortSignal)) throw conflict();
+        const limit = await readAuthorStorageFailure(storage, abortSignal);
+        if (limit) throw limit;
+      }
+      // A retry reuses every condition and can only succeed together with the charge.
+      if (attempt > 0) throw error;
+    }
+  }
+}
+
 async function scan<T>(
   table: TableName,
   filter?: Pick<
@@ -79,8 +132,13 @@ async function scan<T>(
   return rows;
 }
 export async function listEditorial(user: SessionUser) {
-  if (!(await isDatabaseAvailable())) return [];
-  return (await scan<EditorialDocument>(TableName.EDITORIAL_DOCUMENTS))
+  if (user.role === "author") await available();
+  else if (!(await isDatabaseAvailable())) return [];
+  const filter = user.role === "author" ? {
+    FilterExpression: "ownerId = :ownerId",
+    ExpressionAttributeValues: { ":ownerId": user.id },
+  } : undefined;
+  return (await scan<EditorialDocument>(TableName.EDITORIAL_DOCUMENTS, filter))
     .filter((doc) => canReadEditorial(user, doc))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -333,7 +391,7 @@ export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArt
 }
 
 export async function listLegacyArticles(user: SessionUser | null): Promise<ReadyArticle[]> {
-  if (!user || user.role === "guest") return [];
+  if (!user || user.role === "guest" || user.role === "author") return [];
   const visible = (article: ReadyArticle) => canReadLegacyArticle(user, article);
   const mode = await getReadableStorageMode();
   if (mode === "static-export") return articleSeed.filter(visible);
@@ -394,7 +452,7 @@ async function validateArticleBasis(
       ConditionCheck: {
         TableName: TableName.ARTICLES,
         Key: { id },
-        ConditionExpression: "approval.revisionId = :basisRevision AND updatedAt = :basisUpdated",
+        ConditionExpression: EDITORIAL_BASIS_VERSION,
         ExpressionAttributeValues: { ":basisRevision": approval.revisionId, ":basisUpdated": updatedAt },
       },
     }];
@@ -467,7 +525,7 @@ export async function getEditorialReviewers(doc: EditorialDocument, observedCard
         `01_universities/${doc.content.universityId}/`
       );
     });
-  return sessionDirectory()
+  return (await staffDirectory())
     .filter(
       (account) =>
         account.id !== doc.ownerId &&
@@ -558,48 +616,50 @@ export async function createEditorial(
     actorName: user.name,
     createdAt: now,
   };
-  try {
-    await docClient.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_DOCUMENTS,
-              Item: doc,
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_REVISIONS,
-              Item: revision,
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_REVISIONS,
-              Item: {
-                id: doc.events[0].id,
-                documentId: id,
-                kind: "event",
-                event: doc.events[0],
-              },
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          ...normalized.basisGuards,
-        ],
-      })
-    );
-  } catch (error) {
-    if (normalized.basisGuards.length && error instanceof Error &&
-        error.name === "TransactionCanceledException" &&
-        (!(error instanceof TransactionCanceledException) || !error.CancellationReasons ||
-          error.CancellationReasons.slice(3).some(({ Code }) => Code === "ConditionalCheckFailed"))) {
-      throw new EditorialError("Опорная статья изменилась. Снова выберите блок.", 409);
+  const writes: NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]> = [
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_DOCUMENTS,
+        Item: doc,
+        ConditionExpression: NEW_EDITORIAL_ROW,
+      },
+    },
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_REVISIONS,
+        Item: revision,
+        ConditionExpression: NEW_EDITORIAL_ROW,
+      },
+    },
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_REVISIONS,
+        Item: {
+          id: doc.events[0].id,
+          documentId: id,
+          kind: "event",
+          event: doc.events[0],
+        },
+        ConditionExpression: NEW_EDITORIAL_ROW,
+      },
+    },
+    ...normalized.basisGuards,
+  ];
+  const storage = authorStorageWrites(user, writes, true);
+  const basisChanged = () => new EditorialError("Опорная статья изменилась. Снова выберите блок.", 409);
+  if (storage.length) {
+    await writeChargedEditorial(writes, storage, normalized.basisGuards.length ? basisChanged : () =>
+      new EditorialError("Не удалось создать черновик. Повторите попытку.", 409));
+  } else {
+    try {
+      await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
+    } catch (error) {
+      if (normalized.basisGuards.length && error instanceof Error &&
+          error.name === "TransactionCanceledException" &&
+          (!(error instanceof TransactionCanceledException) || !error.CancellationReasons ||
+            error.CancellationReasons.slice(3).some(({ Code }) => Code === "ConditionalCheckFailed"))) throw basisChanged();
+      throw error;
     }
-    throw error;
   }
   return doc;
 }
@@ -628,6 +688,10 @@ export async function mutateEditorial(
       const normalized = await normalizeSources(mutation.content, current.content);
       content = normalized.content;
       basisGuards = normalized.basisGuards;
+      if (user.role === "author" && isDeepStrictEqual(
+        { ...content, sourceCardTitles: undefined },
+        { ...current.content, sourceCardTitles: undefined },
+      )) return { document: current, publication: undefined };
     } else {
       const old = await getEditorialRevision(current, user, mutation.revisionId);
       content = old.content;
@@ -805,7 +869,7 @@ export async function mutateEditorial(
       Put: {
         TableName: TableName.EDITORIAL_DOCUMENTS,
         Item: head,
-        ConditionExpression: "#version = :version",
+        ConditionExpression: EDITORIAL_VERSION,
         ExpressionAttributeNames: { "#version": "version" },
         ExpressionAttributeValues: { ":version": current.version },
       },
@@ -821,7 +885,7 @@ export async function mutateEditorial(
         kind: "event",
         event: latestEvent,
       },
-      ConditionExpression: "attribute_not_exists(id)",
+      ConditionExpression: NEW_EDITORIAL_ROW,
     },
   });
   if (revision)
@@ -829,7 +893,7 @@ export async function mutateEditorial(
       Put: {
         TableName: TableName.EDITORIAL_REVISIONS,
         Item: revision,
-        ConditionExpression: "attribute_not_exists(id)",
+        ConditionExpression: NEW_EDITORIAL_ROW,
       },
     });
   if (publication) {
@@ -852,19 +916,24 @@ export async function mutateEditorial(
     basisGuards = basisGuards.filter(({ ConditionCheck }) => ConditionCheck.Key.id !== id);
   }
   writes.push(...basisGuards);
-  try {
-    await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
-  } catch (error) {
-    if (isEditorialWriteConflict(error))
-      throw new EditorialError(
-        publication
-          ? "Редакция или её источник изменились. Обновите материал и проверьте источники."
-          : basisGuards.length
-            ? "Черновик или опорная статья изменились. Обновите данные и проверьте опорные блоки."
-            : "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
-        409
-      );
-    throw error;
+  const storage = authorStorageWrites(user, writes);
+  const conflict = () => new EditorialError(
+    publication
+      ? "Редакция или её источник изменились. Обновите материал и проверьте источники."
+      : basisGuards.length
+        ? "Черновик или опорная статья изменились. Обновите данные и проверьте опорные блоки."
+        : "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
+    409
+  );
+  if (storage.length) {
+    await writeChargedEditorial(writes, storage, conflict);
+  } else {
+    try {
+      await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
+    } catch (error) {
+      if (isEditorialWriteConflict(error)) throw conflict();
+      throw error;
+    }
   }
   return { document: next, publication };
 }

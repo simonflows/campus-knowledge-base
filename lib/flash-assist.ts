@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getAnalyticsCriteria, type AnalyticsFilter } from "./analytics";
 import type { SessionUser } from "./auth";
-import { getSessionUser, verifySameOrigin } from "./auth-server";
+import { verifySameOrigin } from "./auth-server";
+import { readRouteSession } from "./account-route-session";
+import { consumeAiBudget } from "./ai-budget";
 import type { CardTypeDefinition } from "./knowledge";
 import { demoLoginEnabled } from "./pilot-auth";
 import { callYandexAiWithUsage, getYandexModelLabel, isYandexAiConfigured } from "./yandex-ai";
@@ -65,7 +67,9 @@ export async function authorizeFlashAssist(request: Request): Promise<string | N
   if (!verifySameOrigin(request)) {
     return NextResponse.json({ error: "Запрещён кросс-доменный запрос" }, { status: 403 });
   }
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const user = session.user;
   if (!user) {
     return NextResponse.json({ error: "Войдите в аккаунт для подсказок Flash" }, { status: 401 });
   }
@@ -113,6 +117,8 @@ export async function runLimitedAi<T>(
   activeAccounts.add(accountId);
   usage.active++;
   try {
+    const budget = await consumeAiBudget(accountId, "canon");
+    if (!budget.allowed) return { status: budget.reason === "quota" ? "busy" : "unavailable" };
     const timeout = Math.max(1, Math.min(184_000, options.timeoutMs ?? 20_000));
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeout)]);
     const value = await operation(signal);

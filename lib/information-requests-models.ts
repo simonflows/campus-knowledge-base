@@ -7,21 +7,23 @@ import {
   TransactWriteCommand,
   type ScanCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
-import { docClient } from "./db";
+import { docClient, getStorageMode } from "./db";
 import { TableName } from "./schema";
-import { canSeeCard, type SessionUser } from "./auth";
-import { sessionDirectory } from "./pilot-auth";
+import { canSeeCard, canUseStaffWorkflow, type SessionUser } from "./auth";
+import { staffDirectory } from "./account-directory";
 import { getKnowledgeCardById } from "./models";
 import {
   presentInformationRequest,
   canSeeInformationRequest,
   canAnswerInformationRequest,
+  informationRequestCardOwner,
   type InformationRequest,
   type createInformationRequestSchema,
   type updateInformationRequestSchema,
 } from "./information-requests";
 import type { z } from "zod";
-import { getApprovedVersion, type KnowledgeCard, type ProjectCard } from "./knowledge";
+import { folderIds, getApprovedVersion, getUniversityFullName, type KnowledgeCard, type ProjectCard } from "./knowledge";
+import { knowledgeSourceSchema } from "./validation/knowledge";
 export class RequestError extends Error {
   constructor(
     message: string,
@@ -32,13 +34,18 @@ export class RequestError extends Error {
 }
 const digest = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
-function requestAssignee(recipientUniversityId: string, id: string | null | undefined) {
+async function requireRequestStorage() {
+  if (await getStorageMode() !== "dynamodb")
+    throw new RequestError("Общая база временно недоступна", 503);
+}
+async function requestAssignee(recipientUniversityId: string, id: string | null | undefined) {
   if (!id) return { responsibleId: null, responsibleName: "" };
-  const person = sessionDirectory().find(person => person.id === id && person.universityId === recipientUniversityId && ["university_owner", "university_pr"].includes(person.role));
+  const person = (await staffDirectory()).find(person => person.id === id && person.universityId === recipientUniversityId && ["university_owner", "university_pr"].includes(person.role));
   if (!person) throw new RequestError("Выберите ответственного из вуза-получателя", 400);
   return { responsibleId: person.id, responsibleName: person.name };
 }
 export async function getInformationRequest(id: string) {
+  await requireRequestStorage();
   const result = await docClient.send(
     new GetCommand({
       TableName: TableName.INFORMATION_REQUESTS,
@@ -54,6 +61,7 @@ export async function presentRequestFor(user: SessionUser, item: InformationRequ
 }
 export async function countIncomingRequests(user: SessionUser) {
   if (!user.universityId || !["university_pr", "university_owner"].includes(user.role)) return 0;
+  await requireRequestStorage();
   let count = 0;
   let cursor: ScanCommandOutput["LastEvaluatedKey"];
   do {
@@ -70,6 +78,8 @@ export async function countIncomingRequests(user: SessionUser) {
 }
 
 export async function listInformationRequests(user: SessionUser) {
+  if (!canUseStaffWorkflow(user)) throw new RequestError("Запросы доступны сотрудникам", 403);
+  await requireRequestStorage();
   const items: InformationRequest[] = [];
   let cursor: Record<string, unknown> | undefined;
   do {
@@ -109,8 +119,8 @@ export async function createInformationRequest(
   user: SessionUser,
   input: z.infer<typeof createInformationRequestSchema>
 ) {
-  if (user.role === "guest")
-    throw new RequestError("Гостям недоступна отправка запросов", 403);
+  if (!canUseStaffWorkflow(user))
+    throw new RequestError("Отправка запросов доступна сотрудникам", 403);
   const id = digest([user.id, input.operationId]);
   const creationDigest = digest(input);
   const existing = await getInformationRequest(id);
@@ -145,7 +155,7 @@ export async function createInformationRequest(
     lastOperationId: null,
     lastOperationDigest: null,
     participantIds: [user.id],
-    ...requestAssignee(input.recipientUniversityId, input.responsibleId),
+    ...await requestAssignee(input.recipientUniversityId, input.responsibleId),
     dueDate: input.dueDate ?? null,
   };
   try {
@@ -168,6 +178,7 @@ export async function mutateInformationRequest(
   id: string,
   input: z.infer<typeof updateInformationRequestSchema>
 ) {
+  if (!canUseStaffWorkflow(user)) throw new RequestError("Запросы доступны сотрудникам", 403);
   const item = await getInformationRequest(id);
   if (!item || !canSeeInformationRequest(user, item))
     throw new RequestError("Запрос не найден", 404);
@@ -196,10 +207,8 @@ export async function mutateInformationRequest(
     else participants.delete(user.id);
     next.participantIds = [...participants];
   } else if (input.action === "assign") {
-    Object.assign(next, requestAssignee(item.recipientUniversityId, input.responsibleId), { dueDate: input.dueDate });
+    Object.assign(next, await requestAssignee(item.recipientUniversityId, input.responsibleId), { dueDate: input.dueDate });
   } else if (input.action === "answer") {
-    if (!canAnswerInformationRequest(user, item))
-      throw new RequestError("Отвечать может только вуз-получатель", 403);
     if (item.status !== "open")
       throw new RequestError("На этот запрос уже ответили", 409);
     Object.assign(next, {
@@ -211,23 +220,20 @@ export async function mutateInformationRequest(
   } else if (input.action === "submit") {
     if (item.status !== "answered" || !item.answer || !item.evidenceUrl)
       throw new RequestError("Сначала нужен ответ с источником", 409);
+    const source = knowledgeSourceSchema.safeParse({ title: "Источник из ответа", url: item.evidenceUrl });
+    if (!source.success)
+      throw new RequestError("Источник из ответа должен быть HTTPS-ссылкой без логина и пароля", 409);
     const cardId = `request-${id}`;
-    const recipients = sessionDirectory().filter(account =>
-      account.universityId === item.recipientUniversityId
-    );
-    const leads = recipients.filter(account => account.role === "university_owner");
-    const owner = leads.length === 1
-      ? leads[0]
-      : recipients.find(account => account.id === item.answeredBy &&
-          (account.role === "university_owner" || account.role === "university_pr"));
+    const owner = informationRequestCardOwner(item, await staffDirectory());
     const card: ProjectCard = {
       id: cardId,
       type: "project",
       title: item.subject,
-      folderId: `01_universities/${item.recipientUniversityId}/products`,
-      owners: [owner?.ownershipLabel ?? item.recipientUniversityId],
+      folderId: folderIds.subfolder(item.recipientUniversityId, "products"),
+      owners: [owner?.ownershipLabel ?? getUniversityFullName(item.recipientUniversityId)],
       ownerIds: owner ? [owner.id] : [],
-      referenceDescription: `${item.answer}\nИсточник: ${item.evidenceUrl}`,
+      referenceDescription: item.answer,
+      sources: [source.data],
       stopFormula:
         "Ответ на запрос: не использовать как утверждённый факт до проверки координатором.",
       status: "pending",

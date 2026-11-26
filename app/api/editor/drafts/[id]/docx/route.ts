@@ -1,12 +1,14 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 import { Document, Packer, Paragraph, HeadingLevel, TextRun, ExternalHyperlink } from "docx";
-import { getSessionUser } from "@/lib/auth-server";
 import { articleBasisLocation } from "@/lib/articles";
 import { getEditorialSourceVersions, getEditorialWithRevisions } from "@/lib/editorial-models";
 import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
 type Context = { params: Promise<{ id: string }> };
 export async function GET(request: NextRequest, context: Context) {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   try {

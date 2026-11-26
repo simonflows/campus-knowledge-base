@@ -207,12 +207,6 @@
   transform: scaleX(1);
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .desk-nav button:hover::after {
-    transform: scaleX(1);
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .desk-nav button::after {
     transition: none;
@@ -224,17 +218,23 @@
   font-weight: 650;
 }
 
-.desk-nav button:hover {
-  color: var(--desk-blue);
-}
 .desk-nav svg {
   width: 1rem;
   height: 1rem;
-  transition: transform 200ms var(--desk-ease);
 }
 
-.desk-nav button:hover svg {
-  transform: scale(1.1);
+@media (hover: hover) and (pointer: fine) {
+  .desk-nav button:hover {
+    color: var(--desk-blue);
+  }
+
+  .desk-nav button:hover::after {
+    transform: scaleX(1);
+  }
+}
+
+html[data-motion="off"] .desk-nav button::after {
+  transition: none;
 }
 
 .desk-disclosure {
@@ -515,9 +515,9 @@
   display: grid;
   gap: 0.65rem;
   padding: 1rem;
-  border-inline-start: 2px solid var(--desk-blue);
+  border: 1px solid var(--desk-line);
   background-color: var(--desk-soft);
-  border-radius: 0 8px 8px 0;
+  border-radius: 8px;
 }
 .desk-mail-status[data-status="approved"],
 .desk-mail-status[data-status="answered"] {
@@ -798,9 +798,9 @@
 .desk-history-event {
   display: grid;
   gap: 0.4rem;
-  border-inline-start: 2px solid var(--desk-blue);
+  border: 1px solid var(--desk-line);
   background: var(--desk-soft);
-  border-radius: 0 8px 8px 0;
+  border-radius: 8px;
   padding: 0.85rem 1rem;
   font-size: 0.86rem;
 }
@@ -895,12 +895,9 @@
   animation: enter 430ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-@media (hover: hover) and (pointer: fine) {
-  .campus-workspace [data-slot="button"]:not(:disabled):hover {
-    transform: translateY(-1px);
-  }
-  .campus-workspace [data-slot="button"]:not(:disabled):active {
-    transform: translateY(1px) scale(0.985);
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  html:not([data-motion="off"]) .campus-workspace [data-slot="button"]:not(:disabled):active {
+    transform: scale(0.985);
   }
 }
 

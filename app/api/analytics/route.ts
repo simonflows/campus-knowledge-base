@@ -7,7 +7,7 @@ import { analyticsQuerySchema } from "@/lib/validation/analytics";
 import { assistAnalytics, authorizeFlashAssist } from "@/lib/flash-assist";
 import { buildAnalyticsWithAi } from "@/lib/canon-analytics-ai";
 import { JsonBodyError, readBoundedJson } from "@/lib/http-json";
-import { getSessionUser } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
 
 async function loadAnalyticsSnapshot() {
   const [cards, types] = await Promise.all([getCanonicalKnowledgeCards(), getAllCardTypes()]);
@@ -15,7 +15,9 @@ async function loadAnalyticsSnapshot() {
 }
 
 export async function POST(request: NextRequest) {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const user = session.user;
   if (!user) return NextResponse.json({ error: "Для аналитики войдите в аккаунт сотрудника. Локальные примеры доступны в демо." }, { status: 401 });
   if (user.role === "guest") return NextResponse.json({ error: "Гостевой доступ позволяет читать карточки и проверять текст. Аналитика доступна сотрудникам." }, { status: 403 });
   let body: unknown;

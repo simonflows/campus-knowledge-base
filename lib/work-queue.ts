@@ -1,4 +1,4 @@
-import { canConfirmJointParticipation, canConfirmStakeholderApproval, canEditCard, canManageEditRequests, canSeeCard, type SessionUser } from "./auth";
+import { canConfirmJointParticipation, canConfirmStakeholderApproval, canEditCard, canManageEditRequests, canSeeCard, canUseStaffWorkflow, type SessionUser } from "./auth";
 import { universities } from "./data";
 import { canReadEditorial, type EditorialDocument } from "./editorial";
 import { canAnswerInformationRequest, canSeeInformationRequest, type InformationRequest } from "./information-requests";
@@ -12,7 +12,7 @@ export type QueueReadiness = { changedSources: { cardId: string; usedVersionId: 
 export type WorkQueueInput = { cards: KnowledgeCard[]; documents: EditorialDocument[]; requests: InformationRequest[]; workflows: WorkflowRecord[]; readiness: Record<string, QueueReadiness>; now?: string };
 export type UniversityCoverage = { universityId: string; name: string; cards: number; gaps: { cardId: string | null; title: string; reason: string }[] };
 export function buildWorkQueue(user: SessionUser, data: WorkQueueInput): WorkItem[] {
-  if (user.role === "guest") return [];
+  if (!canUseStaffWorkflow(user)) return [];
   const now = data.now ?? new Date();
   const items: WorkItem[] = [];
   const add = (item: WorkItem) => items.push(item);

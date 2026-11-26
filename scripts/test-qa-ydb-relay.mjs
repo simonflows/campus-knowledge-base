@@ -34,7 +34,7 @@ test("an explicit mode and valid isolated prefix are required", () => {
   );
 });
 
-test("ListTables lists the eight original aliases and performs no backend calls", async () => {
+test("ListTables lists the current project aliases and performs no backend calls", async () => {
   const fail = () => assert.fail("ListTables must stay on the frontend");
   const result = await relayDynamoRequest(
     scope,
@@ -44,7 +44,19 @@ test("ListTables lists the eight original aliases and performs no backend calls"
   );
   const aliases = [...TABLE_NAMES].sort();
   assert.equal(result.status, 200);
-  assert.equal(aliases.length, 8);
+  assert.deepEqual(aliases, [
+    "account-identities",
+    "account-rate-limits",
+    "account-sessions",
+    "editorial-documents",
+    "editorial-revisions",
+    "information-requests",
+    "knowledge-articles",
+    "knowledge-card-types",
+    "knowledge-card-versions",
+    "knowledge-cards",
+    "workflow-records",
+  ]);
   assert.deepEqual(result.body.TableNames, aliases);
   for (const name of aliases) {
     assert.equal(scope.qualify(name), prefix + name);

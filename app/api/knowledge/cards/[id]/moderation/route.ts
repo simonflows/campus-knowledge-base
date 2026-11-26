@@ -1,10 +1,11 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
   canConfirmJointParticipation, canConfirmStakeholderApproval, canModerate,
   canReviewJointParticipation, canReviewStakeholderScope, missingJointOwnerUniversityIds, visibleKnowledgeCard,
 } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
@@ -15,7 +16,7 @@ import {
   getRequiredUniversityApprovals,
 } from "@/lib/knowledge";
 import { getCardVersionId } from "@/lib/knowledge-versions";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import { moderationActionSchema } from "@/lib/validation/access";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 
@@ -34,7 +35,9 @@ async function handlePost(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
@@ -128,7 +131,8 @@ async function handlePost(request: NextRequest, context: RouteContext) {
   }
 
   if (action === "approve") {
-    const directory = sessionDirectory();
+    const directory = await staffDirectory().catch(() => null);
+    if (!directory) return unavailableStorageResponse();
     const missingOwnerUniversityIds = missingJointOwnerUniversityIds(card, directory);
     const missingUniversityIds = getRequiredUniversityApprovals(card)
       .filter(universityId => card.participantApprovalRecords?.[universityId]?.revisionId !== revisionId);

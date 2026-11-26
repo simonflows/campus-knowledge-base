@@ -6,6 +6,11 @@
   --atlas-paper: #f5f4ef;
   --cover-margin: clamp(8px, 1.2vw, 20px);
   --cover-ink: #13202b;
+  --m-press: 120ms;
+  --m-in: 180ms;
+  --m-slide: 260ms;
+  --m-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  --m-ease-io: cubic-bezier(0.77, 0, 0.175, 1);
 }
 .atlas-wrap {
   width: min(100%, 80rem);
@@ -22,6 +27,11 @@
   border-radius: 12px;
   background: var(--cover-ink);
   color: #f3f2f0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not([data-motion="off"]) .atlas-header {
+    transition: border-radius var(--m-in) var(--m-ease), box-shadow var(--m-in) var(--m-ease);
+  }
 }
 .atlas-header-row {
   display: flex;
@@ -336,9 +346,12 @@ body:has(.atlas-hero) :is(.atlas-mode, .atlas-hero) {
   width: calc(100% - 2 * var(--cover-margin));
   margin-inline: auto;
 }
-body:has(.atlas-hero) .atlas-header {
-  border-bottom: 0;
+body:has(.atlas-hero) .atlas-header:not([data-detached]) {
+  border-bottom-color: var(--cover-ink);
   border-radius: 12px 12px 0 0;
+}
+body:has(.atlas-hero) .atlas-header[data-detached] {
+  box-shadow: 0 6px 16px #13202b29;
 }
 body:has(.atlas-hero) .atlas-mode {
   background: #1a2935;

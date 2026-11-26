@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, verifySameOrigin } from "./auth-server";
 import { WorkflowError } from "./workflow";
+import { canUseStaffWorkflow } from "./auth";
 
 export async function workflowUser(request?: Request) {
   if (request && !verifySameOrigin(request)) throw new WorkflowError("Недопустимый источник запроса", 403);
   const user = await getSessionUser();
   if (!user) throw new WorkflowError("Войдите в аккаунт", 401);
-  if (user.role === "guest") throw new WorkflowError("Эта работа доступна сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Эта работа доступна сотрудникам", 403);
   return user;
 }
 export function workflowJson(value: unknown, status = 200) {

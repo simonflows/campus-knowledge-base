@@ -6,7 +6,7 @@ import Link from "next/link";
 import { KnowledgeBase } from "@/components/knowledge/knowledge-base";
 import { visibleKnowledgeCards } from "@/lib/auth";
 import { getSessionUser } from "@/lib/auth-server";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import { getReadableStorageMode } from "@/lib/runtime-storage-policy";
 import { StorageUnavailable } from "@/components/storage-unavailable";
 import {
@@ -69,7 +69,7 @@ export default async function KnowledgePage({
 
   const approvedOnly = params.version === "approved";
   const ownerCandidates = !approvedOnly && user?.role === "admin"
-    ? sessionDirectory()
+    ? (await staffDirectory())
       .filter(({ role }) => ["university_owner", "rio", "chkk"].includes(role))
       .map(({ id, role, universityId, ownershipLabel }) => ({ id, role, universityId, ownershipLabel }))
     : [];

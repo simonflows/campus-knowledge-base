@@ -289,27 +289,46 @@ export const knowledgeCardInputSchema = z
         });
       }
     }
-    if (card.type === "project" && !card.isJoint && !card.initiatorUniversityId && card.organizationScope !== "rio") {
+    if (card.type !== "project") return;
+    const participants = new Set(card.participantUniversityIds);
+    if (participants.size !== card.participantUniversityIds.length) {
       ctx.addIssue({
         code: "custom",
-        path: ["initiatorUniversityId"],
-        message: "Для проекта одного вуза укажите вуз-инициатор",
+        path: ["participantUniversityIds"],
+        message: "Вуз не должен повторяться в списке участников",
       });
     }
+
+    if (!card.isJoint) {
+      if (!card.initiatorUniversityId && card.organizationScope !== "rio") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["initiatorUniversityId"],
+          message: "Для проекта одного вуза укажите вуз-инициатор",
+        });
+      }
+      if (card.participantUniversityIds.some(id => id !== card.initiatorUniversityId)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["participantUniversityIds"],
+          message: "Чтобы указать другой вуз-участник, отметьте проект как совместный",
+        });
+      }
+      if (card.externalParticipantNames?.length) {
+        ctx.addIssue({ code: "custom", path: ["isJoint"], message: "Проект с внешним соавтором отмечается как совместный" });
+      }
+      return;
+    }
+
     if (
-      card.type === "project" &&
-      card.isJoint &&
-      ((new Set(card.participantUniversityIds).size < 2 && !(card.participantUniversityIds.length >= 1 && card.externalParticipantNames?.length)) ||
-        (card.initiatorUniversityId && !card.participantUniversityIds.includes(card.initiatorUniversityId)))
+      (participants.size < 2 && !(participants.size >= 1 && card.externalParticipantNames?.length)) ||
+      (card.initiatorUniversityId && !participants.has(card.initiatorUniversityId))
     ) {
       ctx.addIssue({
         code: "custom",
         path: ["participantUniversityIds"],
         message: "Укажите двух участников: вузы-резиденты либо вуз-резидент и внешняя организация. Если инициатор известен, включите его в список.",
       });
-    }
-    if (card.type === "project" && card.externalParticipantNames?.length && !card.isJoint) {
-      ctx.addIssue({ code: "custom", path: ["isJoint"], message: "Проект с внешним соавтором отмечается как совместный" });
     }
   });
 

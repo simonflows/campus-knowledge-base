@@ -121,9 +121,9 @@ async function main() {
     ...schema,
     name: prefix + schema.name,
   }));
-  assert.equal(schemas.length, 8);
+  assert.equal(schemas.length, 11);
   const allowed = new Set<string>(schemas.map((schema) => schema.name));
-  assert.equal(allowed.size, 8);
+  assert.equal(allowed.size, 11);
   assert.throws(
     () =>
       checkTableOperation(

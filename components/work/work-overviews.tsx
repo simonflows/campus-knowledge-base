@@ -23,7 +23,7 @@ export function WorkQueue({ data }: { data: WorkData }) {
   const hasFilters = Object.values(filters).some((value) => value !== "all");
 
   return (
-    <section className="desk-panel" aria-labelledby="work-queue-title">
+    <section className="workspace-result desk-panel" aria-labelledby="work-queue-title">
       <header className={styles.panelHeading}>
         <div>
           <h2 id="work-queue-title">Очередь задач</h2>
@@ -102,7 +102,7 @@ export function CoverageOverview({ rows }: { rows: NonNullable<WorkData["coverag
     .filter((row) => !normalized || row.gaps.length > 0);
 
   return (
-    <section className="desk-panel" aria-labelledby="work-coverage-title">
+    <section className="workspace-result desk-panel" aria-labelledby="work-coverage-title">
       <header className={styles.panelHeading}>
         <div><h2 id="work-coverage-title">Полнота данных вузов</h2><p className={styles.muted}>Каких карточек и сведений не хватает для работы.</p></div>
       </header>

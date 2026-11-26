@@ -1,12 +1,13 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import { canManageEditRequests, canRequestEdit, cardRequestOwners, roleLabels, visibleKnowledgeCard } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
 import type { CardEditRequest, KnowledgeCard } from "@/lib/knowledge";
 import { getKnowledgeCardById, setKnowledgeCardModeration } from "@/lib/models";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   editRequestCreateSchema,
@@ -47,13 +48,19 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
       { error: "Войдите под демонстрационным аккаунтом" },
       { status: 401 }
     );
+  }
+
+  if (user.role === "author") {
+    return NextResponse.json({ error: "Запросы на правку доступны сотрудникам" }, { status: 403 });
   }
 
   const { id } = await context.params;
@@ -103,6 +110,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
   }
 
+  const directory = await staffDirectory().catch(() => null);
+  if (!directory) return unavailableStorageResponse();
   const editRequest: CardEditRequest = {
     id: crypto.randomUUID(),
     authorId: user.id,
@@ -112,7 +121,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     message: parsed.data.message,
     createdAt: new Date().toISOString(),
     status: "open",
-    recipient: cardRequestOwners(card, sessionDirectory()).length ? "owner" : "coordinator",
+    recipient: cardRequestOwners(card, directory).length ? "owner" : "coordinator",
   };
 
   return saveRequests(card, [...(card.editRequests ?? []), editRequest], user, 201, editRequest.recipient);
@@ -129,13 +138,19 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
       { error: "Войдите под демонстрационным аккаунтом" },
       { status: 401 }
     );
+  }
+
+  if (user.role === "author") {
+    return NextResponse.json({ error: "Запросы на правку доступны сотрудникам" }, { status: 403 });
   }
 
   const { id } = await context.params;

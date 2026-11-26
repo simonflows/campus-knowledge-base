@@ -1,9 +1,13 @@
 import { isIP } from "node:net";
 import crypto from "node:crypto";
 import { cookies } from "next/headers";
+import { cache } from "react";
 
 import type { SessionUser } from "./auth";
 import { demoLoginEnabled, getSessionIdentity } from "./pilot-auth";
+import { enabledAccountProviders } from "./account-directory";
+import { accountService } from "./account-server";
+import { AccountError } from "./account-service";
 
 export const SESSION_COOKIE = "__Host-vibecraft-session";
 export const SESSION_LIFETIME_SECONDS = 8 * 60 * 60;
@@ -154,8 +158,37 @@ export function verifyAdminPin(pin: string | undefined): boolean {
   return crypto.timingSafeEqual(a, b);
 }
 
-export async function getSessionUser(): Promise<SessionUser | null> {
-  const store = await cookies();
-  const id = verifySessionToken(store.get(SESSION_COOKIE)?.value);
+export function signAccountSessionToken(token: string) {
+  const signature = computeSignature(token, "email-account-session");
+  if (!signature) throw new AccountError("Вход по электронной почте временно недоступен.", 503);
+  return token + "." + signature;
+}
+
+function verifiedAccountToken(token: string | undefined) {
+  const match = /^(v3\.[A-Za-z0-9_-]{43})\.([0-9a-f]{64})$/.exec(token ?? "");
+  if (!match) return null;
+  const [, payload, signature] = match;
+  const expected = computeSignature(payload, "email-account-session");
+  if (!expected || !crypto.timingSafeEqual(Buffer.from(signature, "hex"), Buffer.from(expected, "hex"))) return null;
+  return payload;
+}
+
+export async function revokeAccountSession(cookie: string | undefined) {
+  const token = verifiedAccountToken(cookie);
+  if (token) await accountService.logout(token);
+}
+
+export async function resolveSessionUserFromToken(cookie: string | undefined): Promise<SessionUser | null> {
+  const accountToken = verifiedAccountToken(cookie);
+  if (accountToken) {
+    const providers = enabledAccountProviders();
+    return providers.length ? accountService.resolveSession(accountToken, providers) : null;
+  }
+  const id = verifySessionToken(cookie);
   return id ? getSessionIdentity(id)?.user ?? null : null;
 }
+
+export const getSessionUser = cache(async function getSessionUser() {
+  const store = await cookies();
+  return resolveSessionUserFromToken(store.get(SESSION_COOKIE)?.value);
+});
