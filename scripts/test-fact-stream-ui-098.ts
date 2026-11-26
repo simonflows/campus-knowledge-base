@@ -52,7 +52,7 @@ export async function runFactStreamUiChecks(page: Page, base: string) {
     name: "Проверить текст",
     exact: true,
   });
-  const progress = page.getByRole("status").filter({ hasText: /Этап 1\/2/ });
+  const progress = page.getByRole("status").filter({ hasText: /Этап 1 из 2/ });
   const coverage = page.getByRole("region", {
     name: "Охват проверки",
     exact: true,
