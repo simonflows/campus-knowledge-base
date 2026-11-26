@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import {
+  DescribeTableCommand,
   DescribeTimeToLiveCommand,
   DynamoDBClient,
   TransactionCanceledException,
@@ -51,7 +52,7 @@ async function verifyTtl(client: DynamoDBClient) {
   }
 }
 
-async function verifyRateTransaction(id: string, now: number) {
+async function verifyRateTransaction(context: TestContext, id: string, now: number) {
   const sealed = { id: `${id}:sealed`, limit: 1, expiresAt: now + 3600 };
   const other = { id: `${id}:other`, limit: 3, expiresAt: now + 3600 };
   const table = TableName.ACCOUNT_RATE_LIMITS;
@@ -63,8 +64,13 @@ async function verifyRateTransaction(id: string, now: number) {
     { Put: { TableName: table, Item: { ...other, attempts: 1 }, ConditionExpression: "attribute_not_exists(id)" } },
   ] }), { abortSignal: AbortSignal.timeout(15_000) }), reason => {
     assert.ok(reason instanceof TransactionCanceledException);
-    assert.equal(reason.CancellationReasons?.[0]?.Code, "ConditionalCheckFailed");
-    assert.equal(reason.CancellationReasons?.[1]?.Code, "None");
+    if (reason.CancellationReasons?.length) {
+      assert.equal(reason.CancellationReasons[0]?.Code, "ConditionalCheckFailed");
+      assert.equal(reason.CancellationReasons[1]?.Code, "None");
+      context.diagnostic("Document API included positional CancellationReasons");
+    } else {
+      context.diagnostic("Document API omitted positional CancellationReasons");
+    }
     return true;
   });
   assert.equal(await dynamoAccountStore.consumeRate([sealed, other]), false);
@@ -118,7 +124,7 @@ async function verifyOAuth(id: string, now: number) {
   const author = await second.loginYandex({ subject: `${id}-author`, name: "Автор черновика QA" });
   const active = await first.resolveSession(author.token, ["yandex"]);
   assert.ok(active && active.role === "author");
-  return { user: active, sessionId: hash(author.token) };
+  return active;
 }
 
 async function verifyAuthorStorage(user: SessionUser) {
@@ -159,7 +165,6 @@ async function verifyAuthorStorage(user: SessionUser) {
   assert.equal(preserved.revisions.length, afterEdit.revisions.length);
   assert.equal((await readRow(table, storageSiteKey))?.bytes, siteBudget?.bytes);
   assert.equal((await readRow(table, key))?.bytes, 4 * 1024 * 1024);
-  return key;
 }
 
 async function verifyArchive(client: DynamoDBClient, endpoint: string, id: string, now: number, sessionId: string, storageKey: string) {
@@ -167,6 +172,9 @@ async function verifyArchive(client: DynamoDBClient, endpoint: string, id: strin
   const cutoff = now + 3600;
   const timestamp = new Date(cutoff * 1000);
   const baseline = await captureDatabase({ client, endpoint, timestamp });
+  const originalCounter = await readRow(TableName.ACCOUNT_RATE_LIMITS, storageKey);
+  assert.ok(typeof originalCounter?.bytes === "number" && originalCounter.bytes > 0);
+  assert.equal(originalCounter.expiresAt, undefined);
   const activeSession = await readRow(TableName.ACCOUNT_SESSIONS, sessionId);
   assert.ok(activeSession && activeSession.expiresAt > cutoff);
   const expiredSession = hash(id + ":expired-session");
@@ -178,7 +186,14 @@ async function verifyArchive(client: DynamoDBClient, endpoint: string, id: strin
   await putNew(TableName.ACCOUNT_RATE_LIMITS, { id: expiredRate, attempts: 1, expiresAt: cutoff - 1 });
   await putNew(TableName.ACCOUNT_RATE_LIMITS, { id: cutoffRate, attempts: 1, expiresAt: cutoff });
   await putNew(TableName.ACCOUNT_RATE_LIMITS, { id: activeRate, attempts: 1, expiresAt: cutoff + 1 });
-  await putNew(TableName.ACCOUNT_RATE_LIMITS, { id: malformedRate, attempts: 1, expiresAt: String(cutoff - 1) });
+  const { Table: rates } = await client.send(new DescribeTableCommand({ TableName: TableName.ACCOUNT_RATE_LIMITS }), {
+    abortSignal: AbortSignal.timeout(15_000),
+  });
+  // YDB exposes its TTL column as a typed attribute; DynamoDB Local keeps the field schemaless.
+  const typedTtl = Boolean(rates?.AttributeDefinitions?.some(attribute => attribute.AttributeName === "expiresAt" && attribute.AttributeType === "N"));
+  const insertMalformed = () => putNew(TableName.ACCOUNT_RATE_LIMITS, { id: malformedRate, attempts: 1, expiresAt: String(cutoff - 1) });
+  if (typedTtl) await assert.rejects(insertMalformed(), { name: "ValidationException" });
+  else await insertMalformed();
 
   const archive = verifyDatabaseArchive(await captureDatabase({ client, endpoint, timestamp }));
   assert.equal(archive.createdAt, timestamp.toISOString());
@@ -195,7 +210,7 @@ async function verifyArchive(client: DynamoDBClient, endpoint: string, id: strin
   assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, expiredRate), false);
   assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, cutoffRate), false);
   assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, activeRate), true);
-  assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, malformedRate), true);
+  assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, malformedRate), !typedTtl);
   assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, storageKey), true);
   assert.equal(includes(TableName.ACCOUNT_RATE_LIMITS, storageSiteKey), true);
   assert.equal((await readRow(TableName.ACCOUNT_SESSIONS, expiredSession))?.expiresAt, cutoff - 1);
@@ -207,9 +222,9 @@ async function verifyArchive(client: DynamoDBClient, endpoint: string, id: strin
   assert.ok(!await readRow(prefix + TableName.ACCOUNT_SESSIONS, expiredSession));
   assert.ok(!await readRow(prefix + TableName.ACCOUNT_RATE_LIMITS, expiredRate));
   assert.equal((await readRow(prefix + TableName.ACCOUNT_RATE_LIMITS, activeRate))?.expiresAt, cutoff + 1);
-  assert.equal((await readRow(prefix + TableName.ACCOUNT_RATE_LIMITS, malformedRate))?.expiresAt, String(cutoff - 1));
+  assert.equal((await readRow(prefix + TableName.ACCOUNT_RATE_LIMITS, malformedRate))?.expiresAt, typedTtl ? undefined : String(cutoff - 1));
   const permanent = await readRow(prefix + TableName.ACCOUNT_RATE_LIMITS, storageKey);
-  assert.equal(permanent?.bytes, 4 * 1024 * 1024);
+  assert.equal(permanent?.bytes, originalCounter.bytes);
   assert.equal(permanent?.expiresAt, undefined);
 }
 
@@ -217,8 +232,7 @@ const skip = process.env.CAMPUS_QA_DISPOSABLE !== "yes" || !process.env.CAMPUS_Q
   ? "Requires an isolated database with CAMPUS_QA_DISPOSABLE=yes and CAMPUS_QA_MARKER"
   : false;
 
-// Run after the other fixture writers stop, so both snapshots have a stable source.
-test("a marked Document API integrates OAuth, atomic storage limits, and account archive restore", { skip }, async context => {
+async function markedFixture(context: TestContext) {
   await requireFixtureDatabase();
   assert.notEqual(process.env.CAMPUS_LOCAL_DEMO, "true", "Use the disposable DynamoDB fixture for this test");
   assert.notEqual(process.env.OUTPUT_MODE, "export", "Use the disposable DynamoDB fixture for this test");
@@ -229,9 +243,26 @@ test("a marked Document API integrates OAuth, atomic storage limits, and account
   context.after(() => client.destroy());
   const id = `qa-account100-${randomUUID()}`;
   const now = Math.floor(Date.now() / 1000);
+  return { client, endpoint, id, now };
+}
+
+test("a marked Document API applies TTL and recovers conditional transaction outcomes", { skip }, async context => {
+  const { client, id, now } = await markedFixture(context);
   await verifyTtl(client);
-  await verifyRateTransaction(id, now);
+  await verifyRateTransaction(context, id, now);
+});
+
+test("a marked Document API integrates OAuth and atomic author storage limits", { skip }, async context => {
+  const { id, now } = await markedFixture(context);
   const author = await verifyOAuth(id, now);
-  const storageKey = await verifyAuthorStorage(author.user);
-  await verifyArchive(client, endpoint, id, now, author.sessionId, storageKey);
+  await verifyAuthorStorage(author);
+});
+
+// Run after the other fixture writers stop, so both snapshots have a stable source.
+test("a marked Document API snapshots and restores all eleven tables in an isolated prefix", { skip }, async context => {
+  const { client, endpoint, id, now } = await markedFixture(context);
+  const account = createAccountService(dynamoAccountStore, () => now, async () => assert.fail("This fixture does not send email"));
+  const author = await account.loginYandex({ subject: `${id}-archive`, name: "Автор для проверки архива QA" });
+  await createEditorial(author.user, createEditorialSchema.parse({ content: { title: "Черновик для проверки архива" } }));
+  await verifyArchive(client, endpoint, id, now, hash(author.token), `storage:author:user:${author.user.id}`);
 });

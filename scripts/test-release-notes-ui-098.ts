@@ -16,7 +16,11 @@ export async function runReleaseNotesUiChecks(page: Page, base: string) {
     exact: true,
   });
   await dialog.waitFor();
-  assert.equal(await dialog.getByRole("listitem").count(), 4);
+  assert.equal(await dialog.getByRole("listitem").count(), 5);
+  const notes = await dialog.innerText();
+  for (const feature of ["Вход через Яндекс", "Фильтры", "поиск в интернете", "учебных текстах", "уменьшения движения"]) {
+    assert.ok(notes.includes(feature), `The 1.0.0 notes must describe: ${feature}`);
+  }
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth > innerWidth

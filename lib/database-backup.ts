@@ -189,7 +189,7 @@ function expectedSchema(name: TableName) {
   }));
 }
 
-function observedSchema(table: TableDescription | undefined) {
+function observedSchema(table: TableDescription | undefined, name: TableName) {
   if (
     table?.TableStatus !== "ACTIVE" ||
     table.LocalSecondaryIndexes?.length ||
@@ -207,7 +207,17 @@ function observedSchema(table: TableDescription | undefined) {
     })),
   });
   if (!parsed.success) throw new DatabaseBackupError("source-schema");
-  return canonicalSchema(parsed.data);
+  const shape = parsed.data;
+  const ttl = TABLE_SCHEMAS[name].ttlAttribute;
+  if (ttl) {
+    const definitions = shape.attributes.filter(attribute => attribute.AttributeName === ttl);
+    const keys = [...shape.keys, ...shape.indexes.flatMap(index => index.KeySchema)];
+    // YDB lists the numeric TTL column even though it is not part of CreateTable.
+    if (definitions.length === 1 && definitions[0].AttributeType === "N" && !keys.some(key => key.AttributeName === ttl)) {
+      shape.attributes = shape.attributes.filter(attribute => attribute.AttributeName !== ttl);
+    }
+  }
+  return canonicalSchema(shape);
 }
 
 function invalid(): never {
@@ -424,7 +434,7 @@ export async function captureDatabase({
       }
     }
     for (const name of tableNames(scope)) {
-      const schema = observedSchema(await describe(client, name));
+      const schema = observedSchema(await describe(client, name), name);
       if (checksum(schema) !== checksum(expectedSchema(name))) {
         throw new DatabaseBackupError("source-schema");
       }
@@ -519,7 +529,7 @@ export async function restoreDatabase({
   try {
     const budget = { rows: 0, bytes: 0 };
     for (const { table, name } of tables) {
-      const schema = observedSchema(await describe(client, name));
+      const schema = observedSchema(await describe(client, name), table.name);
       const items = await scan(client, name, budget);
       const measured = { name: table.name, schema, count: items.length, items };
       if (checksum(measured) !== table.sha256) throw new DatabaseBackupError("target-verification");

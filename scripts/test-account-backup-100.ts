@@ -10,6 +10,7 @@ import {
   ScanCommand,
   type AttributeValue,
   type ScanCommandInput,
+  type TableDescription,
 } from "@aws-sdk/client-dynamodb";
 import { captureDatabase, restoreDatabase, verifyDatabaseArchive } from "../lib/database-backup";
 import { TABLE_NAMES, TableName } from "../lib/schema";
@@ -39,6 +40,7 @@ function fixture(context: TestContext) {
     { id: { S: "malformed-string" }, expiresAt: { S: String(cutoff - 1) } },
   ]);
   const scans: ScanCommandInput[] = [];
+  const descriptions = new Map<string, Partial<TableDescription>>();
   const controls = { onScan: () => {}, repeatFilteredCursor: false };
 
   context.mock.method(client, "send", async (command: unknown) => {
@@ -49,6 +51,7 @@ function fixture(context: TestContext) {
       return { Table: {
         TableName: name, TableStatus: "ACTIVE",
         KeySchema: [{ AttributeName: "id", KeyType: "HASH" }], AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+        ...descriptions.get(name),
       } };
     }
     if (command instanceof ScanCommand) {
@@ -87,7 +90,7 @@ function fixture(context: TestContext) {
     }
     return assert.fail("Unexpected synthetic backup operation");
   });
-  return { client, data, scans, controls };
+  return { client, data, scans, controls, descriptions };
 }
 
 test("the snapshot omits only expired numeric TTL rows and freezes its cutoff across pages", async context => {
@@ -120,6 +123,41 @@ test("restore writes and verifies exactly the captured rows in an isolated names
   }
   for (const name of TABLE_NAMES.filter(name => !ttlTables.some(ttlTable => ttlTable === name))) {
     assert.deepEqual(db.data.get(targetPrefix + name), db.data.get(name));
+  }
+});
+
+test("a YDB numeric TTL metadata column preserves the archive's id-only creation schema", async context => {
+  const db = fixture(context);
+  for (const name of ttlTables) db.descriptions.set(name, {
+    AttributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }, { AttributeName: "expiresAt", AttributeType: "N" }],
+  });
+  const archive = await captureDatabase({ client: db.client, endpoint, timestamp: new Date(createdAt) });
+  for (const table of archive.tables) assert.deepEqual(table.schema.attributes, [{ AttributeName: "id", AttributeType: "S" }], table.name);
+  assert.equal((await restoreDatabase({ client: db.client, endpoint, target: { prefix: targetPrefix }, archive })).sha256, archive.sha256);
+});
+
+test("backup still rejects mismatched TTL types, extra attributes and a TTL key", async context => {
+  const db = fixture(context);
+  const ttl = { AttributeName: "expiresAt", AttributeType: "N" } as const;
+  const id = { AttributeName: "id", AttributeType: "S" } as const;
+  const incompatible: Array<[TableName, Partial<TableDescription>]> = [
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [id, { AttributeName: "expiresAt", AttributeType: "S" }] }],
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [id, { AttributeName: "otherTtl", AttributeType: "N" }] }],
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [id, ttl, ttl] }],
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [{ AttributeName: "id", AttributeType: "N" }, ttl] }],
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [id, ttl], KeySchema: [
+      { AttributeName: "id", KeyType: "HASH" }, { AttributeName: "expiresAt", KeyType: "RANGE" },
+    ] }],
+    [TableName.ACCOUNT_RATE_LIMITS, { AttributeDefinitions: [id, ttl], GlobalSecondaryIndexes: [{
+      IndexName: "unexpected-ttl-index", KeySchema: [{ AttributeName: "expiresAt", KeyType: "HASH" }],
+      Projection: { ProjectionType: "ALL" },
+    }] }],
+    [TableName.ACCOUNT_IDENTITIES, { AttributeDefinitions: [id, ttl] }],
+  ];
+  for (const [name, description] of incompatible) {
+    db.descriptions.set(name, description);
+    await assert.rejects(captureDatabase({ client: db.client, endpoint, timestamp: new Date(createdAt) }), { code: "source-schema" });
+    db.descriptions.delete(name);
   }
 });
 

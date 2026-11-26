@@ -24,4 +24,3 @@ test("an author cannot file a card edit request for a public card", () => {
 test("an author cannot act as card owner even when added to a legacy ownership field", () => {
   assert.equal(isCardOwner(author, ["Внешний автор"], [author.id]), false);
 });
-

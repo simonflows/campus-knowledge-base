@@ -3,6 +3,7 @@ import { z } from "zod";
 import { docClient } from "./db";
 import { TableName } from "./schema";
 import { accountUser, type AccountIdentity, type AccountProvider, type AccountRateBucket, type AccountSession, type AccountStore } from "./account-service";
+import { conditionalTransactionCancellation } from "./account-transaction";
 import { staffGrantSchema } from "./account-validation";
 
 const proofSchema = z.object({ digest: z.string().regex(/^[0-9a-f]{64}$/), expiresAt: z.number(), sentAt: z.number() });
@@ -52,18 +53,42 @@ function rateUpdate({ id, limit, expiresAt }: AccountRateBucket) {
   };
 }
 
-async function writeConditionally(input: TransactWriteCommandInput) {
+async function rateLimitReached({ id, limit }: AccountRateBucket) {
+  const { Item } = await docClient.send(new GetCommand({
+    TableName: TableName.ACCOUNT_RATE_LIMITS,
+    Key: { id },
+    ConsistentRead: true,
+    ProjectionExpression: "#attempts",
+    ExpressionAttributeNames: { "#attempts": "attempts" },
+  }), timeout());
+  if (Item?.attempts === undefined) return false;
+  if (typeof Item.attempts !== "number") throw new Error("Invalid account rate counter");
+  return Item.attempts >= limit;
+}
+
+async function identityChanged(id: string, previousRevision: number | null) {
+  const { Item } = await docClient.send(new GetCommand({
+    TableName: TableName.ACCOUNT_IDENTITIES,
+    Key: { id },
+    ConsistentRead: true,
+    ProjectionExpression: "id, #revision",
+    ExpressionAttributeNames: { "#revision": "revision" },
+  }), timeout());
+  return previousRevision == null ? Item !== undefined : Item?.revision !== previousRevision;
+}
+
+async function writeConditionally(input: TransactWriteCommandInput, failedCondition: () => Promise<boolean>) {
   for (let attempt = 0; ; attempt++) {
     try {
       await docClient.send(new TransactWriteCommand(input), timeout());
       return true;
     } catch (error) {
-      if (!(error instanceof Error) || error.name !== "TransactionCanceledException" ||
-        !("CancellationReasons" in error) || !Array.isArray(error.CancellationReasons)) throw error;
-      const codes = error.CancellationReasons.map(reason => reason.Code);
-      if (codes.includes("ConditionalCheckFailed")) return false;
-      // A documented cancellation cannot have committed any item.
-      if (attempt > 0 || !codes.includes("TransactionConflict")) throw error;
+      const cancellation = conditionalTransactionCancellation(error);
+      if (!cancellation) throw error;
+      if (cancellation.kind === "condition" ||
+        (cancellation.kind === "unknown" && await failedCondition())) return false;
+      // A canceled transaction has rolled back. Only a successful write can reserve a slot.
+      if (attempt > 0) throw error;
     }
   }
 }
@@ -109,7 +134,8 @@ export const dynamoAccountStore: AccountStore = {
         ExpressionAttributeValues: { ":revision": previousRevision },
       }),
     };
-    if (mailBudget) return writeConditionally({ TransactItems: [{ Put: put }, rateUpdate(mailBudget)] });
+    if (mailBudget) return writeConditionally({ TransactItems: [{ Put: put }, rateUpdate(mailBudget)] }, async () =>
+      await identityChanged(account.id, previousRevision) || await rateLimitReached(mailBudget));
     try {
       await docClient.send(new PutCommand(put), timeout());
       return true;
@@ -139,7 +165,8 @@ export const dynamoAccountStore: AccountStore = {
   },
 
   consumeRate(buckets) {
-    return writeConditionally({ TransactItems: buckets.map(rateUpdate) });
+    return writeConditionally({ TransactItems: buckets.map(rateUpdate) }, async () =>
+      (await Promise.all(buckets.map(rateLimitReached))).some(Boolean));
   },
 };
 

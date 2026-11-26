@@ -1,6 +1,6 @@
-import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
-import type { TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
 import type { SessionUser } from "./auth";
+import { docClient } from "./db";
 import { EditorialError } from "./editorial";
 import { TableName } from "./schema";
 
@@ -31,7 +31,7 @@ function storageLimit(kind: "author" | "site" | "item") {
   return new EditorialError(message + " Скопируйте текущий текст. Сохранённую редакцию можно скачать в Word.", kind === "item" ? 413 : 429);
 }
 
-function storageUpdate(id: string, bytes: number, limit: number, create = false): Writes[number] {
+function storageUpdate(id: string, bytes: number, limit: number, create = false) {
   return {
     Update: {
       TableName: TableName.ACCOUNT_RATE_LIMITS,
@@ -51,7 +51,7 @@ function storageUpdate(id: string, bytes: number, limit: number, create = false)
   };
 }
 
-export function authorStorageWrites(user: SessionUser, writes: Writes, create = false): Writes {
+export function authorStorageWrites(user: SessionUser, writes: Writes, create = false) {
   if (user.role !== "author") return [];
   // Reserve the small additional tombstone and its audit row in advance, so
   // deletion remains available at the limit while retaining the whole history.
@@ -64,11 +64,30 @@ export function authorStorageWrites(user: SessionUser, writes: Writes, create = 
   ];
 }
 
-export function authorStorageFailure(error: unknown, offset: number, charged: boolean) {
-  if (!charged || !(error instanceof TransactionCanceledException)) return null;
-  const reasons = error.CancellationReasons;
-  if (reasons?.slice(0, offset).some(reason => reason.Code === "ConditionalCheckFailed")) return null;
-  if (reasons?.[offset]?.Code === "ConditionalCheckFailed") return storageLimit("author");
-  if (reasons?.[offset + 1]?.Code === "ConditionalCheckFailed") return storageLimit("site");
+export function authorStorageFailure(codes: readonly (string | undefined)[], offset: number) {
+  if (codes.slice(0, offset).includes("ConditionalCheckFailed")) return null;
+  if (codes[offset] === "ConditionalCheckFailed") return storageLimit("author");
+  if (codes[offset + 1] === "ConditionalCheckFailed") return storageLimit("site");
+  return null;
+}
+
+function exceedsRemaining(value: unknown, remaining: number | undefined) {
+  if (value === undefined || remaining === undefined) return false;
+  if (typeof value !== "number") throw new Error("Invalid author storage counter");
+  return value > remaining;
+}
+
+export async function readAuthorStorageFailure(storage: ReturnType<typeof authorStorageWrites>, abortSignal: AbortSignal) {
+  const blocked = await Promise.all(storage.map(async ({ Update }) => {
+    const { TableName, Key, ExpressionAttributeValues: limits } = Update;
+    const { Item } = await docClient.send(new GetCommand({
+      TableName, Key, ConsistentRead: true,
+      ProjectionExpression: "#bytes, #drafts", ExpressionAttributeNames: { "#bytes": "bytes", "#drafts": "drafts" },
+    }), { abortSignal });
+    return exceedsRemaining(Item?.bytes, limits[":bytesRemaining"]) ||
+      exceedsRemaining(Item?.drafts, limits[":draftsRemaining"]);
+  }));
+  if (blocked[0]) return storageLimit("author");
+  if (blocked[1]) return storageLimit("site");
   return null;
 }
