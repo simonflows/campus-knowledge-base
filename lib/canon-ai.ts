@@ -13,7 +13,7 @@ import { getApprovedVersion, getUniversityIdFromFolder, type KnowledgeCard } fro
 import { getCardVersionId } from "./knowledge-versions";
 import { knowledgeCardMatch, searchKnowledgeCards } from "./knowledge-search";
 import { checkEditorialEvidence } from "./editorial-evidence";
-import { assistantFactSummary, assistantQuestion, findAssistantGuide, isCampusStatisticQuestion } from "./assistant-query";
+import { assistantFactSummary, assistantQuestion, findAssistantGuide, isCampusStatisticQuestion, supportsAssistantPlacement } from "./assistant-query";
 import type { FactCheckProgress } from "./fact-check-progress";
 import { indexKnowledgeFragment, knowledgeQueryTerms, matchKnowledgeTerm, sameKnowledgeWord, tokenizeKnowledgeText } from "./knowledge-query";
 
@@ -326,13 +326,14 @@ function cardUniversityScope(card: KnowledgeCard): string[] {
 
 function matchingChatCards(cards: KnowledgeCard[], query: string, question: string) {
   if (/(?:^|\s)(?:не|без|вне|кроме|ни|исключая)(?=\s|$)/iu.test(query)) return [];
+  const approved = cards.flatMap(card => getApprovedVersion(card) ?? []);
   const { ids, subject } = chatUniversityScope(query);
   const laboratory = /лаборатор/iu.test(question);
   const project = /проект/iu.test(question);
-  const eligible = ids.length ? cards.filter(card => {
+  const eligible = ids.length ? approved.filter(card => {
     const scope = cardUniversityScope(card);
     return ids.every(id => scope.includes(id));
-  }) : cards;
+  }) : approved;
   const matching = subject ? searchKnowledgeCards(eligible, subject)
     : ids.length ? eligible.filter(card => card.type === "university") : [];
   const equipment = ids.length && specificEquipment.test(subject) ? knowledgeQueryTerms(subject) : null;
@@ -1115,7 +1116,8 @@ function localChat(question: string, cards: KnowledgeCard[], sources: CanonSourc
   const citations = matching.flatMap(card => {
     const source = sources.find(source => source.cardId === card.id);
     const fact = source?.facts.filter(fact => fact.text.length >= 1 && fact.text.length <= 1200 && answersField(fact.field, fact.text, intent) &&
-      (intent !== "equipment" || answersEquipmentQuery(fact.text, query, sources)))
+      (intent !== "equipment" || answersEquipmentQuery(fact.text, query, sources)) &&
+      (intent !== "location" || supportsAssistantPlacement(source, fact, assistantQuestion(question), query)))
       .sort((first, second) => fieldPriority(first.field, intent, identityQuestion) - fieldPriority(second.field, intent, identityQuestion))[0];
     if (!source || !fact) return [];
     const quote = validateCanonQuote({ sourceId: source.id, factId: fact.id, quote: fact.text.slice(0, 800) }, sources);
@@ -1141,15 +1143,19 @@ export async function answerCanonChat({ request, accountId, question, cards, his
 }): Promise<CanonChatAnswer> {
   const sources = currentCanonSources(cards);
   const query = chatSearchQuery(question, history);
-  const guide = findAssistantGuide(question, sources);
-  if (guide && !specificEquipment.test(query)) return { status: "local", ...guide };
+  const guide = findAssistantGuide(question, sources, cards);
+  if (guide && (!specificEquipment.test(query) || guide.citations.some(citation => citation.field === "placementDetails")))
+    return { status: "local", ...guide };
   if (!accountId) return localChat(question, cards, sources, "local", history);
 
   const matching = new Set(matchingChatCards(cards, query, question).map(card => card.id));
   const intent = chatFieldIntent(question, query);
   function isRelevant(citation: CanonCitation) {
+    const source = sources.find(item => item.id === citation.sourceId);
     return citation.quote.length <= 1200 && matching.has(citation.cardId) && answersField(citation.field, citation.quote, intent) &&
-      (intent !== "equipment" || answersEquipmentQuery(citation.quote, query, sources));
+      (intent !== "equipment" || answersEquipmentQuery(citation.quote, query, sources)) &&
+      (intent !== "location" || source !== undefined &&
+        supportsAssistantPlacement(source, { field: citation.field, text: citation.quote }, assistantQuestion(question), query));
   }
   const summaryOptions = sources.filter(source => matching.has(source.cardId)).flatMap(source => source.facts.flatMap(fact => {
     const reference = { sourceId: source.id, factId: fact.id };

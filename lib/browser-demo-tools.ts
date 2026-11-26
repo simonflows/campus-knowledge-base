@@ -137,7 +137,8 @@ export const handleDemoTools: DemoHandler = (call) => {
     );
   const guide = findAssistantGuide(
     message,
-    asSources(cards.filter(({ type }) => type === "campus"))
+    asSources(cards),
+    cards
   );
   if (guide)
     return Response.json({
