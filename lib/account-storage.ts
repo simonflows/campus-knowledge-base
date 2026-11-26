@@ -172,9 +172,9 @@ export const dynamoAccountStore: AccountStore = {
 
 export async function listAccountStaff(providers: readonly AccountProvider[] = ["password", "yandex"]) {
   const predicates = [];
-  if (providers.includes("password")) predicates.push("(attribute_not_exists(#provider) AND attribute_exists(verifiedAt))");
+  if (providers.includes("password")) predicates.push("attribute_not_exists(#provider) AND attribute_exists(verifiedAt)");
   const yandex = providers.includes("yandex");
-  if (yandex) predicates.push("(#provider = :yandex AND attribute_exists(activatedAt))");
+  if (yandex) predicates.push("#provider = :yandex AND attribute_exists(activatedAt)");
   if (!predicates.length) return [];
   const people: ReturnType<typeof accountUser>[] = [];
   let cursor: ScanCommandOutput["LastEvaluatedKey"];
