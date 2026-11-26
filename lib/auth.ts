@@ -12,6 +12,7 @@ export const ROLES = [
   "chkk",
   "university_owner",
   "university_pr",
+  "author",
   "guest",
 ] as const;
 
@@ -41,6 +42,7 @@ export const roleLabels: Record<Role, string> = {
   chkk: "Концессионер ООО «ЧКК»",
   university_owner: "Владелец карточки в вузе",
   university_pr: "PR-команда / редактор вуза",
+  author: "Автор",
   guest: "Гость",
 };
 
@@ -51,6 +53,7 @@ export const roleShortLabels: Record<Role, string> = {
   chkk: "ООО «ЧКК»",
   university_owner: "Владелец карточки",
   university_pr: "PR-команда вуза",
+  author: "Автор",
   guest: "Гость",
 };
 
@@ -141,6 +144,14 @@ export const roleDefinitions: Record<
       "Утверждённые карточки меняет через запрос владельцу",
       "Не управляет типами карточек и параметрами кампуса",
     ],
+  },
+  author: {
+    description: "Автор с личным аккаунтом.",
+    capabilities: [
+      "Читает утверждённые сведения, проверяет тексты и собирает аналитику",
+      "Готовит и скачивает свои личные черновики",
+    ],
+    restrictions: ["Изменение канона, запросы и согласования доступны сотрудникам"],
   },
   guest: {
     description:
@@ -378,6 +389,12 @@ export function toSessionUser(account: DemoAccount): SessionUser {
   };
 }
 
+export function canUseStaffWorkflow(user: SessionUser | null): user is SessionUser & {
+  role: Exclude<Role, "guest" | "author">;
+} {
+  return Boolean(user && user.role !== "guest" && user.role !== "author");
+}
+
 export function normalizeOwnerLabel(value: string): string {
   return value.toLowerCase().replace(/[«»"]/g, "").replace(/\s+/g, " ").trim();
 }
@@ -387,7 +404,7 @@ export function isCardOwner(
   owners: string[],
   ownerIds?: string[]
 ): boolean {
-  if (!user) return false;
+  if (!user || user.role === "author") return false;
   if (ownerIds !== undefined) return ownerIds.includes(user.id);
 
   const people = new Set(user.ownerAliases.map(normalizeOwnerLabel));
@@ -524,7 +541,7 @@ export function canRequestEdit(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user || user.role === "guest") return false;
+  if (!canUseStaffWorkflow(user)) return false;
   if (user.role === "university_pr") {
     const published = getApprovedVersion(card);
     if (!published || !isUniversityParticipant(user, published)) return false;
@@ -545,7 +562,7 @@ export function canEditCard(
   user: SessionUser | null,
   card: KnowledgeCard
 ): boolean {
-  if (!user || user.role === "guest" || user.role === "ministry") return false;
+  if (!canUseStaffWorkflow(user) || user.role === "ministry") return false;
 
   if (user.role === "admin") return true;
 
@@ -575,7 +592,7 @@ export function canSeeCard(
 ): boolean {
   if (getCardStatus(card) === "approved") return true;
 
-  if (!user || user.role === "guest") return false;
+  if (!canUseStaffWorkflow(user)) return false;
 
   if (canEditCard(user, card)) return true;
   if (card.submittedBy === user.id) return true;
@@ -658,7 +675,7 @@ export function visibleKnowledgeCard(user: SessionUser | null, card: KnowledgeCa
     }
   }
   if (editor) visible.diskSync = card.diskSync;
-  const requests = canManageEditRequests(user, card) ? card.editRequests : user && user.role !== "guest" ? card.editRequests?.filter((r) => r.authorId === user.id) : [];
+  const requests = canManageEditRequests(user, card) ? card.editRequests : canUseStaffWorkflow(user) ? card.editRequests?.filter((r) => r.authorId === user.id) : [];
   if (requests?.length) visible.editRequests = requests;
   return visible;
 }
@@ -675,7 +692,7 @@ export function demoAccountsByRole(): Array<{
   role: Role;
   accounts: DemoAccount[];
 }> {
-  return ROLES.map((role) => ({
+  return ROLES.filter((role) => role !== "author").map((role) => ({
     role,
     accounts: demoAccounts.filter((account) => account.role === role),
   }));

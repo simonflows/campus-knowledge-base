@@ -96,8 +96,10 @@ const work: CampusService = {
 export function campusServices(
   demo = process.env.NEXT_PUBLIC_DEMO_MODE === "true",
   staff = false,
+  author = false,
 ) {
-  const visible = staff ? services.flatMap((service) => service.href === "/requests" ? [work, service] : [service]) : services;
+  const visible = staff ? services.flatMap((service) => service.href === "/requests" ? [work, service] : [service]) :
+    author ? services.filter((service) => service.href !== "/requests") : services;
   return demo ? [...visible, comparison] : visible;
 }
 

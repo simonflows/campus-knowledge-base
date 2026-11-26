@@ -11,7 +11,8 @@ import {
   flattenArticleChunks,
   isApprovedArticle,
 } from "@/lib/articles";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   buildArticleMessages,
@@ -65,7 +66,9 @@ export async function POST(request: NextRequest) {
       { error: "Запрещён кросс-доменный запрос" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const user = session.user;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   if (user.role === "guest")

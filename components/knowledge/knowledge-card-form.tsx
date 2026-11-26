@@ -3,7 +3,7 @@
 import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
 
 import { useState } from "react";
-import { FlaskConical, Handshake, Plus, Settings2, X } from "lucide-react";
+import { Boxes, FlaskConical, Handshake, Plus, Settings2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -65,6 +65,21 @@ function splitLines(value: string): string[] {
     .split(/\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+export function projectParticipantFields(
+  isJoint: boolean,
+  universityIds: string[],
+  externalNames: string[],
+  hadExternalNames: boolean
+) {
+  const savedExternalNames = isJoint ? externalNames : [];
+  return {
+    isJoint,
+    participantUniversityIds: isJoint ? universityIds : [],
+    ...(savedExternalNames.length || hadExternalNames
+      ? { externalParticipantNames: savedExternalNames } : {}),
+  };
 }
 
 function parseMetricLines(value: string): CampusMetric[] {
@@ -497,7 +512,8 @@ export function KnowledgeCardForm({
     if (isSaving) return;
     setFormError(null);
 
-    if (type === "project" && isJoint && participantUniversityIds.length + splitLines(externalParticipants).length < 2) {
+    const externalNames = splitLines(externalParticipants);
+    if (type === "project" && isJoint && participantUniversityIds.length + externalNames.length < 2) {
       const message = "Укажите минимум двух участников совместного проекта";
       setFormError(message);
       toast.error(message);
@@ -558,11 +574,7 @@ export function KnowledgeCardForm({
                 readinessStage,
                 contour,
                 confirmedFigures: splitList(confirmedFigures),
-                isJoint,
-                ...(externalParticipants.trim() || projectCard?.externalParticipantNames ? { externalParticipantNames: splitLines(externalParticipants) } : {}),
-                participantUniversityIds: isJoint
-                  ? participantUniversityIds
-                  : [],
+                ...projectParticipantFields(isJoint, participantUniversityIds, externalNames, Boolean(projectCard?.externalParticipantNames)),
               }
             : type === "campus"
               ? {
@@ -1010,7 +1022,7 @@ export function KnowledgeCardForm({
 
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-sm font-semibold">
-                  <FlaskConical className="h-4 w-4 text-primary" />
+                  <Boxes className="h-4 w-4 text-primary" aria-hidden="true" />
                   Поля проекта / продукта
                 </div>
                 <label className="inline-flex min-h-10 items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-xs font-medium sm:min-h-8">
@@ -1021,9 +1033,8 @@ export function KnowledgeCardForm({
                       setIsJoint(event.target.checked);
                       if (event.target.checked && !isEdit) {
                         setInitiatorUniversityId("");
-                      } else if (!event.target.checked) {
-                        setParticipantUniversityIds([]);
-                        if (!initiatorUniversityId && organizationScope !== "rio") setInitiatorUniversityId(defaultUniversityId);
+                      } else if (!event.target.checked && (staffUniversityId || (!initiatorUniversityId && organizationScope !== "rio"))) {
+                        setInitiatorUniversityId(defaultUniversityId);
                       }
                     }}
                     className="h-4 w-4 accent-primary"

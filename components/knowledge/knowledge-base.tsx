@@ -2,10 +2,11 @@
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
 import { AnimatedNumber } from "@/components/motion/animated-number";
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowUpRight,
   BookOpen,
+  Boxes,
   FileText,
   FlaskConical,
   GraduationCap,
@@ -14,6 +15,7 @@ import {
   ChevronUp,
   FolderOpen,
   FolderTree,
+  Globe2,
   Handshake,
   Link2,
   LockKeyhole,
@@ -59,6 +61,7 @@ import { diskSyncStatusLabels } from "@/lib/disk-sync";
 import type { ReadyArticle } from "@/lib/articles";
 import {
   buildKnowledgeTree,
+  CARD_STATUSES,
   cardStatusLabels,
   findFolder,
   folderIds,
@@ -66,7 +69,6 @@ import {
   getCardsForFolder,
   getCardTypeLabel,
   getUniversityFullName,
-  getUniversityIdFromFolder,
   isJointProject,
   isJointReferenceForFolder,
   placementStatusLabels,
@@ -81,7 +83,7 @@ const cardIcons: Record<KnowledgeCardType, typeof FileText> = {
   campus: Layers3,
   custom: FileText,
   laboratory: FlaskConical,
-  project: FolderOpen,
+  project: Boxes,
   university: GraduationCap,
 };
 
@@ -115,20 +117,18 @@ export function KnowledgeBase({
   const requestedVersion = params.get("version");
   const historicalVersion = requestedVersion === "approved" ? null : requestedVersion;
   const requestedVersionCard = params.get("card");
+  const requestedFolder = params.get("folder") ?? initialFolderId;
+  const requestedQuery = params.get("q") ?? (params.size === 0 ? initialQuery : "");
   const [cards, setCards] = useState<KnowledgeCard[]>(initialCards);
   const [customTypes, setCustomTypes] =
     useState<CardTypeWithStats[]>(initialCustomTypes);
   const initialCard = initialCardId
     ? (initialCards.find((card) => card.id === initialCardId) ?? null)
     : null;
-  const resolvedInitialFolder =
-    initialCard?.folderId ??
-    (initialFolderId &&
-    findFolder(initialFolderId, buildKnowledgeTree(initialCustomTypes))
-      ? initialFolderId
-      : folderIds.campus);
   const [selectedFolderId, setSelectedFolderId] = useState(
-    resolvedInitialFolder
+    () => requestedFolder && findFolder(requestedFolder, buildKnowledgeTree(initialCustomTypes))
+      ? requestedFolder
+      : initialCard?.folderId ?? folderIds.campus
   );
   const [selectedCardId, setSelectedCardId] = useState<string | null>(
     initialCard?.id ?? null
@@ -140,37 +140,47 @@ export function KnowledgeBase({
   const [showConstructor, setShowConstructor] = useState(false);
   const [editingCardId, setEditingCardId] = useState<string | null>(null);
   const [isMobileTreeOpen, setIsMobileTreeOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState(initialQuery);
-  const [typeFilter, setTypeFilter] = useState<"all" | KnowledgeCardType>(
-    "all"
+  const searchInput = useRef<HTMLInputElement>(null);
+  const [searchQuery, setSearchQuery] = useState(requestedQuery);
+  const [globalSearch, setGlobalSearch] = useState(
+    params.get("scope") === "all" || (!requestedFolder && Boolean(requestedQuery.trim()))
   );
-  const [statusFilter, setStatusFilter] = useState<"all" | CardStatus>("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | KnowledgeCardType>(() => {
+    const candidate = params.get("type");
+    return candidate && Object.hasOwn(cardIcons, candidate) ? candidate as KnowledgeCardType : "all";
+  });
+  const [statusFilter, setStatusFilter] = useState<"all" | CardStatus>(
+    CARD_STATUSES.find((status) => status === params.get("status")) ?? "all"
+  );
 
   const tree = useMemo(() => buildKnowledgeTree(customTypes), [customTypes]);
   const selectedFolder = findFolder(selectedFolderId, tree);
-  const hasGlobalFilter =
+  const hasFilters =
     searchQuery.trim().length > 0 ||
     typeFilter !== "all" ||
     statusFilter !== "all";
-  const showingArticles = !hasGlobalFilter && Boolean(selectedFolder?.universityId &&
+  const showingArticles = !globalSearch && Boolean(selectedFolder?.universityId &&
     selectedFolderId === folderIds.subfolder(selectedFolder.universityId, "articles"));
   const folderArticles = selectedFolderId === initialFolderId ? initialFolderArticles : undefined;
+  const articleQuery = searchQuery.trim().toLocaleLowerCase("ru");
+  const visibleArticles = folderArticles?.filter((article) =>
+    article.title.toLocaleLowerCase("ru").includes(articleQuery)
+  );
+  const scopedCards = useMemo(
+    () => globalSearch ? cards : getCardsForFolder(selectedFolderId, cards, tree),
+    [globalSearch, selectedFolderId, cards, tree]
+  );
 
   const folderCards = useMemo(() => {
-    if (!hasGlobalFilter) {
-      return getCardsForFolder(selectedFolderId, cards, tree);
-    }
-
-    return searchKnowledgeCards(cards, searchQuery).filter(
+    if (!hasFilters) return scopedCards;
+    return searchKnowledgeCards(scopedCards, searchQuery).filter(
       (card) =>
         (typeFilter === "all" || card.type === typeFilter) &&
         (statusFilter === "all" || getCardStatus(card) === statusFilter)
     );
   }, [
-    hasGlobalFilter,
-    selectedFolderId,
-    cards,
-    tree,
+    hasFilters,
+    scopedCards,
     searchQuery,
     typeFilter,
     statusFilter,
@@ -190,21 +200,33 @@ export function KnowledgeBase({
   const canUseConstructor = canManageTypes(currentUser);
   const canModerateCards = canModerate(currentUser) && dbAvailable;
 
+  const resetFilters = () => {
+    setGlobalSearch(false);
+    setSearchQuery("");
+    setTypeFilter("all");
+    setStatusFilter("all");
+  };
+
+  const catalogParams = () => {
+    const next = new URLSearchParams({ folder: selectedFolderId });
+    if (globalSearch) next.set("scope", "all");
+    if (searchQuery.trim()) next.set("q", searchQuery.trim());
+    if (typeFilter !== "all") next.set("type", typeFilter);
+    if (statusFilter !== "all") next.set("status", statusFilter);
+    return next;
+  };
+
   const handleSelectFolder = (folderId: string) => {
-    const universityId = getUniversityIdFromFolder(folderId);
-    if (universityId && folderId === folderIds.subfolder(universityId, "articles")) {
-      router.push(`/knowledge?${new URLSearchParams({ folder: folderId })}`, { scroll: false });
-    } else if (requestedVersion || params.has("folder")) {
-      router.push(`/knowledge?${new URLSearchParams({ folder: folderId })}`, { scroll: false });
+    const next = new URLSearchParams({ folder: folderId });
+    if (params.toString() !== next.toString()) {
+      router.push(`/knowledge?${next}`, { scroll: false });
     }
     setSelectedFolderId(folderId);
     setSelectedCardId(null);
     setEditingCardId(null);
     setShowForm(false);
     setIsMobileTreeOpen(false);
-    setSearchQuery("");
-    setTypeFilter("all");
-    setStatusFilter("all");
+    resetFilters();
   };
 
   const handleCardDeleted = (cardId: string) => {
@@ -225,15 +247,12 @@ export function KnowledgeBase({
   };
 
   const handleOpenCard = (cardId: string) => {
-    const previous = new URLSearchParams(params.toString());
-    previous.delete("card");
-    previous.delete("version");
-    if (searchQuery) previous.set("q", searchQuery);
-    router.replaceHistory(`/knowledge?${previous.toString()}`);
-    const next = new URLSearchParams(previous.toString());
+    const next = catalogParams();
+    if (params.toString() !== next.toString()) {
+      router.replaceHistory(`/knowledge?${next}`);
+    }
     next.set("card", cardId);
-    if (searchQuery) next.set("q", searchQuery);
-    router.push(`/knowledge?${next.toString()}`, { scroll: false });
+    router.push(`/knowledge?${next}`, { scroll: false });
     setSelectedCardId(cardId);
     setEditingCardId(null);
     setShowForm(false);
@@ -445,13 +464,7 @@ export function KnowledgeBase({
                 onUpdated={handleCardUpdated}
               />}
               onBack={() => {
-                const next = new URLSearchParams(params.toString());
-                next.delete("card");
-                next.delete("version");
-                next.delete("action");
-                next.delete("quote");
-                next.delete("finding");
-                router.push(`/knowledge?${next.toString()}`, { scroll: false });
+                router.push(`/knowledge?${catalogParams()}`, { scroll: false });
                 setSelectedCardId(null);
               }}
               onOpenFolder={handleSelectFolder}
@@ -465,10 +478,10 @@ export function KnowledgeBase({
                 <CardHeader className="gap-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 space-y-1">
-                      {(hasGlobalFilter || selectedFolderId.includes("/")) && (
+                      {(globalSearch || selectedFolderId.includes("/")) && (
                         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                          {hasGlobalFilter ? (
-                            <Search
+                          {globalSearch ? (
+                            <Globe2
                               aria-hidden="true"
                               className="size-3 shrink-0"
                             />
@@ -478,23 +491,21 @@ export function KnowledgeBase({
                               className="size-3 shrink-0"
                             />
                           )}
-                          {hasGlobalFilter
+                          {globalSearch
                             ? "Во всех папках"
                             : getFolderDisplayPath(selectedFolderId, tree)}
                         </p>
                       )}
                       <h2 className="font-heading text-xl font-semibold tracking-tight break-words sm:text-2xl">
-                        {hasGlobalFilter
+                        {globalSearch
                           ? "Результаты поиска и фильтрации"
                           : selectedFolder
                             ? getFolderDisplayName(selectedFolder)
                             : "База знаний"}
                       </h2>
-                      <CardDescription>
-                        {hasGlobalFilter
-                          ? "Показаны карточки из всех папок базы, соответствующие фильтрам."
-                          : selectedFolder?.description}
-                      </CardDescription>
+                      {!globalSearch && selectedFolder?.description && (
+                        <CardDescription>{selectedFolder.description}</CardDescription>
+                      )}
                     </div>
                     <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
                       {canUseConstructor ? (
@@ -513,7 +524,7 @@ export function KnowledgeBase({
                             : "Конструктор типов"}
                         </Button>
                       ) : null}
-                      {hasGlobalFilter && (
+                      {globalSearch && searchQuery.trim() && currentUser?.role !== "author" && (
                         <Link
                           href={`/requests?${new URLSearchParams({ q: `Нужны сведения по запросу: ${searchQuery}` }).toString()}`}
                           className="text-primary underline underline-offset-4"
@@ -539,47 +550,55 @@ export function KnowledgeBase({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {showingArticles ? (
-                      folderArticles ? <Badge variant="secondary">Статьи: {folderArticles.length}</Badge> : null
-                    ) : (
-                      <Badge variant="secondary">
-                        {hasGlobalFilter
-                          ? `Найдено: ${folderCards.length} из ${cards.length}`
-                          : `Карточки: ${folderCards.length}`}
-                      </Badge>
-                    )}
-                    {!hasGlobalFilter && selectedFolder?.universityId ? (
+                    <div role="status" aria-atomic="true">
+                      {showingArticles ? (
+                        visibleArticles ? <Badge variant="secondary">Статьи: {visibleArticles.length}</Badge> : null
+                      ) : (
+                        <Badge variant="secondary">
+                          {hasFilters
+                            ? `Найдено: ${folderCards.length} из ${scopedCards.length}`
+                            : `Карточки: ${folderCards.length}`}
+                        </Badge>
+                      )}
+                    </div>
+                    {!globalSearch && selectedFolder?.universityId && selectedFolder.kind !== "university" ? (
                       <span>
                         {getUniversityFullName(selectedFolder.universityId)}
                       </span>
                     ) : null}
                   </div>
 
-                  <div className="data-index-search">
+                  <div className="data-index-search" data-articles={showingArticles || undefined}>
                     <div className="relative">
-                      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                       <Input
-                        aria-label="Поиск по официальным данным"
+                        ref={searchInput}
+                        aria-label={globalSearch ? "Поиск по всей базе" : "Поиск в текущей папке"}
                         name="q"
                         type="search"
                         value={searchQuery}
                         onChange={(event) => setSearchQuery(event.target.value)}
-                        placeholder="Поиск по названию, вузу, партнёру, ID..."
+                        placeholder={showingArticles ? "Название статьи" : globalSearch
+                          ? "Название, вуз, партнёр"
+                          : "Поиск в папке"}
                         className="h-10 pl-9 pr-8"
                       />
                       {searchQuery ? (
                         <button
                           type="button"
-                          onClick={() => setSearchQuery("")}
+                          onClick={() => {
+                            setSearchQuery("");
+                            searchInput.current?.focus();
+                          }}
                           aria-label="Очистить поиск"
                           className="data-index-clear text-muted-foreground hover:text-foreground"
                         >
-                          <X className="h-3.5 w-3.5" />
+                          <X className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
                       ) : null}
                     </div>
 
-                    <select
+                    {!showingArticles && (<select
                       aria-label="Фильтр по типу карточки"
                       value={typeFilter}
                       onChange={(event) =>
@@ -595,9 +614,9 @@ export function KnowledgeBase({
                       <option value="university">Паспорт вуза</option>
                       <option value="campus">Паспорт кампуса</option>
                       <option value="custom">Пользовательские</option>
-                    </select>
+                    </select>)}
 
-                    <select
+                    {!showingArticles && (<select
                       aria-label="Фильтр по статусу модерации"
                       value={statusFilter}
                       onChange={(event) =>
@@ -611,27 +630,41 @@ export function KnowledgeBase({
                       <option value="approved">Утверждена</option>
                       <option value="pending">На подтверждении</option>
                       <option value="rejected">Отклонена</option>
-                    </select>
+                    </select>)}
                   </div>
 
-                  {hasGlobalFilter ? (
-                    <div className="flex justify-end">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      variant={globalSearch ? "secondary" : "outline"}
+                      size="sm"
+                      aria-pressed={globalSearch}
+                      className="min-h-10 sm:min-h-8"
+                      onClick={() => setGlobalSearch((active) => !active)}
+                    >
+                      <Globe2 data-icon="inline-start" aria-hidden="true" />
+                      Искать по всей базе
+                    </Button>
+                    {hasFilters || globalSearch ? (
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-7 gap-1 text-xs"
+                        className="min-h-10 gap-1 text-xs sm:min-h-8"
                         onClick={() => {
-                          setSearchQuery("");
-                          setTypeFilter("all");
-                          setStatusFilter("all");
+                          resetFilters();
+                          const next = new URLSearchParams({ folder: selectedFolderId });
+                          if (params.toString() !== next.toString()) {
+                            router.replaceHistory(`/knowledge?${next}`);
+                          }
+                          searchInput.current?.focus();
                         }}
                       >
-                        <X className="h-3 w-3" />
-                        Сбросить фильтры и вернуться в папку
+                        <X data-icon="inline-start" aria-hidden="true" />
+                        {globalSearch ? "Сбросить и вернуться в папку" : "Сбросить фильтры"}
                       </Button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </CardHeader>
               </Card>
 
@@ -662,9 +695,9 @@ export function KnowledgeBase({
               {showingArticles ? (
                 <Card>
                   <CardContent>
-                    {folderArticles?.length ? (
+                    {visibleArticles?.length ? (
                       <ul className="flex flex-col gap-3">
-                        {folderArticles.map(article => (
+                        {visibleArticles.map(article => (
                           <li key={article.id}>
                             <Link
                               className="inline-flex items-center gap-2 text-sm font-medium text-primary underline underline-offset-4"
@@ -679,7 +712,8 @@ export function KnowledgeBase({
                     ) : (
                       <p className="text-sm text-muted-foreground" role="status">
                         {folderArticles === null ? "Библиотека временно недоступна."
-                          : folderArticles === undefined ? "Загружаем статьи…" : "В этой папке пока нет согласованных статей."}
+                          : folderArticles === undefined ? "Загружаем статьи…"
+                            : searchQuery.trim() ? "Ничего не найдено" : "В этой папке пока нет согласованных статей."}
                       </p>
                     )}
                   </CardContent>
@@ -692,12 +726,12 @@ export function KnowledgeBase({
                     </div>
                     <div className="space-y-1">
                       <p className="text-sm font-medium">
-                        {hasGlobalFilter
+                        {hasFilters
                           ? "Ничего не найдено"
                           : "В этой папке пока нет карточек"}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {hasGlobalFilter
+                        {hasFilters
                           ? "Попробуйте другое название, число или снимите фильтры."
                           : "Добавьте карточку выбранного типа или создайте новый тип в конструкторе."}
                       </p>

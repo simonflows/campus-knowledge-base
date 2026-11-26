@@ -1,7 +1,8 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextResponse } from "next/server";
 
 import { canEditCard, visibleKnowledgeCard } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   readKnowledgeCardDiskRegistry,
@@ -21,7 +22,9 @@ async function authorizedCard(context: RouteContext) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json(
       { error: "Войдите для повторной выгрузки" },

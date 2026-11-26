@@ -16,10 +16,10 @@ import {
 } from "lucide-react";
 import { campusServices } from "@/lib/campus-services";
 
-function navSections(staff: boolean, demo: boolean) {
+function navSections(staff: boolean, demo: boolean, author: boolean) {
   return [
     { href: "/", title: "Главная", navTitle: "Главная" },
-    ...campusServices(demo ? false : undefined, staff).filter(({ href }) => !staff || href !== "/requests"),
+    ...campusServices(demo ? false : undefined, staff, author).filter(({ href }) => !staff || href !== "/requests"),
   ];
 }
 
@@ -69,14 +69,14 @@ function RequestCount({ count }: { count: number }) {
   );
 }
 
-export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?: number; staff?: boolean }) {
+export function HeaderNav({ incomingCount = 0, staff = false, author = false }: { incomingCount?: number; staff?: boolean; author?: boolean }) {
   const pathname = useWorkspacePathname();
   const demo = useWorkspaceMode() === "demo";
   const navRef = useRef<HTMLElement>(null);
 
   useLayoutEffect(() => {
     positionIndicator(navRef.current, true);
-  }, [pathname, staff]);
+  }, [pathname, staff, author]);
 
   useLayoutEffect(() => {
     const nav = navRef.current;
@@ -91,12 +91,12 @@ export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?
       observer.disconnect();
       document.fonts.removeEventListener("loadingdone", realign);
     };
-  }, [staff]);
+  }, [staff, author]);
 
   return (
     <nav ref={navRef} aria-label="Основная навигация" className="atlas-nav">
       <span aria-hidden="true" className="atlas-nav-indicator" />
-      {navSections(staff, demo).map(({ href, navTitle }) =>
+      {navSections(staff, demo, author).map(({ href, navTitle }) =>
         href === "/login" ? null : (
           <Link
             key={href}
@@ -117,10 +117,12 @@ export function HeaderNav({ incomingCount = 0, staff = false }: { incomingCount?
 export function MobileNav({
   incomingCount = 0,
   staff = false,
+  author = false,
   onNavigate,
 }: {
   incomingCount?: number;
   staff?: boolean;
+  author?: boolean;
   onNavigate: () => void;
 }) {
   const pathname = useWorkspacePathname();
@@ -128,7 +130,7 @@ export function MobileNav({
 
   return (
     <nav aria-label="Основная навигация" className="atlas-mobile-nav">
-      {navSections(staff, demo).map(({ href, title }) => {
+      {navSections(staff, demo, author).map(({ href, title }) => {
         const Icon = sectionIcons[href];
         return (
           <Link

@@ -1,5 +1,7 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { deleteEditorialSchema, editorialMutationSchema } from "@/lib/editorial";
 import {
   deleteEditorial,
@@ -11,7 +13,9 @@ import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
 import { syncArticleRecord } from "@/lib/disk-sync-service";
 type Context = { params: Promise<{ id: string }> };
 export async function GET(_request: NextRequest, context: Context) {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   try {
@@ -24,7 +28,7 @@ export async function GET(_request: NextRequest, context: Context) {
         document,
         revisions,
         reviewers:
-          document.ownerId === user.id ? await getEditorialReviewers(document) : [],
+          canUseStaffWorkflow(user) && document.ownerId === user.id ? await getEditorialReviewers(document) : [],
       },
       { headers: privateHeaders }
     );
@@ -38,7 +42,9 @@ export async function DELETE(request: NextRequest, context: Context) {
       { error: "Запрещён кросс-доменный запрос" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   const parsed = deleteEditorialSchema.safeParse(await request.json().catch(() => null));
@@ -57,7 +63,9 @@ export async function PATCH(request: NextRequest, context: Context) {
       { error: "Запрещён кросс-доменный запрос" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   const parsed = editorialMutationSchema.safeParse(

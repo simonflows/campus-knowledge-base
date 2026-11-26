@@ -1,20 +1,42 @@
 # Канон — актуальный статус
 
-## 0.9.9 опубликована 24 ноября 2026
-- На https://canon.midis.ru принят runtime `b94208f506b887685fee839d6347594739d20199`, image `sha256:c24de3d9b32751e20b93487ee29922e269fdfadf226975087a7691527453f9ac`, runf099n24a/pin27. Healthy/unless-stopped, запись открыта. [Отчёт, доказательства и ограничения](docs/release-0.9.9.md).
-- PR10 слит main7776858c; дерево равно runtimeb94208f. CI push45318928048, PR45318935374 и main45319648761 SUCCESS. Strict Quality gate/app15368/enforce-admins сохранены. Текущая ветка документов docs/kanon-099-acceptance.
-- Исправлены: контраст версии/перекрытие помощником/значки очередей, подтверждение336/3064/3400по разным полям, точечный9999→3400и отдельный отчёт нового текста, краткие ответы помощника с версиями/полной цитатой. Аналитика не менялась. Площади в актуальном паспорте нет:114/123тыс.м²unknown.
-- Source/assistant/UI независимое ревью и повтор замечаний PASS; host check/offline/build,09933/33, Python33/33, полный browser098+099 PASS. CI подтвердил freshDynamoDB/HTTPSimage/28storagechecks. В CI исправлены ES2017 capture и старый heading-selector без ослабления проверок.
-- PublicHTTP: version/ready/cards/facts/assistant200; invalid400/crossorigin403/anonymousdraft401. Browser390/1440px: версия видна,1launcher/разныеglyphs, keyboard, assistantcapacity, rewriteR1Y1G1→R0Y1G2, pageerror0. Снимки просмотрены; demo0рабочихAPI.
-- Exact-image realFlash/current16approved: semantic3/3,2supported+1unknown, exactfields. Assistant ready/summary с версиями. Источники неизменны, записей0. Один дополнительный строгий CLI-прогон до диагностического повторения был неуспешен без установленного этапа; не заявляем100%стабильность ИИ. Подробности и остальные границы — в отчёте.
-- Freshbackup SHA2446d7ba…:8таблиц/86записей, verify и actualisolatedrestore qa095-099-f099n24a- PASS. Frozen source/tablehashes/counts совпали; разные archiveSHA не путаются с содержимым. Рабочие карточки/роли/DDL/согласования не менялись.
-- Helper b26896c2, источник GitLF Composeb41a16d5. НИКОГДА не повторять принятыйone-shot f099n24a. Root-only proof /var/lib/canon/release099-f099n24a; acceptedcontainer3872084b, frozen d9520777. Совместимый rollback image42f29efe сохранён; старые0.9.5/48ce запрещены.
-- GzipCI SHA0b2d8cdf…,311600838B; загрузкаbinarySSHstdin безархива/ошибокunpack. Финальныйsnapshot a1a75b5b Committed. Диск после:412807168B (~394MiB,99%).192MiBрезерв соблюдён; следующий крупный выпуск требует плана места, без broadprune/userdatadelete.
-- TrustedTLS/Nginx SHA189dc600 и domainruntime3ebd001a прежние; renewtimeractive. SSH восстановлен запуском сохранённого ssh-agent, секреты не читались/не печатались.
-- Независимое сопоставление итогового отчёта/proof/текущейВМ/GitHub/снимков пройдено, блокирующих расхождений нет. Осталось: commit/PR/обязательныйCI документов, затем порученное обычное выключение локального ПК. Финальное выключение ещё НЕ отправлено.
+## Выпуск 1.0.0, 26 ноября 2026
+- Цель: завершить функции, настройки облака, проверки, независимое ревью, коммит и публикацию. Пользователь разрешил действовать автономно и после полного успешного завершения выключить ПК (последнее сообщение отменяет прежний запрет). До этого локальный сервер сохранять.
+- Ветка `release/kanon-1.0.0`, исходный main `21885be6c4577ecb0406a852daf12533c00d6123`. Коммита/публикации 1.0.0 ещё нет. Рабочие изменения относятся к этому этапу.
+- Production https://canon.midis.ru пока 0.9.9, revision `b94208f506b887685fee839d6347594739d20199`, image `sha256:c24de3d9b32751e20b93487ee29922e269fdfadf226975087a7691527453f9ac`. SSH BatchMode доступен. VM40GiB, ~10GiB свободно; данные/rollback-образы сохранены.
+- [План и приёмка](docs/release-1.0.0-plan.md), [предыдущие промежуточные записи](docs/release-1.0.0-work-log.md), [предыдущий выпуск](docs/release-0.9.9.md).
 
-## Границы и навигация
-- Секреты не читать/не печатать; рабочие данные не менять для тестов. Optional API-поля совместимы, fullsourceCAS сохранён. Demoизолирован от paidAI/рабочихзаписей.
-- После SIGKILL проверять actualcontainer/restart/freeze/gates, не полагаться на отсутствие accepted.json. Восстановление рабочего приложения только с совместимым writer; данные произвольно не откатывать.
-- Localdev127.0.0.1:8080 отдельно не останавливать. `.next-campus-demo` содержитjunction: не удалять рекурсивно. Поручено `shutdown.exe /s /t 0` без /f только после полной приёмки; ВМ остаётся работать.
-- [План](plan.md) · [Прежний0.9.8](docs/release-0.9.8.md) · [Историядо099](docs/progress-history-before-099.md) · [Домен/TLS](docs/domain-canon-midis-ru.md).
+## Вход и облако
+- Основной вход — кнопка «Войти через Яндекс», без регистрационных писем Канона. Email/password реализован как отключённый запасной вариант. Новый пользователь — только автор; доверенные права и вузы назначает координатор. Прежний pilot-доступ сохранён.
+- По явному согласию владельца создано отдельное приложение «Канон — вход» в основном `mlnkws`, callback `https://canon.midis.ru/api/auth/yandex/callback`, только login:info/login:email. Приложение резервных копий Disk-only не менялось. Иконка в Downloads/canon-icon.png.
+- Клиент/секрет сохранены непрозрачно в Lockbox `kanon-runtime` (`e6q2s7nbc77ci3f3b1e8`), currentversion `e6qegncjr4cd2vrdc22j`; прежняя версия `e6q9fdst7bl7br5pmipl`. Новый payload: прежние5 entries + OAuthpair. Значения в отчёты/исходники/логи не выводить. Требуется сравнить старые5 программно и активировать проверенный materializer.
+- Новый runtime: OAuthtrue, emailfalse, webSearchtrue/metadata/folder, trustedproxytrue только при строгом ingress X-Forwarded-For=$remote_addr (проверено в текущем Nginx). Callback query исключить из access/error logs перед включением OAuth.
+- Postbox/DNS/SMTP не используются для этого сценария. Обычный ящик canon-noreply@yandex.ru создан владельцем, но не настроен для шаблонных рассылок; прежняя рекомендация отозвана.
+
+## Реализация
+- Фильтры сохраняют папку и browser history, явный глобальный поиск; категории имеют разные значки; шапка округляется при прокрутке; AiActivity/microinteraction с reduced motion и клавиатурой.
+- Правильный учебный пример собирается из текущих утверждённых версий и проверяется обычным factchecker; тест смены3400→4200 и намеренного9999 проходит.
+- Проверены/исправлены info-request owner/лимиты/контуры/решения; реальные обязательные RIO/CHKK согласования сохранены, сотрудники не выдумываются.
+- OAuth: state+PKCE, браузерная привязка, одноразовый nonce, namespaceUID, audience client_id; контактная почта не связывает аккаунты. Отзываемые v3 сессии, безопасные cookie, rolegrant по точному ID/revision.
+- 3 добавочные DynamoDB таблицы identities/sessions/rates, TTL expiresAt на последних2. Авторский атомарный лимит истории4MiB/user,24MiB/site,16 созданий; постоянные счётчики без TTL.
+- ИИ: canon50/user/day,1000/site/day, web5/user/day,50/site/day,200/month; квота до paidattempt. Root закрыл OAuth-only обход canonquota (RED→GREEN).
+- Web: отдельный opt-in/warningonce, только вопрос без закрытой истории; bounded response/time, external citations, metadata IAM. Живой Search пока не проверен.
+- Backup11 исключает только истёкшие к cutoff записи двух TTL-таблиц; сохраняет активные/постоянные счётчики, восстанавливает/сверяет все архивные строки. Рабочие данные автоматически не восстанавливать.
+
+## Проверки / открытые пункты
+- UI320/390/768/1440, folder/history/reset, header, activitynormal/reduced ранее PASS, demo0API/0pageerrors. Root должен финально проверить помощник/login и просмотреть screenshots.
+- Auth independentreview закрыл прежние P1; final42testsPASS. Последний P2 OAuthGET/HEAD обход freeze исправлен root вместе с прямыми routeguards, старыеfreeze+newfreeze+quota9testsPASS.
+- Runtime validation3Python PASS; metadata/Lockbox realcompare/логирование/активация впереди. Root materializer `deploy/lockbox-runtime.py`.
+- OPS independentreview нашёл label099, CIpatternбез100, SIGTERMreceipt, fsyncdirs, source/imageprovenance. Root label/CI исправил; агент OPS-F100 исправляет helpers/loader/tests. Обязательное повторное OPSreview после исправлений.
+- WF BACKUP-FIXTURE100 готовит `scripts/test-account-integration-100.ts` для уже помеченной одноразовой БД, без рабочих данных. Нужен реальный Dynamo/YDB проход, миграция ТОЛЬКО Dockerexec.
+- AUTH-R100 повторно проверяет freeze/quota/runtime/backup (read-only).
+- В package1.0.0, test:100 в offline, authfixture в fixture; полный итоговый hostcheck/offline/build и обязательный CI ещё нужны. Недоступный Strix не выдаём за pentest.
+
+## Следующий шаг
+- Активировать проверенные runtime/ingress, подтвердить ограниченный live Search; закончить fixture/UI и reviews.
+- Коммит/PR/строгий CI, затем exactmainpushartifact + sourcearchive/provenance, защищённый streamingload; свежий099backup/verify/изолированныйrestore доADD3, Dockerexecmigration, frozen100backup11/restore/shared8сравнение; открыть запись и проверить публичный вход/основные сценарии.
+- `release099-f099n24a` уже принят: НЕ запускать повторно. Старые0.9.5/48ce writers запрещены из-за tombstones. При откате100→099 только приложение, аккаунтные таблицы сохранять.
+- При полном disasterrestore отдельно сменить SESSION_SECRET до открытия traffic и повторить TTLmigration; обычный image rollback БД не откатывает.
+- Локальный Next127.0.0.1:8080, session40535/PID29760 (проверять перед действием). Не удалять `.next-campus-demo` рекурсивно: там node_modules junction.
+- Этап проверки: host check/offline/build PASS, npm audit production0. Root браузер проверил assistant opt-inonce/keyboard/isolatedhistory/pending/reducedmotion/mobile, прямой areaAPI200+source. Impeccable detector:4legacy accentwarnings исправлены fullborder,1advisory unusedpattern-grid utility сохранён; repeatedpublic320/390/768/1440PASS. AUTH/OPS independentreview без блокирующих замечаний (runtimeP3 закрыты). Lockboxold5compare и metadataSearch200/2sources PASS. NginxsiteSHA748fa6aa7d902226e51606b974937950f1088a0977a9d2d34719ce84a6afc5c0, runtime loaderSHA2f25aff199f224aa12f7514a89b097d48e83bf8cd0f64e8d7639b61d9c8bf05b. Runtime готов, prod099 пока не перезапускался.
+- Временный SSHbanner timeout после QAcontainerstartupattempt. HTTPSready200. До восстановления доступа НЕ начинать cutover; миграции не было. Изолированный fixturepath /tmp/canon-account100-278beddd632845f0, prefixqa095-account100-278beddd632845f0-, startupнеподтверждён. Новый helper scripts/qa-account-fixture-100.ts ожидаетOPSreview; phase1commit его исключает.

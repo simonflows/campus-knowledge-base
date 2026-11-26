@@ -1,4 +1,6 @@
+import { isDeepStrictEqual } from "node:util";
 import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
+import { authorStorageFailure, authorStorageWrites } from "./author-storage-budget";
 import {
   GetCommand,
   ScanCommand,
@@ -7,7 +9,7 @@ import {
   type ScanCommandOutput,
 } from "@aws-sdk/lib-dynamodb";
 import type { SessionUser } from "./auth";
-import { sessionDirectory } from "./pilot-auth";
+import { staffDirectory } from "./account-directory";
 import { docClient, isDatabaseAvailable } from "./db";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
@@ -79,8 +81,13 @@ async function scan<T>(
   return rows;
 }
 export async function listEditorial(user: SessionUser) {
-  if (!(await isDatabaseAvailable())) return [];
-  return (await scan<EditorialDocument>(TableName.EDITORIAL_DOCUMENTS))
+  if (user.role === "author") await available();
+  else if (!(await isDatabaseAvailable())) return [];
+  const filter = user.role === "author" ? {
+    FilterExpression: "ownerId = :ownerId",
+    ExpressionAttributeValues: { ":ownerId": user.id },
+  } : undefined;
+  return (await scan<EditorialDocument>(TableName.EDITORIAL_DOCUMENTS, filter))
     .filter((doc) => canReadEditorial(user, doc))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
@@ -333,7 +340,7 @@ export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArt
 }
 
 export async function listLegacyArticles(user: SessionUser | null): Promise<ReadyArticle[]> {
-  if (!user || user.role === "guest") return [];
+  if (!user || user.role === "guest" || user.role === "author") return [];
   const visible = (article: ReadyArticle) => canReadLegacyArticle(user, article);
   const mode = await getReadableStorageMode();
   if (mode === "static-export") return articleSeed.filter(visible);
@@ -467,7 +474,7 @@ export async function getEditorialReviewers(doc: EditorialDocument, observedCard
         `01_universities/${doc.content.universityId}/`
       );
     });
-  return sessionDirectory()
+  return (await staffDirectory())
     .filter(
       (account) =>
         account.id !== doc.ownerId &&
@@ -558,41 +565,41 @@ export async function createEditorial(
     actorName: user.name,
     createdAt: now,
   };
+  const writes: NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]> = [
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_DOCUMENTS,
+        Item: doc,
+        ConditionExpression: "attribute_not_exists(id)",
+      },
+    },
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_REVISIONS,
+        Item: revision,
+        ConditionExpression: "attribute_not_exists(id)",
+      },
+    },
+    {
+      Put: {
+        TableName: TableName.EDITORIAL_REVISIONS,
+        Item: {
+          id: doc.events[0].id,
+          documentId: id,
+          kind: "event",
+          event: doc.events[0],
+        },
+        ConditionExpression: "attribute_not_exists(id)",
+      },
+    },
+    ...normalized.basisGuards,
+  ];
+  const storage = authorStorageWrites(user, writes, true);
   try {
-    await docClient.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_DOCUMENTS,
-              Item: doc,
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_REVISIONS,
-              Item: revision,
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          {
-            Put: {
-              TableName: TableName.EDITORIAL_REVISIONS,
-              Item: {
-                id: doc.events[0].id,
-                documentId: id,
-                kind: "event",
-                event: doc.events[0],
-              },
-              ConditionExpression: "attribute_not_exists(id)",
-            },
-          },
-          ...normalized.basisGuards,
-        ],
-      })
-    );
+    await docClient.send(new TransactWriteCommand({ TransactItems: [...writes, ...storage] }));
   } catch (error) {
+    const storageError = authorStorageFailure(error, writes.length, storage.length > 0);
+    if (storageError) throw storageError;
     if (normalized.basisGuards.length && error instanceof Error &&
         error.name === "TransactionCanceledException" &&
         (!(error instanceof TransactionCanceledException) || !error.CancellationReasons ||
@@ -628,6 +635,10 @@ export async function mutateEditorial(
       const normalized = await normalizeSources(mutation.content, current.content);
       content = normalized.content;
       basisGuards = normalized.basisGuards;
+      if (user.role === "author" && isDeepStrictEqual(
+        { ...content, sourceCardTitles: undefined },
+        { ...current.content, sourceCardTitles: undefined },
+      )) return { document: current, publication: undefined };
     } else {
       const old = await getEditorialRevision(current, user, mutation.revisionId);
       content = old.content;
@@ -852,9 +863,12 @@ export async function mutateEditorial(
     basisGuards = basisGuards.filter(({ ConditionCheck }) => ConditionCheck.Key.id !== id);
   }
   writes.push(...basisGuards);
+  const storage = authorStorageWrites(user, writes);
   try {
-    await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
+    await docClient.send(new TransactWriteCommand({ TransactItems: [...writes, ...storage] }));
   } catch (error) {
+    const storageError = authorStorageFailure(error, writes.length, storage.length > 0);
+    if (storageError) throw storageError;
     if (isEditorialWriteConflict(error))
       throw new EditorialError(
         publication

@@ -10,10 +10,10 @@ import {
   isAlibabaAiConfigured,
 } from "@/lib/alibaba-ai";
 import {
-  getSessionUser,
   isAdminPinRequired,
   verifySameOrigin,
 } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
 import { demoLoginEnabled } from "@/lib/pilot-auth";
 import {
   assessBenchmarkOutput,
@@ -135,7 +135,9 @@ export async function POST(request: NextRequest) {
   const yandexConfigured = isYandexAiConfigured();
   const alibabaConfigured = isAlibabaAiConfigured();
   if (mode === "live") {
-    const user = await getSessionUser();
+    const session = await readRouteSession();
+    if (session.response) return session.response;
+    const user = session.user;
     if (!user)
       return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
     if (user.role !== "admin" || (demoLoginEnabled() && !isAdminPinRequired()))

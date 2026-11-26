@@ -1,4 +1,5 @@
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { createWorkflowRecord, getWorkflowRecord, listWorkflowRecords } from "@/lib/workflow-models";
 import { readWorkflowBody, workflowFailure, workflowJson, workflowUser } from "@/lib/workflow-http";
 import { createWorkflowSchema } from "@/lib/validation/workflow";
@@ -6,7 +7,7 @@ import { createWorkflowSchema } from "@/lib/validation/workflow";
 export async function GET() {
   try {
     const user = await workflowUser();
-    return workflowJson({ items: await listWorkflowRecords(user), people: sessionDirectory().filter(person => person.role !== "guest").map(person => ({ id: person.id, name: person.name, organization: person.organization })) });
+    return workflowJson({ items: await listWorkflowRecords(user), people: (await staffDirectory()).filter(canUseStaffWorkflow).map(person => ({ id: person.id, name: person.name, organization: person.organization })) });
   } catch (error) { return workflowFailure(error); }
 }
 export async function POST(request: Request) {

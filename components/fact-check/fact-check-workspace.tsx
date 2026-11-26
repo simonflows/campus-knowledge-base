@@ -21,7 +21,6 @@ import {
   ExternalLink,
   FileText,
   Layers3,
-  Loader2,
   ScanText,
   ShieldAlert,
   ShieldCheck,
@@ -49,6 +48,7 @@ import {
   type FactAiReview,
 } from "@/components/canon-ai-review";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AiActivity } from "@/components/ui/ai-activity";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -107,7 +107,19 @@ type LevelFilter = "all" | FactCheckLevel;
 type FactCheckWorkspaceProps = {
   cardsCount: number;
   flashAssistAvailable: boolean;
+  approvedExample?: FactCheckPreset | null;
 };
+
+const trainingLabels: Record<string, string> = {
+  "preset-tz-vr": "Медицинский VR-тренажёр",
+  "preset-midis-kuka": "Робот KUKA и проекты МИДиС",
+  "preset-passport-typos": "Цифры и названия из паспорта кампуса",
+};
+const trainingPresets = FACT_CHECK_PRESETS.map((preset) => ({
+  ...preset,
+  label: trainingLabels[preset.id] ?? preset.label,
+  badge: "С неточностями",
+}));
 
 const levelStyles: Record<
   FactCheckLevel,
@@ -373,6 +385,7 @@ function FindingCard({
 export function FactCheckWorkspace({
   cardsCount,
   flashAssistAvailable,
+  approvedExample,
 }: FactCheckWorkspaceProps) {
   const request = useWorkspaceRequest();
   const workspaceMode = useWorkspaceMode();
@@ -387,6 +400,7 @@ export function FactCheckWorkspace({
   const [isChecking, setIsChecking] = useState(false);
   const [progress, setProgress] = useState<FactCheckProgress | null>(null);
   const [isRewriting, setIsRewriting] = useState(false);
+  const [rewritingWithAi, setRewritingWithAi] = useState(false);
   const [filter, setFilter] = useState<LevelFilter>("all");
   const [showAllFindings, setShowAllFindings] = useState(false);
   const [showAllRewriteFindings, setShowAllRewriteFindings] = useState(false);
@@ -556,16 +570,12 @@ export function FactCheckWorkspace({
     setRewriteRevision(null);
     setRewriteCheck(null);
     setRewriteError(null);
+    setError(null);
     if (mode === "check") {
       setIsChecking(true);
-      setError(null);
-      setRewrite(null);
-      setRewriteRevision(null);
-      setRewriteCheck(null);
-      setRewriteError(null);
     } else {
       setIsRewriting(true);
-      setError(null);
+      setRewritingWithAi(Boolean(parsed.data.useAi && workspaceMode !== "demo"));
     }
 
     const deadline = window.setTimeout(() => {
@@ -822,12 +832,8 @@ export function FactCheckWorkspace({
                 onClick={() => requestFactCheck("check")}
                 disabled={isChecking || isRewriting}
               >
-                {isChecking ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <ScanText className="size-4" />
-                )}
-                {isChecking ? "Проверяем..." : "Проверить текст"}
+                <ScanText data-icon="inline-start" aria-hidden="true" />
+                {isChecking ? "Проверяем…" : "Проверить текст"}
               </Button>
               <Button
                 type="button"
@@ -841,7 +847,7 @@ export function FactCheckWorkspace({
               <Button
                 type="button"
                 variant="ghost"
-                onClick={() => handlePreset(FACT_CHECK_PRESETS[0])}
+                onClick={() => handlePreset(trainingPresets[0])}
                 disabled={isChecking || isRewriting}
               >
                 <ClipboardCheck className="size-4" />
@@ -849,12 +855,10 @@ export function FactCheckWorkspace({
               </Button>
             </div>
 
-            <div className="data-check-examples">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Учебные тексты с намеренными неточностями
-              </p>
-              <div className="grid gap-2 sm:grid-cols-3">
-                {FACT_CHECK_PRESETS.map((preset) => (
+            <section className="data-check-examples" aria-labelledby="fact-training-title">
+              <h3 id="fact-training-title" className="text-sm font-semibold">Учебные тексты</h3>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {[...trainingPresets, ...(approvedExample ? [approvedExample] : [])].map((preset) => (
                   <button
                     key={preset.id}
                     type="button"
@@ -872,7 +876,7 @@ export function FactCheckWorkspace({
                   </button>
                 ))}
               </div>
-            </div>
+            </section>
 
             <div className="data-rewrite-actions">
               <Button
@@ -881,13 +885,9 @@ export function FactCheckWorkspace({
                 onClick={() => requestFactCheck("rewrite")}
                 disabled={isChecking || isRewriting}
               >
-                {isRewriting ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Wand2 className="size-4" />
-                )}
+                <Wand2 data-icon="inline-start" aria-hidden="true" />
                 {isRewriting
-                  ? "Переписываем..."
+                  ? "Переписываем…"
                   : "Переписать по официальным данным"}
               </Button>
               {flashAssistAvailable && (
@@ -914,28 +914,27 @@ export function FactCheckWorkspace({
               )}
             </div>
 
-            {isChecking && (
-              <div
-                className="flex flex-wrap items-center justify-between gap-3"
-                role="status"
-                aria-live="polite"
-              >
-                <p className="text-sm text-muted-foreground">
-                  {progress
-                    ? `${progress.stage === "extract" ? "Этап 1/2 — разбор текста" : "Этап 2/2 — сверка с источниками"}: обработано ${progress.completed} из ${progress.total} групп.`
-                    : aiEnabled &&
-                        flashAssistAvailable &&
-                        workspaceMode !== "demo"
-                      ? "Разбираем текст целиком. Длинная статья может занять до трёх минут."
-                      : "Проверяем текст…"}
-                </p>
+            {(isChecking || isRewriting) && (
+              <div className="flex flex-wrap items-center gap-2">
+                <AiActivity
+                  className="flex-1"
+                  label={isRewriting
+                    ? rewritingWithAi ? "Готовим правки с ИИ" : "Переписываем по утверждённым карточкам"
+                    : progress?.stage === "verify" ? "Этап 2 из 2. Сверяем факты с источниками"
+                    : progress?.stage === "extract" ? "Этап 1 из 2. Разбираем текст"
+                    : "Проверяем факты в тексте"}
+                  detail={progress ? `Обработано ${progress.completed} из ${progress.total} групп.`
+                    : isChecking && aiEnabled && flashAssistAvailable && workspaceMode !== "demo"
+                      ? "Проверяем текст целиком. Длинная статья может занять до трёх минут."
+                      : undefined}
+                />
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => {
                     resetOutput();
-                    toast("Проверка остановлена. Текст сохранён.");
+                    toast(isChecking ? "Проверка остановлена" : "Переписывание остановлено");
                   }}
                 >
                   Остановить
@@ -963,9 +962,9 @@ export function FactCheckWorkspace({
                 Красный уровень блокирует публикацию до правки.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3" aria-live="polite">
+            <CardContent className="space-y-3" aria-live="polite" aria-busy={isChecking || isRewriting}>
               {result ? (
-                <>
+                <div className="workspace-result space-y-3">
                   <div className="data-level-counts">
                     {(["red", "yellow", "green"] as FactCheckLevel[]).map(
                       (level) => {
@@ -1030,17 +1029,18 @@ export function FactCheckWorkspace({
                     символов.
                   </p>
                   <FactCoverage result={result} />
-                </>
+                </div>
               ) : (
                 <Empty className="data-fact-empty">
                   <EmptyHeader>
                     <EmptyMedia variant="icon">
                       <ScanText className="size-4" />
                     </EmptyMedia>
-                    <EmptyTitle>Проверка ещё не запускалась</EmptyTitle>
+                    <EmptyTitle>{isChecking || isRewriting ? "Ожидаем результат" : "Проверка ещё не запускалась"}</EmptyTitle>
                     <EmptyDescription>
-                      Вставьте текст и нажмите «Проверить текст». Замечания
-                      появятся здесь с уровнями и ссылками на карточки.
+                      {isChecking || isRewriting
+                        ? "Здесь появятся замечания и ссылки на источники."
+                        : "Вставьте текст и нажмите «Проверить текст». Здесь появятся замечания и ссылки на источники."}
                     </EmptyDescription>
                   </EmptyHeader>
                 </Empty>
@@ -1087,7 +1087,7 @@ export function FactCheckWorkspace({
       </div>
 
       {result && (rewrite || rewriteError) ? (
-        <section className="space-y-4">
+        <section className="workspace-result space-y-4">
           <Separator />
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>

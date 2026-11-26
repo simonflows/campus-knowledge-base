@@ -1,3 +1,4 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import { canManageTypes, visibleKnowledgeCards } from "@/lib/auth";
@@ -30,7 +31,9 @@ export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
     return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
   }
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(

@@ -19,6 +19,7 @@ import type { SourceDispute, WorkflowEvent } from "@/lib/workflow";
 import { workflowMutationSchema } from "@/lib/validation/workflow";
 import { EditMetadataForm, sourceKey, type MutationFields } from "./work-forms";
 import { WorkEmpty, WorkError, WorkLoading, WorkSelect } from "./work-primitives";
+import { AiActivity } from "@/components/ui/ai-activity";
 import { formatWorkDay, keepNewestRecord, operationAttempt, requestWork, WorkRequestError, workHref, type OperationAttempt } from "./work-state";
 import styles from "./workspace.module.css";
 
@@ -330,7 +331,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
   });
   const actionsDisabled = busy || Boolean(error?.conflict);
   return (
-    <article className={`desk-panel ${styles.formPanel}`} aria-labelledby="work-detail-title">
+    <article className={`workspace-result desk-panel ${styles.formPanel}`} aria-labelledby="work-detail-title">
       <Link className={styles.textLink} href={backHref}><ArrowLeft size={16} aria-hidden="true" />К списку</Link>
       <div className={styles.detailHeading}>
         <div>
@@ -346,6 +347,7 @@ export function WorkRecordDetail({ section, id, initial, data, onChanged }: {
       </dl>
       {record.description && <p className={styles.prewrap}>{record.description}</p>}
       {errorContent}
+      {busy && <AiActivity label="Сохраняем изменения в записи" />}
       {editing && editable && <EditMetadataForm record={record} people={data.people} busy={actionsDisabled}
         onSave={save} onCancel={() => setEditing(false)} />}
       {record.kind === "package"

@@ -65,6 +65,7 @@ type SystemStatusBarProps = {
   showIntegrationStatus: boolean;
   initialStatus: SystemStatusPayload;
   staff?: boolean;
+  author?: boolean;
 };
 
 export function SystemStatusBar(props: SystemStatusBarProps) {
@@ -76,6 +77,7 @@ function SystemStatusControls({
   showIntegrationStatus,
   initialStatus: status,
   staff,
+  author,
 }: SystemStatusBarProps) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -150,6 +152,7 @@ function SystemStatusControls({
             <MobileNav
               incomingCount={status.incomingRequests}
               staff={staff}
+              author={author}
               onNavigate={() => setMobileMenuOpen(false)}
             />
             {isDemoMode && showIntegrationStatus ? (

@@ -38,7 +38,7 @@ import { Separator } from "@/components/ui/separator";
 import { DiskSyncPanel } from "@/components/disk-sync/disk-sync-panel";
 import { KnowledgeCardAccessPanel } from "@/components/knowledge/knowledge-card-access-panel";
 import { KnowledgeUsagePanel } from "./knowledge-usage-panel";
-import type { SessionUser } from "@/lib/auth";
+import { canUseStaffWorkflow, type SessionUser } from "@/lib/auth";
 import {
   cardStatusLabels,
   customFieldTypeLabels,
@@ -497,7 +497,7 @@ export function KnowledgeCardDetail({
             onSynced={onCardUpdated}
           />}
           {additionalSections}
-          {currentUser && currentUser.role !== "guest" ? <KnowledgeUsagePanel key={card.id} cardId={card.id} /> : null}
+          {canUseStaffWorkflow(currentUser) ? <KnowledgeUsagePanel key={card.id} cardId={card.id} /> : null}
 
           {joint ? (
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground">

@@ -1,12 +1,12 @@
 import { GetCommand, ScanCommand, TransactWriteCommand, type ScanCommandInput, type ScanCommandOutput } from "@aws-sdk/lib-dynamodb";
-import { canSeeCard, type SessionUser } from "./auth";
+import { canSeeCard, canUseStaffWorkflow, type SessionUser } from "./auth";
 import { docClient, isDatabaseAvailable } from "./db";
 import { getEditorial } from "./editorial-models";
 import { getApprovedVersion } from "./knowledge";
 import { ensureApprovedCardVersion, getApprovedCardVersion, getCardVersionId } from "./knowledge-versions";
 import { getKnowledgeCardById } from "./models";
 import { TableName } from "./schema";
-import { sessionDirectory } from "./pilot-auth";
+import { staffDirectory } from "./account-directory";
 import type { SourceVersionReference } from "./source-references";
 import { applyWorkflowMutation, canReadWorkflow, makeWorkflowRecord, WorkflowError, workflowDigest, type WorkflowRecord, type CreateWorkflowInput, type WorkflowMutation, type WorkflowEvent } from "./workflow";
 
@@ -66,13 +66,14 @@ function insertEvent(event: WorkflowEvent) {
 }
 export async function listWorkflowRecords(user: SessionUser): Promise<WorkflowPresentation[]> {
   await available();
-  if (user.role === "guest") throw new WorkflowError("Рабочие записи доступны сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Рабочие записи доступны сотрудникам", 403);
   const rows = await scan<WorkflowRecord>({ FilterExpression: "#kind IN (:package, :dispute)", ExpressionAttributeNames: { "#kind": "kind" }, ExpressionAttributeValues: { ":package": "package", ":dispute": "dispute" } });
   return Promise.all(rows.filter(row => canReadWorkflow(user, row)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(row => present(user, row)));
 }
 export async function createWorkflowRecord(user: SessionUser, input: CreateWorkflowInput): Promise<WorkflowRecord> {
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Рабочие записи доступны сотрудникам", 403);
   await available();
-  const record = makeWorkflowRecord(user, input, sessionDirectory());
+  const record = makeWorkflowRecord(user, input, await staffDirectory());
   const replay = (current: WorkflowRecord | null) => {
     if (current && current.creatorId === user.id && current.creationDigest === record.creationDigest) return current;
     throw new WorkflowError("Повтор создания содержит другие данные", 409);
@@ -106,7 +107,7 @@ export async function getWorkflowRecord(user: SessionUser, id: string): Promise<
 }
 export async function mutateWorkflowRecord(user: SessionUser, id: string, input: WorkflowMutation): Promise<WorkflowRecord> {
   await available(); const record = await rawRecord(id); readable(user, record);
-  const next = applyWorkflowMutation(user, record, input, sessionDirectory());
+  const next = applyWorkflowMutation(user, record, input, await staffDirectory());
   if (next === record) return record;
   if (input.action === "add-source") await sourceFor(user, input.source, true);
   if (input.action === "add-document") await materialFor(user, input.documentId);

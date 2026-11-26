@@ -1,3 +1,4 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -11,11 +12,11 @@ import {
   isCardOwner,
   resolveLegacyCardOwnerIds,
 } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { folderIds, getUniversityIdFromFolder, isCardReadyForPublication, stakeholderApprovalRoles } from "@/lib/knowledge";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import {
   createKnowledgeCard,
   deleteKnowledgeCard,
@@ -30,7 +31,9 @@ import {
 } from "@/lib/validation/knowledge";
 
 export async function GET() {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   try {
     const cards = await getAllKnowledgeCards();
     return NextResponse.json(visibleKnowledgeCards(user, cards), { headers: { "Cache-Control": "private, no-store" } });
@@ -47,7 +50,9 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
@@ -210,7 +215,8 @@ export async function POST(request: NextRequest) {
   }
 
   if (user.role === "admin") {
-    const directory = sessionDirectory();
+    const directory = await staffDirectory().catch(() => null);
+    if (!directory) return unavailableStorageResponse();
     const ownerIds = cardInput.ownerIds ?? resolveLegacyCardOwnerIds(cardInput, directory) ?? [];
     if (!areCardOwnerIdsAssignable(cardInput, ownerIds, directory)) {
       return NextResponse.json(
@@ -272,7 +278,9 @@ export async function DELETE(request: NextRequest) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(

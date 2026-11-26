@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
-import { getStorageMode, isDatabaseAvailable } from "@/lib/db";
+import { canUseStaffWorkflow } from "@/lib/auth";
+import { verifySameOrigin } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
+import { getStorageMode } from "@/lib/db";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   createInformationRequestSchema,
@@ -13,12 +15,16 @@ import {
   RequestError,
 } from "@/lib/information-requests-models";
 export async function GET() {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user || user.role === "guest")
     return NextResponse.json(
       { error: "Войдите в аккаунт для просмотра запросов" },
       { status: 401 }
     );
+  if (!canUseStaffWorkflow(user))
+    return NextResponse.json({ error: "Запросы доступны сотрудникам" }, { status: 403 });
   const mode = await getStorageMode();
   if (mode === "read-only") return unavailableStorageResponse();
   if (mode !== "dynamodb")
@@ -44,14 +50,14 @@ export async function POST(request: Request) {
       { error: "Недопустимый источник запроса" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
-  if (!(await isDatabaseAvailable()))
-    return NextResponse.json(
-      { error: "База данных временно недоступна" },
-      { status: 503 }
-    );
+  if (!canUseStaffWorkflow(user))
+    return NextResponse.json({ error: "Запросы доступны сотрудникам" }, { status: 403 });
+  if (await getStorageMode() !== "dynamodb") return unavailableStorageResponse();
   const parsed = createInformationRequestSchema.safeParse(
     await request.json().catch(() => null)
   );

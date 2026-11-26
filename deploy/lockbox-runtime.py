@@ -13,6 +13,7 @@ from getpass import GetPassWarning, getpass
 from hashlib import sha256
 from pathlib import Path
 from secrets import token_hex
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
@@ -56,6 +57,65 @@ def atomic_write(destination, contents, *, create_only=False):
                 os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
+    descriptor = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def runtime_values(result, expected_endpoint, origin, environment):
+    """Allowlist payload entries and validate non-secret operator switches."""
+    parsed = urlsplit(origin)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+        raise ValueError("Invalid public origin")
+    fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DOCUMENT_API_ENDPOINT"}
+    disk_token_field = "YANDEX_DISK_OAUTH_TOKEN"
+    ai_key_field = "YANDEX_AI_STUDIO_API_KEY"
+    oauth_fields = {"YANDEX_OAUTH_CLIENT_ID", "YANDEX_OAUTH_CLIENT_SECRET"}
+    allowed_fields = fields | {disk_token_field, ai_key_field} | oauth_fields
+    values = {}
+    for entry in result["entries"]:
+        name = entry.get("key")
+        if name not in allowed_fields:
+            continue
+        if name in values or not isinstance(entry.get("textValue"), str) or not entry["textValue"]:
+            raise ValueError("Invalid or duplicate runtime setting")
+        values[name] = entry["textValue"]
+    if not fields <= values.keys() or values["DOCUMENT_API_ENDPOINT"] != expected_endpoint:
+        raise ValueError("Missing database settings or unexpected YDB endpoint")
+    if oauth_fields & values.keys() and not oauth_fields <= values.keys():
+        raise ValueError("Incomplete OAuth credentials")
+    if oauth_fields <= values.keys() and not values["YANDEX_OAUTH_CLIENT_SECRET"].strip():
+        raise ValueError("Invalid OAuth credentials")
+    switches = {}
+    for flag in ("CAMPUS_YANDEX_OAUTH_ENABLED", "CAMPUS_WEB_SEARCH_ENABLED", "CAMPUS_TRUST_PROXY"):
+        value = environment.get(flag, "false")
+        if value not in ("true", "false"):
+            raise ValueError("Invalid runtime switch")
+        switches[flag] = value
+    if environment.get("CAMPUS_EMAIL_ACCOUNTS_ENABLED", "false") != "false":
+        raise ValueError("Email registration is not configured for this release")
+    values.update(switches, CAMPUS_EMAIL_ACCOUNTS_ENABLED="false", CAMPUS_PUBLIC_ORIGIN=origin.rstrip("/"))
+    if switches["CAMPUS_YANDEX_OAUTH_ENABLED"] == "true":
+        if not oauth_fields <= values.keys() or not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", values["YANDEX_OAUTH_CLIENT_ID"]):
+            raise ValueError("Missing or invalid OAuth credentials")
+    if disk_token_field in values:
+        values["YANDEX_DISK_ROOT_MODE"] = "app"
+    if ai_key_field in values or switches["CAMPUS_WEB_SEARCH_ENABLED"] == "true":
+        ai_folder = environment.get("YANDEX_AI_STUDIO_FOLDER_ID", "")
+        if not re.fullmatch(r"[a-z0-9]{20}", ai_folder):
+            raise ValueError("Missing or invalid AI Studio folder ID")
+        values["YANDEX_AI_STUDIO_FOLDER_ID"] = ai_folder
+        if ai_key_field in values:
+            values["YANDEX_AI_STUDIO_MODEL_URI"] = f"gpt://{ai_folder}/aliceai-llm-flash"
+        if switches["CAMPUS_WEB_SEARCH_ENABLED"] == "true":
+            values.update(CAMPUS_WEB_SEARCH_USE_METADATA="true", CAMPUS_WEB_SEARCH_FOLDER_ID=ai_folder)
+    for value in values.values():
+        if not value or any(c in value for c in "\r\n\0"):
+            raise ValueError("Invalid runtime setting")
+    return values
 
 
 def configure(secret_id, expected_endpoint, origin):
@@ -71,25 +131,7 @@ def configure(secret_id, expected_endpoint, origin):
         f"https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/{secret_id}/payload",
         {"Authorization": f"Bearer {token}"},
     )
-    fields = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "DOCUMENT_API_ENDPOINT"}
-    disk_token_field = "YANDEX_DISK_OAUTH_TOKEN"
-    ai_key_field = "YANDEX_AI_STUDIO_API_KEY"
-    allowed_fields = fields | {disk_token_field, ai_key_field}
-    values = {
-        entry["key"]: entry["textValue"]
-        for entry in result["entries"]
-        if entry["key"] in allowed_fields
-    }
-    if not fields <= values.keys() or values["DOCUMENT_API_ENDPOINT"] != expected_endpoint:
-        raise ValueError("Missing database settings or unexpected YDB endpoint")
-    if disk_token_field in values:
-        values["YANDEX_DISK_ROOT_MODE"] = "app"
-    if ai_key_field in values:
-        ai_folder = os.environ.get("YANDEX_AI_STUDIO_FOLDER_ID", "")
-        if not re.fullmatch(r"[a-z0-9]{20}", ai_folder):
-            raise ValueError("Missing or invalid AI Studio folder ID")
-        values["YANDEX_AI_STUDIO_FOLDER_ID"] = ai_folder
-        values["YANDEX_AI_STUDIO_MODEL_URI"] = f"gpt://{ai_folder}/aliceai-llm-flash"
+    values = runtime_values(result, expected_endpoint, origin, os.environ)
 
     runtime_dir = Path("/run/campus")
     state_dir = Path("/var/lib/canon")
@@ -100,6 +142,8 @@ def configure(secret_id, expected_endpoint, origin):
         directory.chmod(0o700)
 
     accounts = read_private(state_dir / "accounts.json")
+    if accounts is None and values["CAMPUS_YANDEX_OAUTH_ENABLED"] == "true":
+        raise ValueError("OAuth requires the configured owner and session key")
     if accounts is not None:
         session = state_dir / "session-secret"
         signing_key = read_private(session)
@@ -107,7 +151,6 @@ def configure(secret_id, expected_endpoint, origin):
             signing_key = token_hex(32)
             atomic_write(session, signing_key)
         values.update(
-            CAMPUS_PUBLIC_ORIGIN=origin,
             SESSION_SECRET=signing_key.removesuffix("\n").removesuffix("\r"),
             CAMPUS_PILOT_ACCOUNTS=json.dumps(
                 json.loads(accounts),

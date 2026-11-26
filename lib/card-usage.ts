@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { GetCommand } from "@aws-sdk/lib-dynamodb";
-import { canSeeCard, type SessionUser } from "./auth";
+import { canSeeCard, canUseStaffWorkflow, type SessionUser } from "./auth";
 import { isApprovedArticle, type ReadyArticle } from "./articles";
 import { docClient } from "./db";
 import { listEditorial } from "./editorial-models";
@@ -27,7 +27,7 @@ async function reviewedPublicationVersion(article: ReadyArticle, cardId: string)
   return receipt.reviewedSourceVersions.find(ref => ref.cardId === cardId)?.versionId;
 }
 export async function findCardUsage(user: SessionUser, cardId: string): Promise<CardUsage[]> {
-  if (user.role === "guest") throw new WorkflowError("Рабочие связи доступны сотрудникам", 403);
+  if (!canUseStaffWorkflow(user)) throw new WorkflowError("Рабочие связи доступны сотрудникам", 403);
   const card = await getKnowledgeCardById(cardId);
   if (!card || (!canSeeCard(user, card) && !getApprovedVersion(card))) throw new WorkflowError("Карточка не найдена", 404);
   const current = getApprovedVersion(card), currentVersionId = current ? getCardVersionId(current) : null;

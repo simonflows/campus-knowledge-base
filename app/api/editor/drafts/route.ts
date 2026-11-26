@@ -1,5 +1,6 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { createEditorialSchema } from "@/lib/editorial";
 import {
   createEditorial,
@@ -8,7 +9,9 @@ import {
 } from "@/lib/editorial-models";
 import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
 export async function GET() {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   try {
@@ -29,7 +32,9 @@ export async function POST(request: NextRequest) {
       { error: "Запрещён кросс-доменный запрос" },
       { status: 403 }
     );
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return NextResponse.json({ error: "Войдите в аккаунт" }, { status: 401 });
   const parsed = createEditorialSchema.safeParse(

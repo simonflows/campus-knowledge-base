@@ -1,3 +1,4 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -9,11 +10,11 @@ import {
   sameCardOwnerScope,
   visibleKnowledgeCard,
 } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
 import { folderIds, getApprovedVersion, getCardStatus, getLegacyCustomDraftUniversityId, getRequiredUniversityApprovals } from "@/lib/knowledge";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
   getCardTypeById,
@@ -41,7 +42,9 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
@@ -209,7 +212,8 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       );
     }
   } else {
-    const directory = sessionDirectory();
+    const directory = await staffDirectory().catch(() => null);
+    if (!directory) return unavailableStorageResponse();
     const assignment = { ...cardInput, requiredApprovalUniversityIds: current.requiredApprovalUniversityIds };
     const published = getApprovedVersion(current);
     const proposedUniversities = cardInput.type === "project" && cardInput.isJoint

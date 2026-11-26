@@ -1,10 +1,11 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextResponse } from "next/server";
 import {
   canAssignCardOwner,
   canEditCard,
   visibleKnowledgeCard,
 } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { getApprovedVersion, type CardFreshness } from "@/lib/knowledge";
 import { canVerifyCardFreshness } from "@/lib/knowledge-freshness";
@@ -13,7 +14,7 @@ import {
   getCardVersionId,
 } from "@/lib/knowledge-versions";
 import { getKnowledgeCardById, setKnowledgeCardFreshness } from "@/lib/models";
-import { sessionDirectory } from "@/lib/pilot-auth";
+import { staffDirectory } from "@/lib/account-directory";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { updateCardFreshnessSchema } from "@/lib/validation/knowledge";
 
@@ -27,7 +28,9 @@ export async function PATCH(
 ) {
   if (!verifySameOrigin(request))
     return failure("Запрещён кросс-доменный запрос", 403);
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
   if (!user)
     return failure("Войдите, чтобы обновить актуальность карточки", 401);
   try {
@@ -81,7 +84,7 @@ export async function PATCH(
           delete freshness.responsibleId;
           delete freshness.responsibleName;
         } else {
-          const responsible = sessionDirectory().find(
+          const responsible = (await staffDirectory()).find(
             (account) =>
               account.id === input.responsibleId &&
               (account.role === "admin" || canAssignCardOwner(account, getApprovedVersion(card) ?? card))

@@ -7,6 +7,7 @@ import {
   WorkspaceMasthead,
 } from "@/components/workspace-masthead";
 import { AnimatedNumber } from "@/components/motion/animated-number";
+import { AiActivity } from "@/components/ui/ai-activity";
 
 import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useRef, useState } from "react";
@@ -22,7 +23,6 @@ import {
   FolderTree,
   Layers3,
   List,
-  Loader2,
   Network,
   Search,
   Table2,
@@ -678,18 +678,34 @@ export function AnalyticsWorkspace({
                 onClick={() => void requestAnalytics()}
                 disabled={isLoading}
               >
-                {isLoading ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Search className="size-4" />
-                )}
-                {isLoading ? "Собираем..." : "Собрать аналитику"}
+                <Search data-icon="inline-start" aria-hidden="true" />
+                {isLoading ? "Собираем…" : "Собрать аналитику"}
               </Button>
               <span className="text-xs text-muted-foreground">
                 Карточки и числа в отчёте берутся из утверждённых данных.
               </span>
             </div>
 
+            {isLoading && (
+              <div className="flex flex-wrap items-center gap-2">
+                <AiActivity
+                  className="flex-1"
+                  label="Собираем отчёт по утверждённым карточкам"
+                  detail={flashAssistAvailable && aiEnabled && !demo
+                    ? "ИИ помогает определить условия выборки."
+                    : undefined}
+                />
+                <Button type="button" variant="outline" size="sm" className="min-h-10"
+                  onClick={() => {
+                    abortRef.current?.abort();
+                    abortRef.current = null;
+                    setIsLoading(false);
+                    toast("Сбор аналитики остановлен");
+                  }}>
+                  Остановить
+                </Button>
+              </div>
+            )}
             {!isLoading && report?.ai && <CanonAiReview review={report.ai} />}
 
             {error ? (
@@ -730,7 +746,7 @@ export function AnalyticsWorkspace({
 
       {report ? (
         report.cards.length === 0 ? (
-          <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
+          <Card className="workspace-result rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">
             <CardContent className="py-4">
               <Empty className="border border-dashed py-10">
                 <EmptyHeader>
@@ -747,7 +763,7 @@ export function AnalyticsWorkspace({
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-6">
+          <div className="workspace-result space-y-6" aria-busy={isLoading}>
             <SummaryCard report={report} />
 
             <Card className="rounded-3xl border-0 shadow-sm ring-1 ring-foreground/10">

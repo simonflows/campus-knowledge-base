@@ -1,7 +1,8 @@
+import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
 
 import { canManageTypes } from "@/lib/auth";
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import {
   CardTypeInUseError,
@@ -33,7 +34,9 @@ function typeWriteFailure(error: unknown) {
 }
 
 async function getAdminDeniedResponse() {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(

@@ -22,7 +22,7 @@ FROM node:24-alpine AS runner
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision=$VCS_REF
-LABEL org.opencontainers.image.version=0.9.9
+LABEL org.opencontainers.image.version=1.0.0
 
 WORKDIR /app
 

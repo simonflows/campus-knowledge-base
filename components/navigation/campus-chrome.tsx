@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { ArrowUpRight } from "lucide-react";
 import { ReleaseNotes } from "@/components/navigation/release-notes";
 import { CampusBrand } from "@/components/navigation/campus-brand";
+import { CampusHeader } from "@/components/navigation/campus-header";
 import { HeaderNav } from "@/components/navigation/header-nav";
 import { PageContent } from "@/components/navigation/page-content";
 import { AppLink } from "@/components/navigation/workspace-navigation";
@@ -18,6 +19,7 @@ export const appName = "Справочник кампуса «Южный Ура�
 
 export function CampusChrome({
   staff,
+  author = false,
   status,
   showIntegrationStatus = false,
   account,
@@ -26,6 +28,7 @@ export function CampusChrome({
   demo = false,
 }: {
   staff: boolean;
+  author?: boolean;
   status: SystemStatusPayload;
   showIntegrationStatus?: boolean;
   account: ReactNode;
@@ -33,13 +36,13 @@ export function CampusChrome({
   children: ReactNode;
   demo?: boolean;
 }) {
-  const sections = campusServices(demo ? false : undefined, staff);
+  const sections = campusServices(demo ? false : undefined, staff, author);
   return (
     <>
       <AppLink className="skip atlas-skip" href="#main-content">
         Перейти к содержимому
       </AppLink>
-      <header className={cn("nav atlas-header", demo && "atlas-header--demo")}>
+      <CampusHeader className={cn("nav atlas-header", demo && "atlas-header--demo")}>
         <div className="wrap atlas-wrap atlas-header-row">
           <AppLink
             className="brand"
@@ -48,17 +51,18 @@ export function CampusChrome({
           >
             <CampusBrand />
           </AppLink>
-          <HeaderNav incomingCount={status.incomingRequests} staff={staff} />
+          <HeaderNav incomingCount={status.incomingRequests} staff={staff} author={author} />
           <div className="atlas-controls">
             <SystemStatusBar
               showIntegrationStatus={showIntegrationStatus}
               initialStatus={status}
               staff={staff}
+              author={author}
             />
             {account}
           </div>
         </div>
-      </header>
+      </CampusHeader>
       {banner}
       <PageContent>{children}</PageContent>
       <footer className="atlas-footer closing">
@@ -111,7 +115,7 @@ export function CampusChrome({
           </div>
         </div>
       </footer>
-      <AssistantWidget staff={staff} />
+      <AssistantWidget staff={staff || author} />
     </>
   );
 }

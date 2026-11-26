@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
+import { verifySameOrigin } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { isApprovedArticle } from "@/lib/articles";
 import { getEditorial } from "@/lib/editorial-models";
 import { isStorageWritable } from "@/lib/db";
@@ -14,7 +16,9 @@ import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 type RouteContext = { params: Promise<{ id: string }> };
 
 async function authorizedArticle(context: RouteContext) {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const { user } = session;
 
   if (!user) {
     return NextResponse.json(
@@ -23,9 +27,9 @@ async function authorizedArticle(context: RouteContext) {
     );
   }
 
-  if (user.role === "guest") {
+  if (!canUseStaffWorkflow(user)) {
     return NextResponse.json(
-      { error: "Гость не может запускать выгрузку на Яндекс Диск" },
+      { error: "Выгрузка на Яндекс Диск доступна сотрудникам" },
       { status: 403 }
     );
   }

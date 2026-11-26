@@ -10,7 +10,7 @@ import {
   AppLink as Link,
   useWorkspacePathname,
 } from "@/components/navigation/workspace-navigation";
-import { MessageCircle, Send } from "lucide-react";
+import { ArrowUpRight, Globe2, MessageCircle, Send, ShieldAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +22,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { AiActivity } from "@/components/ui/ai-activity";
 import type { CanonChatAnswer } from "@/lib/canon-ai";
 
 import { parseAssistantAnswer } from "./assistant-answer";
@@ -32,25 +33,27 @@ type Turn = {
   message: string;
   answer?: CanonChatAnswer;
   issue?: string;
+  mode: "canon" | "web";
 };
 
 const MAX_MESSAGE_LENGTH = 2000;
 const MAX_TURNS = 12;
+const WEB_CONSENT_KEY = "canon:assistant-web-consent:v1";
 const exampleSets = [
   [
-    "Какова общая площадь кампуса?",
-    "Какие вузы входят в кампус?",
-    "Как проверить текст по справочнику?",
+    "Чем отличаются первая и вторая очереди гостиниц кампуса?",
+    "Где расположен центр промышленного дизайна МИДиС с роботом KUKA?",
+    "Какие вузы участвуют в совместных проектах?",
   ],
   [
-    "Сколько мест для проживания в кампусе?",
-    "Где открыть паспорт кампуса?",
-    "Как найти карточку университета?",
+    "Сколько мест в первой очереди гостиниц кампуса?",
+    "Сколько мест во второй очереди гостиниц кампуса?",
+    "Какие сведения о размещении лабораторий подтверждены?",
   ],
   [
-    "Какие лаборатории проектируют в учебно-научном корпусе?",
-    "Какие этапы строительства указаны в паспорте?",
-    "Где подготовить черновик публикации?",
+    "Что известно о виртуальном тренажёре «Травмпункт»?",
+    "Какие проекты связаны с экологией?",
+    "Как подготовить статью и проверить её по источникам?",
   ],
 ];
 const statusLabels = {
@@ -79,6 +82,9 @@ function AssistantSession({ staff }: { staff: boolean }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [validation, setValidation] = useState("");
   const [exampleHelp, setExampleHelp] = useState("");
+  const [webSearch, setWebSearch] = useState(false);
+  const [webConsent, setWebConsent] = useState(false);
+  const [warningOpen, setWarningOpen] = useState(false);
   const selectedExample = useRef<string | null>(null);
   const active = useRef<{ id: string; controller: AbortController } | null>(
     null
@@ -90,6 +96,10 @@ function AssistantSession({ staff }: { staff: boolean }) {
   const sending = turns.some((turn) => !turn.answer && !turn.issue);
 
   useEffect(() => () => active.current?.controller.abort(), []);
+  useEffect(() => {
+    try { setWebConsent(localStorage.getItem(WEB_CONSENT_KEY) === "accepted"); }
+    catch { /* The warning remains available when preferences cannot be stored. */ }
+  }, []);
   useEffect(() => {
     const view = transcript.current;
     if (view && turns.length) view.scrollTop = view.scrollHeight;
@@ -127,6 +137,20 @@ function AssistantSession({ staff }: { staff: boolean }) {
     composer.current?.focus({ preventScroll: true });
   }
 
+  function changeSearchMode(enabled: boolean) {
+    if (!enabled) { setWebSearch(false); return; }
+    if (demo || !staff || sending) return;
+    if (webConsent) setWebSearch(true);
+    else setWarningOpen(true);
+  }
+
+  function acceptWebSearch() {
+    setWebConsent(true);
+    setWebSearch(true);
+    try { localStorage.setItem(WEB_CONSENT_KEY, "accepted"); } catch { /* Session acknowledgment is sufficient. */ }
+    setWarningOpen(false);
+  }
+
   async function ask(message: string, retryId?: string) {
     if (active.current) return;
     const normalized = message.trim();
@@ -140,11 +164,12 @@ function AssistantSession({ staff }: { staff: boolean }) {
     setExampleHelp("");
     const id = retryId ?? crypto.randomUUID();
     const retryIndex = turns.findIndex((turn) => turn.id === retryId);
+    const mode = retryIndex >= 0 ? turns[retryIndex].mode : webSearch ? "web" : "canon";
     const history = (retryIndex >= 0 ? turns.slice(0, retryIndex) : turns)
-      .filter((turn) => turn.answer)
+      .filter((turn) => turn.answer && turn.mode === "canon")
       .map((turn) => turn.message)
       .slice(-4);
-    const turn = { id, message: normalized };
+    const turn: Turn = { id, message: normalized, mode };
     const controller = new AbortController();
     active.current = { id, controller };
     setTurns((previous) =>
@@ -157,23 +182,23 @@ function AssistantSession({ staff }: { staff: boolean }) {
       const response = await workspaceRequest("/api/assistant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: normalized, history }),
+        body: JSON.stringify({ message: normalized, history: mode === "web" ? [] : history, ...(mode === "web" && { mode }) }),
         signal: controller.signal,
         cache: "no-store",
       });
-      const answer = parseAssistantAnswer(
-        await response.json().catch(() => null)
-      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(typeof payload?.error === "string" ? payload.error.slice(0, 280) : "Ответ не получен. Повторите запрос.");
+      const answer = parseAssistantAnswer(payload);
       if (
         controller.signal.aborted ||
         active.current?.controller !== controller
       )
         return;
-      if (!answer) throw new Error("Assistant response is missing");
+      if (!answer || (mode === "web" && answer.mode !== "web")) throw new Error("Не удалось прочитать ответ. Повторите запрос.");
       setTurns((previous) =>
         previous.map((item) => (item.id === id ? { ...item, answer } : item))
       );
-    } catch {
+    } catch (error) {
       if (
         controller.signal.aborted ||
         active.current?.controller !== controller
@@ -182,7 +207,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
       setTurns((previous) =>
         previous.map((item) =>
           item.id === id
-            ? { ...item, issue: "Ответ не получен. Повторите запрос." }
+            ? { ...item, issue: error instanceof Error ? error.message : "Ответ не получен. Повторите запрос." }
             : item
         )
       );
@@ -223,6 +248,16 @@ function AssistantSession({ staff }: { staff: boolean }) {
                 : "Поиск по карточкам. Для ответов с ИИ войдите."}
           </DialogDescription>
         </DialogHeader>
+        <div className={styles.searchMode}>
+          <label className={styles.modeControl}>
+            <Globe2 size={16} aria-hidden="true" />
+            <span>Поиск в интернете</span>
+            <Button type="button" variant="ghost" role="switch" aria-checked={webSearch} className={styles.switch} onClick={() => changeSearchMode(!webSearch)} disabled={!staff || demo || sending} aria-label="Поиск в интернете">
+              <span className={styles.switchTrack} aria-hidden="true"><span /></span>
+            </Button>
+          </label>
+          <p>{demo ? "В учебном демо поиск работает по карточкам." : !staff ? "Войдите, чтобы искать в интернете с ИИ." : webSearch ? "Внешние сведения · перепроверьте по базе Канона" : "Ответы по утверждённым карточкам Канона"}</p>
+        </div>
         <div
           ref={transcript}
           tabIndex={turns.length ? 0 : undefined}
@@ -234,7 +269,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
             className={styles.examples}
           >
             <h3 id={exampleHeadingId}>Примеры вопросов</h3>
-            {exampleSets[exampleSet].map((question) => (
+            {(webSearch ? ["Что нового в строительстве кампуса «Южный Урал»?", "Какие исследования представили вузы кампуса в этом году?"] : exampleSets[exampleSet]).map((question) => (
               <Button
                 key={question}
                 type="button"
@@ -247,13 +282,13 @@ function AssistantSession({ staff }: { staff: boolean }) {
             ))}
           </section>
           {turns.map((turn) => (
-            <article key={turn.id} className="space-y-2 break-words">
+            <article key={turn.id} className={`${styles.turn} space-y-2 break-words`}>
               <p className="ml-6 rounded-lg bg-muted px-3 py-2 font-medium whitespace-pre-wrap">
                 {turn.message}
               </p>
               <div className="space-y-2" aria-live="polite">
                 {!turn.answer && !turn.issue && (
-                  <p className="text-muted-foreground">Ищем сведения…</p>
+                  <AiActivity label={turn.mode === "web" ? "Ищу в интернете" : "Сверяю утверждённые карточки"} detail={turn.mode === "web" ? "Собираю ответ и ссылки на внешние источники" : "Подбираю факты и версии источников"} />
                 )}
                 {turn.issue && (
                   <p className="text-muted-foreground">{turn.issue}</p>
@@ -320,6 +355,8 @@ function AssistantSession({ staff }: { staff: boolean }) {
             <Button
               type="submit"
               size="icon"
+              className={styles.send}
+              data-sending={sending || undefined}
               aria-label="Отправить вопрос"
               disabled={sending || !input.trim()}
             >
@@ -337,6 +374,20 @@ function AssistantSession({ staff }: { staff: boolean }) {
             </p>
           )}
         </form>
+        <Dialog open={warningOpen} onOpenChange={setWarningOpen}>
+          <DialogContent className={styles.warningPanel} finalFocus={composer}>
+            <DialogHeader>
+              <DialogTitle>Поиск за пределами Канона</DialogTitle>
+              <DialogDescription>
+                Вопрос будет отправлен в Яндекс Поиск. Ответ ИИ может содержать ошибки, а сведения в интернете — устареть. Перед использованием перепроверьте факты по утверждённым карточкам и ссылкам на источники.
+              </DialogDescription>
+            </DialogHeader>
+            <div className={styles.warningActions}>
+              <Button type="button" variant="outline" onClick={() => setWarningOpen(false)}>Остаться в базе</Button>
+              <Button type="button" onClick={acceptWebSearch}>Понятно, включить</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );
@@ -351,6 +402,22 @@ function AssistantReply({
   onNavigate: () => void;
   staff: boolean;
 }) {
+  if (answer.mode === "web") {
+    return (
+      <div className={styles.webAnswer}>
+        <p className={styles.webLabel}><ShieldAlert size={15} aria-hidden="true" /> Сведения из интернета</p>
+        <p className="whitespace-pre-wrap">{answer.message}</p>
+        {!!answer.externalSources?.length && <ol className={styles.externalSources} aria-label="Источники из интернета">
+          {answer.externalSources.map(source => <li key={`${source.id}:${source.url}`}>
+            <a href={source.url} target="_blank" rel="noopener noreferrer" className={styles.externalLink}>
+              <span>{source.title}<small>{new URL(source.url).hostname}</small></span><ArrowUpRight size={16} aria-hidden="true" />
+            </a>
+          </li>)}
+        </ol>}
+        <Link href="/knowledge" prefetch={false} onNavigate={onNavigate} className="text-xs text-primary underline underline-offset-2">Перепроверить по базе Канона</Link>
+      </div>
+    );
+  }
   const label =
     answer.status === "local" && !staff
       ? "Поиск без нейросети. Для ИИ войдите."

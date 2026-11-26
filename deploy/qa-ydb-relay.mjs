@@ -6,6 +6,9 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const tables = Object.freeze([
+  "account-identities",
+  "account-rate-limits",
+  "account-sessions",
   "editorial-documents",
   "editorial-revisions",
   "information-requests",

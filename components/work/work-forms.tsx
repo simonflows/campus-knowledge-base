@@ -5,6 +5,7 @@ import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
 import { useId, useRef, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
+import { AiActivity } from "@/components/ui/ai-activity";
 import { Button } from "@/components/ui/button";
 import { Field, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -202,6 +203,7 @@ export function CreateWorkflowForm({ kind, data, onCreated, onCancel }: {
           <Button type="submit" disabled={busy}><Save data-icon="inline-start" aria-hidden="true" />{busy ? "Сохраняем…" : "Создать"}</Button>
           <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>Закрыть форму</Button>
         </div>
+        {busy && <AiActivity label="Сохраняем новую запись" />}
       </form>
     </section>
   );

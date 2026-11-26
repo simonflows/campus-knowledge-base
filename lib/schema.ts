@@ -5,6 +5,9 @@ import {
 } from "@aws-sdk/client-dynamodb";
 
 export const TableName = {
+  ACCOUNT_IDENTITIES: "account-identities",
+  ACCOUNT_SESSIONS: "account-sessions",
+  ACCOUNT_RATE_LIMITS: "account-rate-limits",
   KNOWLEDGE_CARD_VERSIONS: "knowledge-card-versions",
   WORKFLOW_RECORDS: "workflow-records",
   INFORMATION_REQUESTS: "information-requests",
@@ -22,9 +25,28 @@ export interface TableSchema {
   keySchema: KeySchemaElement[];
   attributeDefinitions: AttributeDefinition[];
   globalSecondaryIndexes?: GlobalSecondaryIndex[];
+  /** Epoch seconds for rows eligible for asynchronous expiration. */
+  ttlAttribute?: string;
 }
 
 export const TABLE_SCHEMAS: Record<TableName, TableSchema> = {
+  [TableName.ACCOUNT_IDENTITIES]: {
+    name: TableName.ACCOUNT_IDENTITIES,
+    keySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    attributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+  },
+  [TableName.ACCOUNT_SESSIONS]: {
+    name: TableName.ACCOUNT_SESSIONS,
+    keySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    attributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+    ttlAttribute: "expiresAt",
+  },
+  [TableName.ACCOUNT_RATE_LIMITS]: {
+    name: TableName.ACCOUNT_RATE_LIMITS,
+    keySchema: [{ AttributeName: "id", KeyType: "HASH" }],
+    attributeDefinitions: [{ AttributeName: "id", AttributeType: "S" }],
+    ttlAttribute: "expiresAt",
+  },
   [TableName.KNOWLEDGE_CARD_VERSIONS]: {
     name: TableName.KNOWLEDGE_CARD_VERSIONS,
     keySchema: [{ AttributeName: "id", KeyType: "HASH" }],

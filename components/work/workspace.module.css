@@ -431,6 +431,10 @@
   padding: 1.1rem;
 }
 
+:global(html[data-motion="off"]) .loading :global([data-slot="skeleton"]) {
+  animation: none;
+}
+
 @media (max-width: 62rem) {
   .recordsLayout {
     grid-template-columns: 1fr;

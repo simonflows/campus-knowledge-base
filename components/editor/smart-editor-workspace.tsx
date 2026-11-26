@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { CanonAiOption, CanonAiReview, type FactAiReview } from "@/components/canon-ai-review";
+import { AiActivity } from "@/components/ui/ai-activity";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -61,7 +62,7 @@ import { EditorialReadinessPanel } from "./editorial-readiness-panel";
 import styles from "./editor-workflow.module.css";
 import "@/app/campus-workspaces.css";
 import { universities } from "@/lib/data";
-import type { SessionUser } from "@/lib/auth";
+import { canUseStaffWorkflow, type SessionUser } from "@/lib/auth";
 import {
   articleBasisLocation,
   hasCurrentArticleBasis,
@@ -288,6 +289,12 @@ const editorGuidance = {
   resolve: { text: "Сравните свой текст с сохранённой редакцией, чтобы продолжить.", label: "К сравнению редакций" },
 } as const;
 
+const privateDraftGuidance = {
+  download: { text: "Черновик сохранён. Его можно скачать с источниками.", label: "К скачиванию" },
+  save: { text: "Сохраните черновик перед скачиванием.", label: "К сохранению" },
+  "check-result": { text: "Проверка нашла противоречия. Посмотрите замечания и уточните текст.", label: "Посмотреть замечания" },
+} as const;
+
 export function SmartEditorWorkspace(props: Props) {
   return <EditorSession key={props.currentUser?.id} {...props} />;
 }
@@ -347,6 +354,7 @@ function EditorSession({
     [serverDocument, setServerDocument] = useState<EditorialDocument | null>(
       null
     );
+  const [pendingAction, setPendingAction] = useState<"generate" | "check" | null>(null);
   const linkRequest = useRef<AbortController | null>(null);
   const [linkOpening, setLinkOpening] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -375,7 +383,8 @@ function EditorSession({
   }, [surface]);
   const checkRequest = useRef<AbortController | null>(null);
   const editorAssistRequest = useRef<AbortController | null>(null);
-  const [editorAssistBusy, setEditorAssistBusy] = useState(false);
+  const [editorAssistStage, setEditorAssistStage] = useState<"save" | "request" | null>(null);
+  const editorAssistBusy = editorAssistStage !== null;
   const [editorAssistPreview, setEditorAssistPreview] = useState<EditorAssistPreview | null>(null);
   const [editorAssistIssue, setEditorAssistIssue] = useState("");
   const [useAiCheck, setUseAiCheck] = useState(true);
@@ -847,6 +856,7 @@ function EditorSession({
       return;
     }
     setBusy(true);
+    setPendingAction("generate");
     try {
       const result = await jsonRequest("/api/editor/generate", {
         method: "POST",
@@ -895,6 +905,7 @@ function EditorSession({
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
+      setPendingAction(null);
       setBusy(false);
     }
   };
@@ -951,6 +962,7 @@ function EditorSession({
     const controller = new AbortController();
     checkRequest.current = controller;
     setBusy(true);
+    setPendingAction("check");
     try {
       const result = await jsonRequest("/api/fact-check", {
         method: "POST",
@@ -966,6 +978,7 @@ function EditorSession({
       if (!controller.signal.aborted) toast.error((e as Error).message);
     } finally {
       checkRequest.current = null;
+      setPendingAction(null);
       setBusy(false);
     }
   };
@@ -1006,7 +1019,7 @@ function EditorSession({
     const fingerprint = JSON.stringify(contentRef.current);
     const controller = new AbortController();
     editorAssistRequest.current = controller;
-    setEditorAssistBusy(true);
+    setEditorAssistStage(pendingSave.current || fingerprint !== baselineRef.current ? "save" : "request");
     setEditorAssistPreview(null);
     setEditorAssistIssue("");
     try {
@@ -1014,6 +1027,7 @@ function EditorSession({
           fingerprint !== JSON.stringify(contentRef.current)) return;
       const current = docRef.current;
       if (!current) return;
+      setEditorAssistStage("request");
       const payload = await jsonRequest("/api/editor/assist", {
         method: "POST",
         signal: controller.signal,
@@ -1046,7 +1060,7 @@ function EditorSession({
     } finally {
       if (editorAssistRequest.current === controller) {
         editorAssistRequest.current = null;
-        if (active.current) setEditorAssistBusy(false);
+        if (active.current) setEditorAssistStage(null);
       }
     }
   };
@@ -1109,6 +1123,7 @@ function EditorSession({
     }
   };
   const canWork = !ended && currentUser && currentUser.role !== "guest";
+  const canUseApproval = canUseStaffWorkflow(currentUser);
   const groups = Array.from(new Set(documents.map((d) => d.originalId)));
   const nav = [
     { id: "write", label: "Черновики", icon: SquarePen },
@@ -1130,9 +1145,17 @@ function EditorSession({
         : content.sections.some((section) => section.chunks.some((chunk) => chunk.content.trim()))
           ? undefined
           : content.sections[0]?.chunks[0] ? `paragraph-${content.sections[0].chunks[0].id}` : "editor-add-section";
-  const nextAction = editorNextAction({ document: doc, viewerId: currentUser?.id, editable, dirty, conflict,
+  const suggestedAction = editorNextAction({ document: doc, viewerId: currentUser?.id, editable, dirty, conflict,
     missingText: Boolean(missingTextTarget), checked: Boolean(check), contradictions: Boolean(check?.summary.red),
   });
+  const nextAction = !canUseApproval && suggestedAction === "submit"
+    ? dirty ? "save" : "download"
+    : suggestedAction;
+  const guidance = nextAction === "download"
+    ? privateDraftGuidance.download
+    : !canUseApproval && (nextAction === "save" || nextAction === "check-result")
+      ? privateDraftGuidance[nextAction]
+      : editorGuidance[nextAction];
   const lastReviewEvent = editable && doc?.events.findLast(({ action }) =>
     action === "returned" || action === "submitted" || action === "approved");
   const returnComment = lastReviewEvent && lastReviewEvent.action === "returned" && lastReviewEvent.comment;
@@ -1146,7 +1169,11 @@ function EditorSession({
       openHistory(nextAction === "review" ? doc?.submittedRevisionId : undefined);
       return;
     }
-    const targets = { edit: missingTextTarget, check: "editor-facts", "check-result": "editor-check-result", save: "editor-save", submit: "editor-approval", resolve: "editor-conflict" };
+    if (nextAction === "download") {
+      const details = document.getElementById("editor-download")?.closest("details");
+      if (details) details.open = true;
+    }
+    const targets = { edit: missingTextTarget, check: "editor-facts", "check-result": "editor-check-result", save: "editor-save", submit: "editor-approval", resolve: "editor-conflict", download: "editor-download" };
     const target = targets[nextAction];
     if (target) document.getElementById(target)?.focus();
   };
@@ -1222,7 +1249,9 @@ function EditorSession({
         id="editor-page-title"
         icon={SquarePen}
         title="Умный редактор"
-        description="Готовьте статьи по официальным данным, проверяйте факты и согласовывайте редакции."
+        description={currentUser?.role === "author"
+          ? "Готовьте личные черновики по официальным данным и проверяйте факты."
+          : "Готовьте статьи по официальным данным, проверяйте факты и согласовывайте редакции."}
       >
         <MastheadCount count={cardsCount} label="карточек в справочнике">
           <AppLink href="/knowledge" className="desk-text-link">
@@ -1230,7 +1259,7 @@ function EditorSession({
           </AppLink>
         </MastheadCount>
       </WorkspaceMasthead>
-      {linkOpening && <p role="status" className="desk-footnote mb-3">Открываем запись…</p>}
+      {linkOpening && <AiActivity label="Открываем запись" className="mb-3" />}
       {linkError && (
         <Alert className="mb-4">
           <AlertTitle>Ссылка не открыта</AlertTitle>
@@ -1474,11 +1503,11 @@ function EditorSession({
                 <div className={styles.guidance}>
                   <div>
                     <h3>Следующий шаг</h3>
-                    <p>{editorGuidance[nextAction].text}</p>
+                    <p>{guidance.text}</p>
                     {returnComment && <p className={styles.returnComment}><strong>Замечание согласующего.</strong> {returnComment}</p>}
                   </div>
                   <Button size="sm" variant="outline" disabled={busy} onClick={followNextAction}>
-                    {editorGuidance[nextAction].label} <ArrowRight data-icon="inline-end" aria-hidden="true" />
+                    {guidance.label} <ArrowRight data-icon="inline-end" aria-hidden="true" />
                   </Button>
                 </div>
               )}
@@ -1641,10 +1670,13 @@ function EditorSession({
                           disabled={!editable || busy}
                           onClick={() => void generate()}
                         >
-                          <Sparkles data-icon="inline-start" />
-                          Подготовить текст
+                          <Sparkles data-icon="inline-start" aria-hidden="true" />
+                          {pendingAction === "generate" ? "Готовим текст…" : "Подготовить текст"}
                         </Button>
                       </div>
+                      {pendingAction === "generate" && (
+                        <AiActivity label="Готовим текст по утверждённым источникам" />
+                      )}
                       {provider !== "canonical" && (
                         <p className="desk-footnote">
                           {demo ? "Учебный текст собирается в браузере, без отправки запроса во внешнюю нейросеть." : "Тема запроса и данные утверждённых источников передаются в Yandex AI Studio."}
@@ -1952,10 +1984,14 @@ function EditorSession({
                       disabled={busy}
                       onClick={() => void checkText()}
                     >
-                      <BadgeCheck data-icon="inline-start" /> Проверить факты
+                      <BadgeCheck data-icon="inline-start" aria-hidden="true" />
+                      {pendingAction === "check" ? "Проверяем факты…" : "Проверить факты"}
                     </Button>
+                    {pendingAction === "check" && (
+                      <AiActivity label="Сверяем черновик с утверждёнными данными" />
+                    )}
                   </div>
-                  <div className="desk-inspector-section">
+                  {canUseApproval && <div className="desk-inspector-section">
                     <h3 id="editor-approval" tabIndex={-1} className={styles.jumpTarget}>
                       <ClipboardCheck size={17} aria-hidden="true" />{" "}
                       Согласование
@@ -2003,8 +2039,8 @@ function EditorSession({
                       <Send data-icon="inline-start" /> Отправить на
                       согласование
                     </Button>
-                  </div>
-                  {doc && (
+                  </div>}
+                  {doc && canUseApproval && (
                     <EditorialReadinessPanel
                       key={doc.id}
                       document={doc}
@@ -2015,7 +2051,7 @@ function EditorSession({
                   {doc ? (
                     <details className={`desk-inspector-section ${styles.options}`}>
                       <summary>{editable ? "Варианты текста и скачивание" : "Скачать материал"}</summary>
-                      <Button variant="outline" disabled={dirty || busy} {...downloadProps}>
+                      <Button id="editor-download" variant="outline" disabled={dirty || busy} {...downloadProps}>
                         <Download data-icon="inline-start" /> Скачать DOCX с источниками
                       </Button>
                       {editable && <div className="flex flex-col gap-2">
@@ -2056,10 +2092,14 @@ function EditorSession({
                               onClick={() => void requestEditorialAssist("variant")}>
                               <Sparkles data-icon="inline-start" /> Подготовить вариант с ИИ
                             </Button>
-                            {editorAssistBusy && <p role="status" className="text-sm">ИИ готовит предложение…</p>}
+                            {editorAssistStage && (
+                              <AiActivity label={editorAssistStage === "save"
+                                ? "Сохраняем текущую редакцию"
+                                : demo ? "Подбираем формулировку по данным демо" : "Готовим предложение с ИИ"} />
+                            )}
                             {editorAssistIssue && <p role="status" className="text-sm">{editorAssistIssue}</p>}
                             {editorAssistPreview && (
-                              <Alert>
+                              <Alert className="workspace-result">
                                 <AlertTitle>Предложение ИИ</AlertTitle>
                                 <AlertDescription>
                                   <p className="whitespace-pre-wrap">{editorAssistPreview.suggestion.action === "rewrite"
@@ -2080,12 +2120,13 @@ function EditorSession({
                   ) : null}
                 </aside>
                 {check ? (
-                  <div className="desk-editor-check flex min-w-0 flex-col gap-3">
+                  <div className="workspace-result desk-editor-check flex min-w-0 flex-col gap-3" aria-busy={pendingAction === "check"}>
                     <div className={styles.resultHeading}>
                       <h3 id="editor-check-result" ref={checkResult} tabIndex={-1} className={styles.jumpTarget}>Результат проверки фактов</h3>
-                      {(nextAction === "save" || nextAction === "submit") && (
+                      {(nextAction === "save" || nextAction === "submit" || nextAction === "download") && (
                         <Button size="sm" variant="outline" disabled={busy} onClick={followNextAction}>
-                          {nextAction === "save" ? "Перейти к сохранению" : "Выбрать согласующего"}
+                          {nextAction === "save" ? "Перейти к сохранению"
+                            : nextAction === "download" ? "Перейти к скачиванию" : "Выбрать согласующего"}
                           <ArrowRight data-icon="inline-end" aria-hidden="true" />
                         </Button>
                       )}
@@ -2186,6 +2227,7 @@ function EditorSession({
                     ) : null}
                   </>
                 ) : null}
+                {canUseApproval && <>
                 <Field>
                   <FieldLabel htmlFor="editor-comment">
                     Комментарий к {reviewRevision ? "выбранной" : "текущей"}{" "}
@@ -2240,6 +2282,7 @@ function EditorSession({
                     Открыть отправленную редакцию для согласования
                   </Button>
                 )}
+                </>}
                 {doc.events.map((event) => (
                   <div className="desk-history-event" key={event.id}>
                     <p>

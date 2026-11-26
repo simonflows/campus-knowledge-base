@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
-import { getSessionUser } from "@/lib/auth-server";
+import { readRouteSession } from "@/lib/account-route-session";
 import { editorialErrorResponse, privateHeaders } from "@/lib/editorial-http";
 import { getCardVersionId } from "@/lib/knowledge-versions";
 import { getCanonicalKnowledgeCards } from "@/lib/models";
 
 export async function GET() {
-  const user = await getSessionUser();
+  const session = await readRouteSession();
+  if (session.response) return session.response;
+  const user = session.user;
   if (!user || user.role === "guest") {
     return NextResponse.json({ error: "Источники редактора доступны сотрудникам" }, { status: user ? 403 : 401 });
   }

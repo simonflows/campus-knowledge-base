@@ -3,6 +3,7 @@ import { ClipboardList } from "lucide-react";
 import { WorkWorkspace } from "@/components/work/work-workspace";
 import { WorkspaceMasthead } from "@/components/workspace-masthead";
 import { getSessionUser } from "@/lib/auth-server";
+import { canUseStaffWorkflow } from "@/lib/auth";
 import { normalizeWorkSection } from "@/components/work/work-state";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export default async function WorkPage({
   searchParams: Promise<{ tab?: string; record?: string; new?: string }>;
 }) {
   const [user, params] = await Promise.all([getSessionUser(), searchParams]);
-  if (!user || user.role === "guest") {
+  if (!canUseStaffWorkflow(user)) {
     return (
       <div className="atlas-wrap campus-workspace">
         <WorkspaceMasthead id="work-title" title="Моя работа" icon={ClipboardList}

@@ -9,6 +9,7 @@ import {
   ResourceNotFoundException,
   ScanCommand,
   type AttributeValue,
+  type ScanCommandInput,
   type TableDescription,
   waitUntilTableExists,
 } from "@aws-sdk/client-dynamodb";
@@ -114,6 +115,7 @@ export type DatabaseArchive = ArchiveBody & { sha256: string };
 type DatabaseConnection = { client: DynamoDBClient; endpoint: string };
 type RestoreTarget = { prefix?: string; disasterRecovery?: boolean };
 type TargetTable = { table: ArchivedTable; name: string };
+type ScanFilter = Pick<ScanCommandInput, "FilterExpression" | "ExpressionAttributeNames" | "ExpressionAttributeValues">;
 
 function commandOptions() {
   return { abortSignal: AbortSignal.timeout(COMMAND_TIMEOUT) };
@@ -376,6 +378,7 @@ async function scan(
   client: DynamoDBClient,
   name: string,
   budget: { rows: number; bytes: number },
+  filter?: ScanFilter,
 ) {
   const items: ArchiveItem[] = [];
   const seenCursors = new Set<string>();
@@ -385,6 +388,7 @@ async function scan(
       TableName: name,
       ConsistentRead: true,
       ExclusiveStartKey: cursor,
+      ...filter,
     }), commandOptions());
     for (const found of response.Items ?? []) {
       const item = encodeItem(found, true);
@@ -409,6 +413,8 @@ export async function captureDatabase({
   timestamp = new Date(),
 }: DatabaseConnection & { scope?: ArchiveScope; timestamp?: Date }): Promise<DatabaseArchive> {
   const sourceSha256 = hash(validateDatabaseEndpoint(endpoint));
+  const createdAt = timestamp.toISOString();
+  const cutoff = { N: String(Date.parse(createdAt) / 1000) };
   const tables: ArchivedTable[] = [];
   const budget = { rows: 0, bytes: 0 };
   try {
@@ -422,7 +428,14 @@ export async function captureDatabase({
       if (checksum(schema) !== checksum(expectedSchema(name))) {
         throw new DatabaseBackupError("source-schema");
       }
-      const items = await scan(client, name, budget);
+      const ttlAttribute = TABLE_SCHEMAS[name].ttlAttribute;
+      // TTL deletion is asynchronous. Preserve permanent and nonnumeric rows,
+      // and compare numeric expiry with the same instant on every page.
+      const items = await scan(client, name, budget, ttlAttribute ? {
+        FilterExpression: "NOT (attribute_type(#expiresAt, :numberType) AND #expiresAt <= :cutoff)",
+        ExpressionAttributeNames: { "#expiresAt": ttlAttribute },
+        ExpressionAttributeValues: { ":numberType": { S: "N" }, ":cutoff": cutoff },
+      } : undefined);
       const body = { name, schema, count: items.length, items };
       tables.push({ ...body, sha256: checksum(body) });
     }
@@ -430,7 +443,7 @@ export async function captureDatabase({
     if (error instanceof DatabaseBackupError) throw error;
     throw new DatabaseBackupError("source-read");
   }
-  const body: ArchiveBody = { version: 1, createdAt: timestamp.toISOString(), scope, sourceSha256, tables };
+  const body: ArchiveBody = { version: 1, createdAt, scope, sourceSha256, tables };
   return { ...body, sha256: checksum(body) };
 }
 
