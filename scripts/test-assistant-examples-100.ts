@@ -92,6 +92,51 @@ test("natural questions answer from current full approved fields", async () => {
   }
 });
 
+test("the campus area answer includes the approved passport version when asked for sources", async () => {
+  const question = "Какова общая площадь кампуса и из каких источников это известно?";
+  const answer = await answerCanonChat({
+    request, accountId: "author-fixture", question, cards: knowledgeSeedCards,
+    ask: async () => ({ status: "failed" }),
+  });
+  assert.equal(answer.status, "local");
+  assert.equal(answer.presentation, "summary");
+  assert.match(answer.message, /121,8–123 тыс\. м²/u);
+  assert.equal(answer.citations.length, 1);
+  const [citation] = answer.citations;
+  assert.equal(citation.cardId, "campus-passport");
+  assert.equal(citation.label, "Общая площадь объектов");
+  assert.match(citation.quote, /^121,8–123 тыс\. м²/u);
+  const sourceUrl = new URL(citation.href, request.url);
+  assert.equal(sourceUrl.pathname, "/knowledge");
+  assert.equal(sourceUrl.searchParams.get("card"), citation.cardId);
+  assert.equal(sourceUrl.searchParams.get("version"), citation.versionId);
+  assert.ok(citation.versionId);
+});
+
+test("asking for sources preserves the constraints of a campus area question", async () => {
+  for (const question of [
+    "Какова площадь УНК кампуса и из каких источников это известно?",
+    "Какова общая площадь кампуса без УНК и из каких источников это известно?",
+    "Какова общая площадь кампуса в 2024 году и из каких источников это известно?",
+    "Какова общая площадь кампуса «Северный Урал» и из каких источников это известно?",
+    "Какова планируемая общая площадь кампуса и из каких источников это известно?",
+    "Какова общая площадь кампуса и из каких источников это известно за 2024 год?",
+  ]) {
+    const answer = await local(question);
+    assert.deepEqual(answer.citations, [], question);
+    assert.ok(!answer.actions.some(action => action.href.includes("card=campus-passport")), question);
+  }
+});
+
+test("access help explains Yandex sign-in and the roles for authors and coordinators", async () => {
+  const answer = await local("Как получить доступ?");
+  assert.match(answer.message, /Войти через Яндекс/u);
+  assert.match(answer.message, /роль автора/u);
+  assert.match(answer.message, /координатор/u);
+  assert.doesNotMatch(answer.message, /подтвердите электронную почту/u);
+  assert.ok(answer.actions.some(action => action.href === "/login"));
+});
+
 test("hotel queries preserve the phase boundary and choose approved standalone rows", async () => {
   const current = { ...campus, campusMetrics: [
     { label: "Первая очередь гостиниц", value: "2 корпуса на 352 места", note: "Проектный показатель." },
