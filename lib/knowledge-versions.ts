@@ -12,6 +12,11 @@ import {
   getApprovedVersion,
   type KnowledgeCard,
 } from "./knowledge";
+import {
+  isRoadmapIndicator,
+  type IndicatorConfirmation,
+  type IndicatorSlot,
+} from "./strategy";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
 
@@ -24,6 +29,10 @@ export type ApprovedCardVersion = {
   actorName: string;
   reason: string;
   legacyBaseline: boolean;
+  /** Internal audit metadata, excluded from the public snapshot and its hash. */
+  indicatorConfirmations?: Partial<
+    Record<IndicatorSlot, IndicatorConfirmation>
+  >;
 };
 
 export type CardVersionActor = { id: string; name: string };
@@ -90,6 +99,10 @@ export function describeApprovedCardVersion(
         ? "Начальный снимок доступной истории"
         : "Утверждена карточка"),
     legacyBaseline: options.legacyBaseline,
+    ...(isRoadmapIndicator(published) &&
+      published.indicatorConfirmations && {
+        indicatorConfirmations: published.indicatorConfirmations,
+      }),
   };
 }
 

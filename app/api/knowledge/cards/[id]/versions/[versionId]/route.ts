@@ -43,7 +43,7 @@ export async function GET(
         : null);
     if (!version || version.cardId !== id) return notFound();
     return NextResponse.json(
-      { ...version, actorId: undefined },
+      { ...version, actorId: undefined, indicatorConfirmations: undefined },
       {
         headers: { "Cache-Control": "private, no-store" },
       }

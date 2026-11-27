@@ -1,3 +1,8 @@
+import { isManagedStrategyCard } from "./strategy";
+import {
+  sourceDescription,
+  strategySearchFragments,
+} from "./strategy-evidence";
 import {
   getUniversityName,
   placementStatusLabels,
@@ -20,6 +25,7 @@ function universityNames(id: string) {
 
 /** Search card content already filtered by the caller's access policy. */
 function structuredFragments(card: KnowledgeCard): string[] {
+  if (isManagedStrategyCard(card)) return strategySearchFragments(card);
   const common = (card.verifiedFacts ?? []).map((fact) =>
     [
       fact.scope,
@@ -97,7 +103,7 @@ function searchFields(card: KnowledgeCard, structuredOnly: boolean) {
     ...structuredFragments(card).map((item): [string, number] => [item, 4]),
     ...(structuredOnly
       ? []
-      : card.referenceDescription
+      : sourceDescription(card)
           .split(/\r?\n/u)
           .map((line): [string, number] => [line, 1])),
   ];
@@ -130,7 +136,10 @@ function equipmentUnits(
   isModel: (word: string) => boolean
 ) {
   const normalized = normalizeKnowledgeText(field.text);
-  const groups: Array<{ words: string[]; heads: Array<{ start: number; end: number }> }> = [];
+  const groups: Array<{
+    words: string[];
+    heads: Array<{ start: number; end: number }>;
+  }> = [];
   let words: string[] = [];
   let heads: Array<{ start: number; end: number }> = [];
   function flush() {
@@ -169,10 +178,14 @@ function equipmentUnits(
       details: [
         ...(index === 0
           ? prefix
-          : modelFirst ? words.slice(heads[index - 1].end + 1, start) : []),
+          : modelFirst
+            ? words.slice(heads[index - 1].end + 1, start)
+            : []),
         ...(index === heads.length - 1
           ? suffix
-          : modelFirst ? [] : words.slice(end + 1, heads[index + 1].start)),
+          : modelFirst
+            ? []
+            : words.slice(end + 1, heads[index + 1].start)),
       ],
     }));
   });
@@ -187,31 +200,42 @@ function matchesEquipmentConstraints(
   if (!query.words.some(({ word }) => equipmentKind.test(word))) return true;
   const aliases = query.words
     .map(({ word }) => word)
-    .filter((word) =>
-      word.length >= 4 &&
-      !equipmentKind.test(word) &&
-      !equipmentModifier.test(word) &&
-      catalog.some((item) => matchKnowledgeTerm(item, [word]) >= 0)
+    .filter(
+      (word) =>
+        word.length >= 4 &&
+        !equipmentKind.test(word) &&
+        !equipmentModifier.test(word) &&
+        catalog.some((item) => matchKnowledgeTerm(item, [word]) >= 0)
     );
   const isModel = (word: string) =>
-    modelToken.test(word) || aliases.some((alias) => sameKnowledgeWord(word, alias));
+    modelToken.test(word) ||
+    aliases.some((alias) => sameKnowledgeWord(word, alias));
   for (const { kinds, details } of equipmentUnits(query, isModel)) {
     const model = details.filter(isModel);
     if (!model.length) continue;
     const modifiers = details.filter((word) => equipmentModifier.test(word));
-    const listed = catalog.filter(
-      (item) => model.some((word) => matchKnowledgeTerm(item, [word]) >= 0)
+    const listed = catalog.filter((item) =>
+      model.some((word) => matchKnowledgeTerm(item, [word]) >= 0)
     );
     // An explicit equipment record takes precedence over incidental mentions in
     // the card title, description, or the names of other equipment.
     const evidence = listed.length ? listed : fields;
-    const confirmed = evidence.some((field) => equipmentUnits(field, isModel).some((unit) =>
-      kinds.every((kind) => unit.kinds.some((word) => sameKnowledgeWord(word, kind))) &&
-      modifiers.every((modifier) => unit.details.some((word) => sameKnowledgeWord(word, modifier))) &&
-      unit.details.some((_, index) => model.every((word, offset) =>
-        sameKnowledgeWord(word, unit.details[index + offset] ?? "")
-      ))
-    ));
+    const confirmed = evidence.some((field) =>
+      equipmentUnits(field, isModel).some(
+        (unit) =>
+          kinds.every((kind) =>
+            unit.kinds.some((word) => sameKnowledgeWord(word, kind))
+          ) &&
+          modifiers.every((modifier) =>
+            unit.details.some((word) => sameKnowledgeWord(word, modifier))
+          ) &&
+          unit.details.some((_, index) =>
+            model.every((word, offset) =>
+              sameKnowledgeWord(word, unit.details[index + offset] ?? "")
+            )
+          )
+      )
+    );
     if (!confirmed) return false;
   }
   return true;

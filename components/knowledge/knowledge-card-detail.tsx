@@ -1,4 +1,8 @@
 "use client";
+import {
+  buildStrategyCardMarkdown,
+  strategySourceFacts,
+} from "@/lib/strategy-evidence";
 
 import { WorkspaceExternalLink } from "@/components/navigation/workspace-navigation";
 
@@ -38,6 +42,7 @@ import { Separator } from "@/components/ui/separator";
 import { DiskSyncPanel } from "@/components/disk-sync/disk-sync-panel";
 import { KnowledgeCardAccessPanel } from "@/components/knowledge/knowledge-card-access-panel";
 import { KnowledgeUsagePanel } from "./knowledge-usage-panel";
+import { StrategyCardView } from "./strategy-views";
 import { canUseStaffWorkflow, type SessionUser } from "@/lib/auth";
 import {
   cardStatusLabels,
@@ -54,6 +59,7 @@ import {
   type KnowledgeCard,
   type KnowledgeFolderNode,
 } from "@/lib/knowledge";
+import { isManagedStrategyType } from "@/lib/strategy";
 import { cn } from "@/lib/utils";
 
 type KnowledgeCardDetailProps = {
@@ -77,6 +83,8 @@ function buildClientCardMarkdown(
   customTypes: CardTypeWithStats[],
   tree: KnowledgeFolderNode[]
 ): string {
+  const strategy = buildStrategyCardMarkdown(card);
+  if (strategy) return strategy;
   const lines = [
     `# ${card.title}`,
     "",
@@ -103,7 +111,11 @@ function buildClientCardMarkdown(
       `- Сфера: ${card.sphere}`,
       `- Инициатор: ${card.isJoint && !card.initiatorUniversityId ? "Совместная инициатива, отдельный инициатор не установлен" : getUniversityName(card.initiatorUniversityId)}`,
       `- Соисполнители: ${card.coExecutors.join(", ") || "нет"}`,
-      ...(card.externalParticipantNames?.length ? [`- Внешние участники: ${card.externalParticipantNames.join(", ")}. Подтверждение участников требует отдельной сверки.`] : []),
+      ...(card.externalParticipantNames?.length
+        ? [
+            `- Внешние участники: ${card.externalParticipantNames.join(", ")}. Подтверждение участников требует отдельной сверки.`,
+          ]
+        : []),
       `- Партнёр: ${card.industrialPartner}`,
       `- Стадия: ${card.readinessStage}`,
       `- Контур: ${card.contour}`,
@@ -146,6 +158,8 @@ function buildClientCardMarkdown(
     );
   }
 
+  if (getCardStatus(card) === "approved")
+    lines.push("", ...strategySourceFacts(card).map((fact) => fact.text));
   return `${lines.join("\n").trim()}\n`;
 }
 
@@ -174,7 +188,8 @@ function CustomFieldValueView({
   }
 
   if (field.type === "cardReference") {
-    if (readOnlyVersion) return <span className="break-words">{String(value)}</span>;
+    if (readOnlyVersion)
+      return <span className="break-words">{String(value)}</span>;
     const referenced = cards.find((card) => card.id === value);
 
     return referenced ? (
@@ -259,13 +274,16 @@ export function KnowledgeCardDetail({
   const joint = isJointProject(card);
   const status = getCardStatus(card);
   const canDelete =
-    !readOnlyVersion && currentUser?.role === "admin" &&
+    !readOnlyVersion &&
+    currentUser?.role === "admin" &&
     dbAvailable &&
     card.id !== "campus-passport";
   const customType =
     card.type === "custom"
       ? (customTypes.find((type) => type.id === card.customTypeId) ?? null)
       : null;
+  const strategyType =
+    card.type === "custom" && isManagedStrategyType(card.customTypeId);
 
   const handleCopyMarkdown = async () => {
     try {
@@ -330,7 +348,8 @@ export function KnowledgeCardDetail({
           onClick={onBack}
           className="-ml-2 h-10 sm:h-8"
         >
-          <ArrowLeft className="h-4 w-4" />{readOnlyVersion ? "К текущей карточке" : "К списку папки"}
+          <ArrowLeft className="h-4 w-4" />
+          {readOnlyVersion ? "К текущей карточке" : "К списку папки"}
         </Button>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -481,23 +500,33 @@ export function KnowledgeCardDetail({
             ) : null}
           </div>
 
-          {readOnlyVersion ? null : <KnowledgeCardAccessPanel
-            card={card}
-            currentUser={currentUser}
-            dbAvailable={dbAvailable}
-            onCardUpdated={onCardUpdated}
-            onEdit={onEdit}
-          />}
+          {strategyType ? (
+            <StrategyCardView card={card} historical={readOnlyVersion} />
+          ) : null}
 
-          {readOnlyVersion ? null : <DiskSyncPanel<KnowledgeCard>
-            diskSync={card.diskSync}
-            retryEndpoint={`/api/knowledge/cards/${card.id}/sync`}
-            canRetry={dbAvailable && status === "approved"}
-            entityLabel="карточка"
-            onSynced={onCardUpdated}
-          />}
+          {readOnlyVersion ? null : (
+            <KnowledgeCardAccessPanel
+              card={card}
+              currentUser={currentUser}
+              dbAvailable={dbAvailable}
+              onCardUpdated={onCardUpdated}
+              onEdit={onEdit}
+            />
+          )}
+
+          {readOnlyVersion ? null : (
+            <DiskSyncPanel<KnowledgeCard>
+              diskSync={card.diskSync}
+              retryEndpoint={`/api/knowledge/cards/${card.id}/sync`}
+              canRetry={dbAvailable && status === "approved"}
+              entityLabel="карточка"
+              onSynced={onCardUpdated}
+            />
+          )}
           {additionalSections}
-          {canUseStaffWorkflow(currentUser) ? <KnowledgeUsagePanel key={card.id} cardId={card.id} /> : null}
+          {canUseStaffWorkflow(currentUser) ? (
+            <KnowledgeUsagePanel key={card.id} cardId={card.id} />
+          ) : null}
 
           {joint ? (
             <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 text-sm text-foreground">
@@ -586,7 +615,12 @@ export function KnowledgeCardDetail({
                     ? card.coExecutors.join(", ")
                     : "Нет"}
                 </Field>
-                {card.externalParticipantNames?.length ? <Field label="Внешние участники">{card.externalParticipantNames.join(", ")}. До отдельного подтверждения участников карточка остаётся черновиком.</Field> : null}
+                {card.externalParticipantNames?.length ? (
+                  <Field label="Внешние участники">
+                    {card.externalParticipantNames.join(", ")}. До отдельного
+                    подтверждения участников карточка остаётся черновиком.
+                  </Field>
+                ) : null}
                 <Field label="Индустриальный партнёр">
                   {card.industrialPartner}
                 </Field>
@@ -673,7 +707,11 @@ export function KnowledgeCardDetail({
             </>
           ) : null}
 
-          {card.type === "custom" ? (
+          {card.strategyLinks?.length ? (
+            <StrategyCardView card={card} historical={readOnlyVersion} />
+          ) : null}
+
+          {card.type === "custom" && !strategyType ? (
             <>
               {customType ? (
                 <dl className="data-index-detail-fields grid gap-5 sm:grid-cols-2">

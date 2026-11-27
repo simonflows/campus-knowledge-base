@@ -188,6 +188,11 @@ export function prepareReviewedPackage(
     const input = content.data;
     if (input.type === "custom")
       throw new ReviewedPackageError("custom-type", cardId);
+    if (
+      (input.type === "project" || input.type === "laboratory") &&
+      input.strategyLinks?.length
+    )
+      throw new ReviewedPackageError("approval-denied", cardId);
     const participants =
       input.type === "project" && input.isJoint
         ? input.participantUniversityIds

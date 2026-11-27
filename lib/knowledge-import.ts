@@ -1,10 +1,19 @@
 import { z } from "zod";
 import { areCardOwnerIdsAssignable, resolveLegacyCardOwnerIds } from "./auth";
-import { folderIds, isCardReadyForPublication, type KnowledgeCard } from "./knowledge";
+import {
+  folderIds,
+  isCardReadyForPublication,
+  type KnowledgeCard,
+} from "./knowledge";
 import { sessionDirectory } from "./pilot-auth";
 import { getStorageMode } from "./db";
 import { createPendingDiskSync } from "./disk-sync";
-import { getCardTypeById, getKnowledgeCardById, insertApprovedKnowledgeCard } from "./models";
+import {
+  getCardTypeById,
+  getKnowledgeCardById,
+  insertApprovedKnowledgeCard,
+} from "./models";
+import { isManagedStrategyCard } from "./strategy";
 import {
   buildCustomFieldValuesSchema,
   canonicalCustomFieldValues,
@@ -52,6 +61,15 @@ function parseManifest(value: unknown) {
       );
     ids.add(id);
     const card = input.data;
+    if (
+      isManagedStrategyCard(card) ||
+      ((card.type === "project" || card.type === "laboratory") &&
+        card.strategyLinks?.length)
+    ) {
+      throw new ImportValidationError(
+        `Карточка №${index + 1}: документы, связи и показатели вносятся через согласование карточек.`
+      );
+    }
     if (!isCardReadyForPublication(card)) {
       throw new ImportValidationError(
         `Карточка №${index + 1}: для утверждённого проекта укажите стадию и контур по источникам.`
@@ -122,7 +140,10 @@ export async function importApprovedKnowledge(value: unknown, apply = false) {
       throw new ImportValidationError(
         "Проверьте поля пользовательской карточки."
       );
-    validated.push({ ...card, customFields: canonicalCustomFieldValues(fields.data) });
+    validated.push({
+      ...card,
+      customFields: canonicalCustomFieldValues(fields.data),
+    });
   }
   if (!apply) return result;
   for (const card of validated) {
@@ -138,7 +159,7 @@ export async function importApprovedKnowledge(value: unknown, apply = false) {
         !(
           error instanceof Error &&
           error.name === "ConditionalCheckFailedException" &&
-          await getKnowledgeCardById(card.id)
+          (await getKnowledgeCardById(card.id))
         )
       )
         throw error;

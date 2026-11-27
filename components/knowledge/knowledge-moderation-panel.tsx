@@ -15,11 +15,7 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription } from "@/components/ui/card";
 import {
   getParticipantApprovals,
   getRequiredStakeholderApprovals,
@@ -30,6 +26,11 @@ import {
   type KnowledgeCard,
 } from "@/lib/knowledge";
 import { roleShortLabels } from "@/lib/auth";
+import {
+  managedStrategyType,
+  type ConfirmIndicatorAction,
+} from "@/lib/strategy";
+import { unconfirmedIndicatorSlots } from "./strategy-views";
 
 type KnowledgeModerationPanelProps = {
   cards: KnowledgeCard[];
@@ -49,7 +50,7 @@ export function KnowledgeModerationPanel({
 
   const handleAction = async (
     card: KnowledgeCard,
-    action: "approve" | "reject"
+    action: "approve" | "reject" | ConfirmIndicatorAction
   ) => {
     if (busyId !== null) return;
     setBusyId(`${card.id}-${action}`);
@@ -87,9 +88,12 @@ export function KnowledgeModerationPanel({
 
       onCardUpdated(data as KnowledgeCard);
       toast.success(
-        action === "approve"
-          ? "Черновик добавлен в утверждённую базу"
-          : "Черновик отклонён"
+        {
+          approve: "Черновик добавлен в утверждённую базу",
+          reject: "Черновик отклонён",
+          "confirm-plan": "План подтверждён",
+          "confirm-actual": "Факт подтверждён",
+        }[action]
       );
     } catch {
       toast.error("Ошибка сети при модерации карточки");
@@ -103,7 +107,10 @@ export function KnowledgeModerationPanel({
       <details className="group/moderation">
         <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 focus-visible:[outline-offset:-4px] [&::-webkit-details-marker]:hidden">
           <span className="flex min-w-0 items-center gap-2 font-heading text-xl leading-snug font-medium">
-            <ClipboardCheck aria-hidden="true" className="size-5 shrink-0 text-amber-600" />
+            <ClipboardCheck
+              aria-hidden="true"
+              className="size-5 shrink-0 text-amber-600"
+            />
             Запросы на подтверждение
           </span>
           <span className="flex shrink-0 items-center gap-2">
@@ -123,8 +130,15 @@ export function KnowledgeModerationPanel({
           {cards.map((card) => {
             const requiredUniversityIds = getRequiredUniversityApprovals(card);
             const approvals = getParticipantApprovals(card);
-            const waitingRoles = getRequiredStakeholderApprovals(card).filter(role => !card.stakeholderApprovals?.[role]);
+            const waitingRoles = getRequiredStakeholderApprovals(card).filter(
+              (role) => !card.stakeholderApprovals?.[role]
+            );
             const ready = isJointFullyApproved(card) && !waitingRoles.length;
+            const waitingIndicator = unconfirmedIndicatorSlots(card).length > 0;
+            const managedType =
+              card.type === "custom"
+                ? managedStrategyType(card.customTypeId)
+                : null;
 
             return (
               <div
@@ -135,7 +149,10 @@ export function KnowledgeModerationPanel({
                   <div className="min-w-0 space-y-1">
                     <p className="break-words font-medium">{card.title}</p>
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <span>{knowledgeCardTypeLabels[card.type]}</span>
+                      <span>
+                        {managedType?.name ??
+                          knowledgeCardTypeLabels[card.type]}
+                      </span>
                       {card.submittedByName ? (
                         <span>· от {card.submittedByName}</span>
                       ) : null}
@@ -176,7 +193,7 @@ export function KnowledgeModerationPanel({
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-10 flex-1 sm:h-7 sm:flex-none"
+                      className="min-h-11 flex-1 sm:flex-none"
                       onClick={() => onOpenCard(card.id)}
                     >
                       Открыть
@@ -184,9 +201,9 @@ export function KnowledgeModerationPanel({
                     <Button
                       type="button"
                       size="sm"
-                      className="h-10 flex-1 sm:h-7 sm:flex-none"
+                      className="min-h-11 flex-1 sm:flex-none"
                       onClick={() => handleAction(card, "approve")}
-                      disabled={!ready || busyId !== null}
+                      disabled={!ready || waitingIndicator || busyId !== null}
                     >
                       <CheckCircle2 className="h-4 w-4" />
                       Одобрить
@@ -195,7 +212,7 @@ export function KnowledgeModerationPanel({
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-10 flex-1 sm:h-7 sm:flex-none"
+                      className="min-h-11 flex-1 sm:flex-none"
                       onClick={() => handleAction(card, "reject")}
                       disabled={busyId !== null}
                     >
@@ -204,10 +221,16 @@ export function KnowledgeModerationPanel({
                     </Button>
                   </div>
                 </div>
+                {waitingIndicator ? (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Откройте карточку, чтобы сверить определение, контур и
+                    выдержки перед подтверждением плана и факта.
+                  </p>
+                ) : null}
                 {!ready ? (
                   <p className="mt-2 text-xs text-amber-900">
                     {waitingRoles.length
-                      ? `Ожидаются согласования: ${waitingRoles.map(role => roleShortLabels[role]).join(", ")}.`
+                      ? `Ожидаются согласования: ${waitingRoles.map((role) => roleShortLabels[role]).join(", ")}.`
                       : "Ожидаются подтверждения вузов-участников."}
                   </p>
                 ) : null}

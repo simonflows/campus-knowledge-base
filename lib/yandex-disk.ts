@@ -1,3 +1,10 @@
+import {
+  isManagedStrategyCard,
+  isOfficialDocument,
+  isRoadmapIndicator,
+} from "./strategy";
+import { sourceDescription, strategySourceFacts } from "./strategy-evidence";
+import { hydrateCanonicalStrategySources } from "./strategy-sources";
 import { createHash } from "node:crypto";
 import { isApprovedArticle, type ReadyArticle } from "./articles";
 import {
@@ -87,21 +94,42 @@ function toResourcePath(segments: string[]): string {
   return `${root}/${segments.join("/")}`;
 }
 
-export function diskRegistryId(kind: "cards" | "articles", segments: string[]): string {
-  const scope = createHash("sha256").update(toResourcePath(segments)).digest("hex");
+export function diskRegistryId(
+  kind: "cards" | "articles",
+  segments: string[]
+): string {
+  const scope = createHash("sha256")
+    .update(toResourcePath(segments))
+    .digest("hex");
   return `disk-registry:${kind}:${scope}`;
 }
 
-export const EMPTY_DISK_REGISTRY_FINGERPRINT = createHash("sha256").update("[]").digest("hex");
+export const EMPTY_DISK_REGISTRY_FINGERPRINT = createHash("sha256")
+  .update("[]")
+  .digest("hex");
 
-export function diskRegistryFolder(registry: DiskRegistry): { kind: DiskRegistryContent; segments: string[]; summaryName: string } | null {
-  const kind = registry.id.startsWith("disk-registry:cards:") ? "cards"
-    : registry.id.startsWith("disk-registry:articles:") ? "articles" : null;
+export function diskRegistryFolder(registry: DiskRegistry): {
+  kind: DiskRegistryContent;
+  segments: string[];
+  summaryName: string;
+} | null {
+  const kind = registry.id.startsWith("disk-registry:cards:")
+    ? "cards"
+    : registry.id.startsWith("disk-registry:articles:")
+      ? "articles"
+      : null;
   const parts = registry.summaryPath.split("/");
   const summaryName = parts.pop();
-  if (!kind || !summaryName?.endsWith(".csv") || !parts.length ||
-      parts.some(part => !part || part === "." || part === ".." || part.includes("\\")) ||
-      diskRegistryId(kind, parts) !== registry.id) return null;
+  if (
+    !kind ||
+    !summaryName?.endsWith(".csv") ||
+    !parts.length ||
+    parts.some(
+      (part) => !part || part === "." || part === ".." || part.includes("\\")
+    ) ||
+    diskRegistryId(kind, parts) !== registry.id
+  )
+    return null;
   return { kind, segments: parts, summaryName };
 }
 
@@ -120,7 +148,11 @@ export function diskRegistryReceipt(registry: DiskRegistry) {
     "",
   ].join("\n");
   return {
-    segments: [...folder.segments, "_Подтверждённые_сводки", folder.kind === "cards" ? "Карточки" : "Статьи"],
+    segments: [
+      ...folder.segments,
+      "_Подтверждённые_сводки",
+      folder.kind === "cards" ? "Карточки" : "Статьи",
+    ],
     fileName: `${number}--${sanitizeFileName(registry.versionId)}--${contentHash(content)}.md`,
     content,
   };
@@ -203,6 +235,44 @@ export function buildKnowledgeCardMarkdown(
   card: KnowledgeCard,
   customTypes: CardTypeDefinition[] = []
 ): string {
+  if (isManagedStrategyCard(card)) {
+    const lines = [
+      `# ${card.title}`,
+      "",
+      `- ID: ${card.id}`,
+      `- Версия: ${getCardVersionId(card)}`,
+      `- Ответственные: ${card.owners.join(", ")}`,
+      "",
+    ];
+    if (isOfficialDocument(card)) {
+      const doc = card.officialDocument;
+      lines.push(
+        `- Организация: ${doc.sourceOrganization}`,
+        `- Редакция: ${doc.edition}`,
+        `- Дата: ${doc.date}`,
+        `- Официальный документ: ${doc.url}`,
+        ""
+      );
+    }
+    if (isRoadmapIndicator(card)) {
+      lines.push(
+        `Определение: ${card.roadmapIndicator.definition}`,
+        `Единица: ${card.roadmapIndicator.unit}`,
+        "",
+        "План и факт подтверждаются отдельно. Отсутствующее значение не равно нулю.",
+        ""
+      );
+    }
+    lines.push(
+      "## Подтверждённые сведения с контекстом",
+      "",
+      sourceDescription(card) ||
+        "Нет подтверждённых сведений для экспорта. Проверьте источники в карточке."
+    );
+    for (const fact of strategySourceFacts(card))
+      lines.push(`- ${fact.label}: ${fact.text}`);
+    return lines.join("\n").trim() + "\n";
+  }
   const lines: string[] = [
     `# ${card.title}`,
     "",
@@ -338,14 +408,26 @@ export function buildKnowledgeCardMarkdown(
   }
 
   if (card.sources?.length) {
-    lines.push("## Источники", "", ...card.sources.map(source =>
-      `- ${source.title}: ${source.url}${source.publishedAt ? `; опубликовано: ${source.publishedAt}` : ""}${source.scope ? `; область: ${source.scope}` : ""}`
-    ), "");
+    lines.push(
+      "## Источники",
+      "",
+      ...card.sources.map(
+        (source) =>
+          `- ${source.title}: ${source.url}${source.publishedAt ? `; опубликовано: ${source.publishedAt}` : ""}${source.scope ? `; область: ${source.scope}` : ""}`
+      ),
+      ""
+    );
   }
   if (card.verifiedFacts?.length) {
-    lines.push("## Проверенные факты", "", ...card.verifiedFacts.map(fact =>
-      `- ${fact.label}: ${fact.value} ${fact.unit}; год: ${fact.year}; ${fact.kind === "plan" ? "план" : "факт"}; область: ${fact.scope}; документ: ${fact.evidenceUrl}`
-    ), "");
+    lines.push(
+      "## Проверенные факты",
+      "",
+      ...card.verifiedFacts.map(
+        (fact) =>
+          `- ${fact.label}: ${fact.value} ${fact.unit}; год: ${fact.year}; ${fact.kind === "plan" ? "план" : "факт"}; область: ${fact.scope}; документ: ${fact.evidenceUrl}`
+      ),
+      ""
+    );
   }
 
   return `${lines.join("\n").trim()}\n`;
@@ -387,60 +469,120 @@ function matchingDiskBackup(
 
 function approvedCardsInFolder(card: KnowledgeCard, allCards: KnowledgeCard[]) {
   const folder = getCardDiskFolderSegments(card).join("/");
-  return allCards.map(getApprovedVersion)
-    .filter((item): item is KnowledgeCard => item !== null && getCardDiskFolderSegments(item).join("/") === folder)
+  return allCards
+    .map(getApprovedVersion)
+    .filter(
+      (item): item is KnowledgeCard =>
+        item !== null && getCardDiskFolderSegments(item).join("/") === folder
+    )
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-function approvedArticlesInFolder(article: ReadyArticle, allArticles: ReadyArticle[]) {
+function approvedArticlesInFolder(
+  article: ReadyArticle,
+  allArticles: ReadyArticle[]
+) {
   return allArticles
-    .filter(item => isApprovedArticle(item) && item.universityId === article.universityId)
+    .filter(
+      (item) =>
+        isApprovedArticle(item) && item.universityId === article.universityId
+    )
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function countCardSummaryPending(scope: KnowledgeCard, cards: KnowledgeCard[], uploadedId: string): number {
-  return approvedCardsInFolder(scope, cards).filter(item => item.id !== uploadedId && !matchingDiskBackup(item).complete).length;
+export function countCardSummaryPending(
+  scope: KnowledgeCard,
+  cards: KnowledgeCard[],
+  uploadedId: string
+): number {
+  return approvedCardsInFolder(scope, cards).filter(
+    (item) => item.id !== uploadedId && !matchingDiskBackup(item).complete
+  ).length;
 }
 
-export function countArticleSummaryPending(scope: ReadyArticle, articles: ReadyArticle[], uploadedId: string): number {
-  return approvedArticlesInFolder(scope, articles)
-    .filter(item => item.id !== uploadedId && !matchingDiskBackup(item, item.approval!.revisionId).complete).length;
+export function countArticleSummaryPending(
+  scope: ReadyArticle,
+  articles: ReadyArticle[],
+  uploadedId: string
+): number {
+  return approvedArticlesInFolder(scope, articles).filter(
+    (item) =>
+      item.id !== uploadedId &&
+      !matchingDiskBackup(item, item.approval!.revisionId).complete
+  ).length;
 }
 
 // Track exported substance and row completeness. Comments and freshness-only writes
 // can advance updatedAt without changing the published card.
 export function cardRegistryFingerprint(
-  scope: KnowledgeCard, allCards: KnowledgeCard[], customTypes: CardTypeDefinition[], uploadedId: string
+  scope: KnowledgeCard,
+  allCards: KnowledgeCard[],
+  customTypes: CardTypeDefinition[],
+  uploadedId: string
 ): string {
-  const rows = approvedCardsInFolder(scope, allCards).map(item => {
-    const definition = item.type === "custom" ? customTypes.find(type => type.id === item.customTypeId) : undefined;
+  const rows = approvedCardsInFolder(scope, allCards).map((item) => {
+    const definition =
+      item.type === "custom"
+        ? customTypes.find((type) => type.id === item.customTypeId)
+        : undefined;
     return [
       item.id,
       getCardVersionId(item),
       definition?.name,
-      definition?.fields.map(({ id, name, type, required, options }) => [id, name, type, required, options]),
+      definition?.fields.map(({ id, name, type, required, options }) => [
+        id,
+        name,
+        type,
+        required,
+        options,
+      ]),
       item.id === uploadedId || matchingDiskBackup(item).complete,
     ];
   });
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
-export function articleRegistryFingerprint(scope: ReadyArticle, articles: ReadyArticle[], uploadedId: string): string {
-  const rows = approvedArticlesInFolder(scope, articles).map(item => [
-    item.id, item.updatedAt, item.approval!.revisionId, contentHash(buildArticleMarkdown(item)),
-    item.id === uploadedId || matchingDiskBackup(item, item.approval!.revisionId).complete,
+export function articleRegistryFingerprint(
+  scope: ReadyArticle,
+  articles: ReadyArticle[],
+  uploadedId: string
+): string {
+  const rows = approvedArticlesInFolder(scope, articles).map((item) => [
+    item.id,
+    item.updatedAt,
+    item.approval!.revisionId,
+    contentHash(buildArticleMarkdown(item)),
+    item.id === uploadedId ||
+      matchingDiskBackup(item, item.approval!.revisionId).complete,
   ]);
   return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
 const articleSummaryColumns = [
-  "ID", "Название", "Вуз", "Проект", "Тема", "Карточки-источники", "Обновлено", "Согласованная редакция",
-  "Путь к неизменяемому MD", "Согласованный снимок реестра (UTC)", "Состояние MD", "Версии источников",
+  "ID",
+  "Название",
+  "Вуз",
+  "Проект",
+  "Тема",
+  "Карточки-источники",
+  "Обновлено",
+  "Согласованная редакция",
+  "Путь к неизменяемому MD",
+  "Согласованный снимок реестра (UTC)",
+  "Состояние MD",
+  "Версии источников",
 ];
 
 const cardSummaryColumns = [
-  "ID", "Название", "Тип", "Папка", "Владельцы", "Обновлено (UTC)",
-  "Путь к неизменяемому MD", "Согласованный снимок реестра (UTC)", "Состояние MD",
+  "ID",
+  "Название",
+  "Тип",
+  "Папка",
+  "Владельцы",
+  "Обновлено (UTC)",
+  "Путь к неизменяемому MD",
+  "Согласованный снимок реестра (UTC)",
+  "Состояние MD",
 ];
 
 export function buildArticlesSummaryCsv(
@@ -452,34 +594,40 @@ export function buildArticlesSummaryCsv(
   const rows: Array<Array<string | number | null | undefined>> = [
     articleSummaryColumns,
     ...approved.map((item) => {
-        const revisionId = item.approval!.revisionId;
-        const isTarget =
-          item.id === article.id &&
-          item.updatedAt === article.updatedAt &&
-          revisionId === article.approval?.revisionId;
-        const backup = matchingDiskBackup(item, revisionId);
-        return [
-          item.id,
-          item.title,
-          getUniversityName(item.universityId),
-          item.projectTitle,
-          item.topic,
-          item.sourceCardTitles.join(", "),
-          item.updatedAt,
-          revisionId,
-          (!isTarget && backup.filePath) ||
-            toDisplayPath([
-              ...getArticleDiskFolderSegments(item),
-              getArticleBackupFileName(item),
-            ]),
-          snapshotAt,
-          isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
-          item.sourceCardIds.map((cardId) => {
-            const source = item.sourceVersions?.find((ref) => ref.cardId === cardId);
-            return source ? `${cardId}@${source.versionId}` : `${cardId}: версия не зафиксирована`;
-          }).join(", "),
-        ];
-      }),
+      const revisionId = item.approval!.revisionId;
+      const isTarget =
+        item.id === article.id &&
+        item.updatedAt === article.updatedAt &&
+        revisionId === article.approval?.revisionId;
+      const backup = matchingDiskBackup(item, revisionId);
+      return [
+        item.id,
+        item.title,
+        getUniversityName(item.universityId),
+        item.projectTitle,
+        item.topic,
+        item.sourceCardTitles.join(", "),
+        item.updatedAt,
+        revisionId,
+        (!isTarget && backup.filePath) ||
+          toDisplayPath([
+            ...getArticleDiskFolderSegments(item),
+            getArticleBackupFileName(item),
+          ]),
+        snapshotAt,
+        isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
+        item.sourceCardIds
+          .map((cardId) => {
+            const source = item.sourceVersions?.find(
+              (ref) => ref.cardId === cardId
+            );
+            return source
+              ? `${cardId}@${source.versionId}`
+              : `${cardId}: версия не зафиксирована`;
+          })
+          .join(", "),
+      ];
+    }),
   ];
 
   return buildCsv(rows);
@@ -495,25 +643,25 @@ export function buildKnowledgeCardsSummaryCsv(
   const rows: Array<Array<string | number | null | undefined>> = [
     cardSummaryColumns,
     ...approved.map((item) => {
-        const segments = getCardDiskFolderSegments(item);
-        const isTarget = item.id === card.id && item.updatedAt === card.updatedAt;
-        const backup = matchingDiskBackup(item);
-        return [
-          item.id,
-          item.title,
-          item.type,
-          segments.join(" / "),
-          item.owners.join(", "),
-          item.updatedAt,
-          (!isTarget && backup.filePath) ||
-            toDisplayPath([
-              ...segments,
-              getKnowledgeCardBackupFileName(item, customTypes),
-            ]),
-          snapshotAt,
-          isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
-        ];
-      }),
+      const segments = getCardDiskFolderSegments(item);
+      const isTarget = item.id === card.id && item.updatedAt === card.updatedAt;
+      const backup = matchingDiskBackup(item);
+      return [
+        item.id,
+        item.title,
+        item.type,
+        segments.join(" / "),
+        item.owners.join(", "),
+        item.updatedAt,
+        (!isTarget && backup.filePath) ||
+          toDisplayPath([
+            ...segments,
+            getKnowledgeCardBackupFileName(isTarget ? card : item, customTypes),
+          ]),
+        snapshotAt,
+        isTarget || backup.complete ? "Выгружена" : "Ожидает выгрузки",
+      ];
+    }),
   ];
 
   return buildCsv(rows);
@@ -545,14 +693,21 @@ export function buildArticleMarkdown(article: ReadyArticle): string {
     "## Карточки-источники",
     "",
     article.sourceCardTitles.length > 0
-      ? article.sourceCardTitles.map((title, index) => {
-        const cardId = article.sourceCardIds[index];
-        const pinned = article.sourceVersions?.find((source) => source.cardId === cardId);
-        if (!pinned) return `- ${title}`;
-        const path = `/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(pinned.versionId)}`;
-        const origin = (process.env.CAMPUS_PUBLIC_ORIGIN ?? "").replace(/\/$/, "");
-        return `- ${title} — [точная версия](${origin}${path})`;
-      }).join("\n")
+      ? article.sourceCardTitles
+          .map((title, index) => {
+            const cardId = article.sourceCardIds[index];
+            const pinned = article.sourceVersions?.find(
+              (source) => source.cardId === cardId
+            );
+            if (!pinned) return `- ${title}`;
+            const path = `/knowledge?card=${encodeURIComponent(cardId)}&version=${encodeURIComponent(pinned.versionId)}`;
+            const origin = (process.env.CAMPUS_PUBLIC_ORIGIN ?? "").replace(
+              /\/$/,
+              ""
+            );
+            return `- ${title} — [точная версия](${origin}${path})`;
+          })
+          .join("\n")
       : "Источники не указаны.",
     ""
   );
@@ -560,8 +715,17 @@ export function buildArticleMarkdown(article: ReadyArticle): string {
   if (article.articleBasis?.length) {
     lines.push("## Опорные блоки из библиотеки", "");
     for (const reference of article.articleBasis) {
-      const { articleTitle, sectionHeading, articleId, revisionId, sectionId, chunkId } = reference;
-      lines.push(`- ${articleTitle}${sectionHeading ? ` · ${sectionHeading}` : ""} · Статья ${articleId} · редакция ${revisionId} · раздел ${sectionId} · блок ${chunkId}`);
+      const {
+        articleTitle,
+        sectionHeading,
+        articleId,
+        revisionId,
+        sectionId,
+        chunkId,
+      } = reference;
+      lines.push(
+        `- ${articleTitle}${sectionHeading ? ` · ${sectionHeading}` : ""} · Статья ${articleId} · редакция ${revisionId} · раздел ${sectionId} · блок ${chunkId}`
+      );
     }
   }
 
@@ -622,13 +786,23 @@ async function ensureFolder(
   }
 }
 
-async function ensureDirectory(signal: AbortSignal, token: string, segments: string[]) {
+async function ensureDirectory(
+  signal: AbortSignal,
+  token: string,
+  segments: string[]
+) {
   const current = toResourcePath(segments);
   const response = await diskRequest(
-    signal, token, `${DISK_API_BASE}/resources?path=${encodeURIComponent(current)}`, { method: "PUT" },
+    signal,
+    token,
+    `${DISK_API_BASE}/resources?path=${encodeURIComponent(current)}`,
+    { method: "PUT" }
   );
   if (!response.ok && response.status !== 409) {
-    throw new YandexDiskError(`Не удалось создать папку «${current}» (HTTP ${response.status})`, response.status);
+    throw new YandexDiskError(
+      `Не удалось создать папку «${current}» (HTTP ${response.status})`,
+      response.status
+    );
   }
 }
 
@@ -713,7 +887,9 @@ export function isDiskBackupTreeReady(): boolean {
   return readyTrees.has(toResourcePath([]));
 }
 
-export function ensureDiskBackupTree(signal: AbortSignal = diskAttemptDeadline()): Promise<void> {
+export function ensureDiskBackupTree(
+  signal: AbortSignal = diskAttemptDeadline()
+): Promise<void> {
   const root = toResourcePath([]);
   const prepared = treePreparations.get(root);
   if (prepared) return prepared;
@@ -721,23 +897,37 @@ export function ensureDiskBackupTree(signal: AbortSignal = diskAttemptDeadline()
   const prepare = async () => {
     const token = getToken();
     let layer: { node: KnowledgeFolderNode; segments: string[] }[] =
-      knowledgeTree.map(node => ({ node, segments: [node.name] }));
+      knowledgeTree.map((node) => ({ node, segments: [node.name] }));
     while (layer.length) {
       for (let offset = 0; offset < layer.length; offset += 4) {
         signal.throwIfAborted();
-        const results = await Promise.allSettled(layer.slice(offset, offset + 4)
-          .map(({ segments }) => ensureDirectory(signal, token, segments)));
-        const failure = results.find(result => result.status === "rejected");
+        const results = await Promise.allSettled(
+          layer
+            .slice(offset, offset + 4)
+            .map(({ segments }) => ensureDirectory(signal, token, segments))
+        );
+        const failure = results.find((result) => result.status === "rejected");
         if (failure) throw failure.reason;
       }
       layer = layer.flatMap(({ node, segments }) =>
-        (node.children ?? []).map(child => ({ node: child, segments: [...segments, child.name] })));
+        (node.children ?? []).map((child) => ({
+          node: child,
+          segments: [...segments, child.name],
+        }))
+      );
     }
-    await uploadFile(signal, token, [], "_КАК_ЧИТАТЬ_РЕЗЕРВ.md", DISK_RESTORE_GUIDE, "text/markdown; charset=utf-8");
+    await uploadFile(
+      signal,
+      token,
+      [],
+      "_КАК_ЧИТАТЬ_РЕЗЕРВ.md",
+      DISK_RESTORE_GUIDE,
+      "text/markdown; charset=utf-8"
+    );
     readyTrees.add(root);
   };
 
-  const attempt = prepare().catch(error => {
+  const attempt = prepare().catch((error) => {
     treePreparations.delete(root);
     throw error;
   });
@@ -745,61 +935,113 @@ export function ensureDiskBackupTree(signal: AbortSignal = diskAttemptDeadline()
   return attempt;
 }
 
-export function uploadDiskRegistryReceipt(registry: DiskRegistry, signal: AbortSignal) {
+export function uploadDiskRegistryReceipt(
+  registry: DiskRegistry,
+  signal: AbortSignal
+) {
   const { segments, fileName, content } = diskRegistryReceipt(registry);
-  return uploadFile(signal, getToken(), segments, fileName, content, "text/markdown; charset=utf-8");
+  return uploadFile(
+    signal,
+    getToken(),
+    segments,
+    fileName,
+    content,
+    "text/markdown; charset=utf-8"
+  );
 }
 
 const diskDownloadRedirects = new Set([301, 302, 303, 307, 308]);
 const diskDownloadHosts = ["disk.yandex.net", "disk.yandex.ru"];
-const storageDownloadHost = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+storage\.yandex\.net$/u;
+const storageDownloadHost =
+  /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+storage\.yandex\.net$/u;
 
 function signedDiskDownloadUrl(value: string, base?: URL): URL {
-  const invalid = () => new YandexDiskError("Адрес проверки сводки не принадлежит Диску.");
+  const invalid = () =>
+    new YandexDiskError("Адрес проверки сводки не принадлежит Диску.");
   let url: URL;
   try {
     url = new URL(value, base);
   } catch {
     throw invalid();
   }
-  const trustedHost = diskDownloadHosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`)) ||
-    storageDownloadHost.test(url.hostname);
-  if (!trustedHost || url.protocol !== "https:" || url.port || url.username || url.password || url.href.includes("#")) {
+  const trustedHost =
+    diskDownloadHosts.some(
+      (host) => url.hostname === host || url.hostname.endsWith(`.${host}`)
+    ) || storageDownloadHost.test(url.hostname);
+  if (
+    !trustedHost ||
+    url.protocol !== "https:" ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.href.includes("#")
+  ) {
     throw invalid();
   }
   return url;
 }
 
-async function readSignedDiskFile(href: string, signal: AbortSignal): Promise<Response> {
+async function readSignedDiskFile(
+  href: string,
+  signal: AbortSignal
+): Promise<Response> {
   let url = signedDiskDownloadUrl(href);
   for (let redirects = 0; ; redirects++) {
     signal.throwIfAborted();
     // OAuth is used only for the metadata request. Signed file requests, including
     // redirects, are made independently without its headers.
-    const file = await fetch(url, { signal, redirect: "manual", cache: "no-store" });
+    const file = await fetch(url, {
+      signal,
+      redirect: "manual",
+      cache: "no-store",
+    });
     if (!diskDownloadRedirects.has(file.status)) return file;
     const location = file.headers.get("location");
     await file.body?.cancel();
-    if (redirects >= 2) throw new YandexDiskError("Слишком много перенаправлений при чтении сводки.", file.status);
-    if (!location) throw new YandexDiskError("Диск не вернул адрес перенаправления.", file.status);
+    if (redirects >= 2)
+      throw new YandexDiskError(
+        "Слишком много перенаправлений при чтении сводки.",
+        file.status
+      );
+    if (!location)
+      throw new YandexDiskError(
+        "Диск не вернул адрес перенаправления.",
+        file.status
+      );
     url = signedDiskDownloadUrl(location, url);
   }
 }
 
-export async function verifyLegacyDiskSummary(registry: DiskRegistry, signal: AbortSignal): Promise<boolean> {
+export async function verifyLegacyDiskSummary(
+  registry: DiskRegistry,
+  signal: AbortSignal
+): Promise<boolean> {
   const folder = diskRegistryFolder(registry);
   const hash = folder?.summaryName.match(/--([0-9a-f]{20})\.csv$/)?.[1];
   if (!folder || !hash) return false;
   const path = toResourcePath([...folder.segments, folder.summaryName]);
-  const response = await diskRequest(signal, getToken(),
-    `${DISK_API_BASE}/resources/download?path=${encodeURIComponent(path)}`, { redirect: "error" });
+  const response = await diskRequest(
+    signal,
+    getToken(),
+    `${DISK_API_BASE}/resources/download?path=${encodeURIComponent(path)}`,
+    { redirect: "error" }
+  );
   if (response.status === 404) return false;
-  if (!response.ok) throw new YandexDiskError("Не удалось проверить файл сводки.", response.status);
-  const payload = await response.json() as { href?: unknown } | null;
-  if (typeof payload?.href !== "string") throw new YandexDiskError("Диск не вернул ссылку для проверки сводки.");
+  if (!response.ok)
+    throw new YandexDiskError(
+      "Не удалось проверить файл сводки.",
+      response.status
+    );
+  const payload = (await response.json()) as { href?: unknown } | null;
+  if (typeof payload?.href !== "string")
+    throw new YandexDiskError("Диск не вернул ссылку для проверки сводки.");
   const file = await readSignedDiskFile(payload.href, signal);
   if (file.status === 404) return false;
-  if (!file.ok || !file.body) throw new YandexDiskError("Файл сводки недоступен для проверки.", file.status);
+  if (!file.ok || !file.body)
+    throw new YandexDiskError(
+      "Файл сводки недоступен для проверки.",
+      file.status
+    );
   const digest = createHash("sha256");
   const reader = file.body.getReader();
   let bytes = 0;
@@ -817,16 +1059,31 @@ export async function verifyLegacyDiskSummary(registry: DiskRegistry, signal: Ab
 }
 
 export function buildEmptyDiskSummary(kind: DiskRegistryContent) {
-  return buildCsv([kind === "cards" ? cardSummaryColumns : articleSummaryColumns]);
+  return buildCsv([
+    kind === "cards" ? cardSummaryColumns : articleSummaryColumns,
+  ]);
 }
 
-export function uploadEmptyDiskSummary(registry: DiskRegistry, signal: AbortSignal) {
+export function uploadEmptyDiskSummary(
+  registry: DiskRegistry,
+  signal: AbortSignal
+) {
   const folder = diskRegistryFolder(registry);
   if (!folder) throw new Error("Некорректный путь сводки Диска.");
   const content = buildEmptyDiskSummary(folder.kind);
-  const prefix = folder.kind === "cards" ? DISK_CARD_SUMMARY_FILE : DISK_ARTICLE_SUMMARY_FILE;
+  const prefix =
+    folder.kind === "cards"
+      ? DISK_CARD_SUMMARY_FILE
+      : DISK_ARTICLE_SUMMARY_FILE;
   const fileName = `${versionStamp(registry.confirmedAt)}--${prefix.replace(/\.csv$/, `--${contentHash(content)}.csv`)}`;
-  return uploadFile(signal, getToken(), folder.segments, fileName, content, "text/csv; charset=utf-8");
+  return uploadFile(
+    signal,
+    getToken(),
+    folder.segments,
+    fileName,
+    content,
+    "text/csv; charset=utf-8"
+  );
 }
 
 export async function syncKnowledgeCardToDisk(
@@ -837,6 +1094,10 @@ export async function syncKnowledgeCardToDisk(
 ): Promise<DiskSyncInfo> {
   if (!isCardApproved(card))
     throw new YandexDiskError("Выгрузка черновика запрещена.", 409);
+  const projected = hydrateCanonicalStrategySources(allCards).find(
+    (source) => source.id === card.id
+  );
+  if (projected) card = { ...projected, diskSync: card.diskSync };
   const previous = card.diskSync ?? createPendingDiskSync();
   const attemptedAt = new Date().toISOString();
   const segments = getCardDiskFolderSegments(card);

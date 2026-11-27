@@ -1,3 +1,4 @@
+import { hydrateCanonicalStrategySources } from "@/lib/strategy-sources";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getSessionUser } from "@/lib/auth-server";
@@ -27,7 +28,14 @@ export async function GET(request: NextRequest) {
       getSessionUser(),
     ]);
     return NextResponse.json(
-      { services, cards: findHomeCards(cards, query, user) },
+      {
+        services,
+        cards: findHomeCards(
+          hydrateCanonicalStrategySources(cards),
+          query,
+          user
+        ),
+      },
       { headers }
     );
   } catch {

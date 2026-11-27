@@ -41,7 +41,7 @@ test(
           assert.equal(await page.locator('a[href="/demo"]').count(), 0);
           const field = page.locator(".atlas-ambient-bg");
           assert.equal(await field.getAttribute("aria-hidden"), "true");
-          assert.equal(await field.locator("svg").count(), 2);
+          assert.equal(await field.locator("svg,canvas").count(), 0);
           assert.equal(
             await field.evaluate(
               (node) => getComputedStyle(node).pointerEvents
@@ -67,13 +67,6 @@ test(
             .querySelector(".atlas-ambient-bg")
             ?.getAttribute("data-paused") === "true"
       );
-      assert.equal(
-        await page
-          .locator(".atlas-ambient-bg > div")
-          .first()
-          .evaluate((node) => getComputedStyle(node).transitionDuration),
-        "0s"
-      );
       await page.evaluate(() => {
         Object.defineProperty(document, "hidden", {
           configurable: true,
@@ -83,7 +76,7 @@ test(
       });
       await page.emulateMedia({ reducedMotion: "reduce" });
       await page.waitForFunction(() =>
-        [...document.querySelectorAll("[data-relief-layer]")].every((node) =>
+        [...document.querySelectorAll("[data-ambient-color]")].every((node) =>
           node
             .getAnimations()
             .every((animation) => animation.playState === "paused")
@@ -91,7 +84,7 @@ test(
       );
       await page.evaluate(() =>
         Promise.all(
-          [...document.querySelectorAll("[data-relief-layer]")].flatMap(
+          [...document.querySelectorAll("[data-ambient-color]")].flatMap(
             (node) =>
               node
                 .getAnimations()
@@ -99,7 +92,7 @@ test(
           )
         )
       );
-      const layers = page.locator("[data-relief-layer]");
+      const layers = page.locator("[data-ambient-color]");
       const before = await layers.evaluateAll((nodes) =>
         nodes.map((node) =>
           Array.from(
@@ -190,9 +183,9 @@ test(
         await page.waitForFunction(
           () =>
             Number(
-              getComputedStyle(document.querySelector("[data-relief-layer]")!)
+              getComputedStyle(document.querySelector(".atlas-ambient-bg")!)
                 .opacity
-            ) > 0.2
+            ) > 0.95
         );
       } finally {
         release();

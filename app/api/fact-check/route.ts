@@ -75,7 +75,7 @@ async function runSemanticCheck(
     error: "Проверка отменена.",
   });
   if (request.signal.aborted) return cancelled();
-  if (ai.status === "ready") {
+  {
     const latest = await getCanonicalKnowledgeCards(request.signal).catch(
       () => null
     );
@@ -86,16 +86,21 @@ async function runSemanticCheck(
         status: 503,
         error: storageUnavailableMessage,
       };
+    const latestSources = currentCanonSources(latest);
+    const previousSources =
+      ai.status === "ready" ? ai.sources : currentCanonSources(cards);
     const versions = new Map(
-      currentCanonSources(latest).map((source) => [
-        source.cardId,
-        source.versionId,
-      ])
+      latestSources.map((source) => [source.cardId, source.versionId])
     );
     if (
-      versions.size !== ai.sources.length ||
-      ai.sources.some(
-        (source) => versions.get(source.cardId) !== source.versionId
+      versions.size !== previousSources.length ||
+      previousSources.some(
+        (source) =>
+          versions.get(source.cardId) !== source.versionId ||
+          JSON.stringify(
+            latestSources.find((current) => current.cardId === source.cardId)
+              ?.facts
+          ) !== JSON.stringify(source.facts)
       )
     ) {
       return {

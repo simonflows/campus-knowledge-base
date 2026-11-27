@@ -1,6 +1,7 @@
 "use client";
 
 import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import { isManagedStrategyType } from "@/lib/strategy";
 
 import { useState } from "react";
 import {
@@ -125,6 +126,7 @@ export function KnowledgeTypeConstructor({
   };
 
   const startEdit = (type: CardTypeWithStats) => {
+    if (isManagedStrategyType(type.id)) return;
     setEditingId(type.id);
     setName(type.name);
     setDescription(type.description);
@@ -305,6 +307,7 @@ export function KnowledgeTypeConstructor({
   };
 
   const handleDelete = (type: CardTypeWithStats) => {
+    if (isManagedStrategyType(type.id)) return;
     if (type.cardCount > 0) {
       const message = `Нельзя удалить тип «${type.name}»: по нему сохранено ${type.cardCount} карточек. Сначала удалите эти карточки — иначе они потеряют свой тип и поля.`;
       setFormError(message);
@@ -418,31 +421,36 @@ export function KnowledgeTypeConstructor({
                         {type.name}
                       </p>
                       <p className="text-[11px] text-muted-foreground">
-                        {type.fields.length} полей · {type.cardCount} карточек
+                        {isManagedStrategyType(type.id)
+                          ? "Встроенный тип"
+                          : `${type.fields.length} полей`}{" "}
+                        · {type.cardCount} карточек
                       </p>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="size-10 sm:size-8"
-                        onClick={() => startEdit(type)}
-                        aria-label={`Изменить тип ${type.name}`}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="size-10 sm:size-8"
-                        onClick={() => handleDelete(type)}
-                        aria-label={`Удалить тип ${type.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
-                    </div>
+                    {!isManagedStrategyType(type.id) ? (
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="size-10 sm:size-8"
+                          onClick={() => startEdit(type)}
+                          aria-label={`Изменить тип ${type.name}`}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="size-10 sm:size-8"
+                          onClick={() => handleDelete(type)}
+                          aria-label={`Удалить тип ${type.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                        </Button>
+                      </div>
+                    ) : null}
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {type.fields.slice(0, 4).map((field) => (
@@ -533,7 +541,7 @@ export function KnowledgeTypeConstructor({
               <select
                 value={chkkOnly ? "chkk" : "standard"}
                 disabled={Boolean(editingId)}
-                onChange={event => setChkkOnly(event.target.value === "chkk")}
+                onChange={(event) => setChkkOnly(event.target.value === "chkk")}
                 className="h-10 rounded-md border border-input bg-background px-3 text-sm"
               >
                 <option value="standard">Сотрудники с доступом к базе</option>

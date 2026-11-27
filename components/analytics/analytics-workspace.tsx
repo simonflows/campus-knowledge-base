@@ -1,13 +1,17 @@
 "use client";
 
 import { demoHref } from "@/lib/browser-demo-navigation";
-import { useWorkspaceMode, useWorkspaceRequest } from "@/components/demo/workspace-transport";
+import {
+  useWorkspaceMode,
+  useWorkspaceRequest,
+} from "@/components/demo/workspace-transport";
 import {
   MastheadCount,
   WorkspaceMasthead,
 } from "@/components/workspace-masthead";
 import { AnimatedNumber } from "@/components/motion/animated-number";
 import { AiActivity } from "@/components/ui/ai-activity";
+import { StrategyAnalytics } from "@/components/analytics/strategy-analytics";
 
 import { AppLink as Link } from "@/components/navigation/workspace-navigation";
 import { useEffect, useRef, useState } from "react";
@@ -65,7 +69,10 @@ type AnalyticsWorkspaceProps = {
 
 type ViewMode = "table" | "list";
 
-type AnalyticsResponse = AnalyticsReport & { error?: string; ai?: CanonAnalyticsAiReview };
+type AnalyticsResponse = AnalyticsReport & {
+  error?: string;
+  ai?: CanonAnalyticsAiReview;
+};
 
 const summaryLabels = [
   { key: "total", label: "Найдено карточек" },
@@ -98,7 +105,13 @@ function SourceLink({
   );
 }
 
-function FilterChips({ report, centered = false }: { report: AnalyticsReport; centered?: boolean }) {
+function FilterChips({
+  report,
+  centered = false,
+}: {
+  report: AnalyticsReport;
+  centered?: boolean;
+}) {
   if (report.filters.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -115,8 +128,17 @@ function FilterChips({ report, centered = false }: { report: AnalyticsReport; ce
           variant="secondary"
           className="h-auto max-w-full gap-1 whitespace-normal py-1 text-left text-[11px] leading-snug"
         >
-          <span className={cn("font-semibold", centered && "shrink-0 whitespace-nowrap")}>{filter.label}:</span>
-          <span className={centered ? "min-w-0 break-words" : undefined}>{filter.value}</span>
+          <span
+            className={cn(
+              "font-semibold",
+              centered && "shrink-0 whitespace-nowrap"
+            )}
+          >
+            {filter.label}:
+          </span>
+          <span className={centered ? "min-w-0 break-words" : undefined}>
+            {filter.value}
+          </span>
         </Badge>
       ))}
     </div>
@@ -455,7 +477,10 @@ function ListView({ cards }: { cards: AnalyticsCardRow[] }) {
   );
 }
 
-function buildReportText(report: AnalyticsResponse, sourceLink: (href: string) => string): string {
+function buildReportText(
+  report: AnalyticsResponse,
+  sourceLink: (href: string) => string
+): string {
   const lines: string[] = [
     "Аналитическая справка по базе",
     ...(report.ai?.appliedQuery
@@ -563,9 +588,9 @@ export function AnalyticsWorkspace({
         body: JSON.stringify(parsed.data),
         signal: controller.signal,
       });
-      const data = (await response.json().catch(() => null)) as
-        | AnalyticsResponse
-        | null;
+      const data = (await response
+        .json()
+        .catch(() => null)) as AnalyticsResponse | null;
 
       if (!isCurrentFlashRequest(controller, abortRef.current)) return;
       if (!response.ok || !data) {
@@ -587,9 +612,14 @@ export function AnalyticsWorkspace({
       setView("table");
 
       if (data.cards.length === 0) {
-        toast(data.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет", {
-          description: data.notice ?? undefined,
-        });
+        toast(
+          data.interpretation?.status === "needs-clarification"
+            ? "Уточните запрос"
+            : "Подходящих карточек нет",
+          {
+            description: data.notice ?? undefined,
+          }
+        );
       } else {
         toast.success("Аналитика собрана", {
           description: `Найдено карточек: ${data.summary.total}.`,
@@ -617,9 +647,10 @@ export function AnalyticsWorkspace({
         throw new Error("clipboard unavailable");
       }
       const origin = window.location.origin;
-      const sourceLink = (href: string) => demo
-        ? origin + window.location.pathname + (demoHref(href) ?? "")
-        : origin + href;
+      const sourceLink = (href: string) =>
+        demo
+          ? origin + window.location.pathname + (demoHref(href) ?? "")
+          : origin + href;
       await navigator.clipboard.writeText(buildReportText(report, sourceLink));
       toast.success("Отчёт скопирован", {
         description:
@@ -648,6 +679,8 @@ export function AnalyticsWorkspace({
         <MastheadCount count={cardsCount} label="карточек в базе" />
       </WorkspaceMasthead>
 
+      {!demo && <StrategyAnalytics />}
+
       <div className="data-report-grid">
         <Card className="data-query-card">
           <CardHeader>
@@ -669,7 +702,12 @@ export function AnalyticsWorkspace({
             />
 
             {flashAssistAvailable && (
-              <CanonAiOption kind="analytics" checked={aiEnabled} disabled={isLoading} onChange={setAiEnabled} />
+              <CanonAiOption
+                kind="analytics"
+                checked={aiEnabled}
+                disabled={isLoading}
+                onChange={setAiEnabled}
+              />
             )}
 
             <div className="data-action-row">
@@ -691,17 +729,24 @@ export function AnalyticsWorkspace({
                 <AiActivity
                   className="flex-1"
                   label="Собираем отчёт по утверждённым карточкам"
-                  detail={flashAssistAvailable && aiEnabled && !demo
-                    ? "ИИ помогает определить условия выборки."
-                    : undefined}
+                  detail={
+                    flashAssistAvailable && aiEnabled && !demo
+                      ? "ИИ помогает определить условия выборки."
+                      : undefined
+                  }
                 />
-                <Button type="button" variant="outline" size="sm" className="min-h-10"
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-h-10"
                   onClick={() => {
                     abortRef.current?.abort();
                     abortRef.current = null;
                     setIsLoading(false);
                     toast("Сбор аналитики остановлен");
-                  }}>
+                  }}
+                >
                   Остановить
                 </Button>
               </div>
@@ -739,7 +784,9 @@ export function AnalyticsWorkspace({
             ))}
           </ul>
           {dynamicExamples.length === 0 && (
-            <p className="text-sm text-muted-foreground">Для текущего набора карточек пока нет примеров.</p>
+            <p className="text-sm text-muted-foreground">
+              Для текущего набора карточек пока нет примеров.
+            </p>
           )}
         </aside>
       </div>
@@ -753,8 +800,14 @@ export function AnalyticsWorkspace({
                   <EmptyMedia variant="icon">
                     <Search className="size-5" />
                   </EmptyMedia>
-                  <EmptyTitle>{report.interpretation?.status === "needs-clarification" ? "Уточните запрос" : "Подходящих карточек нет"}</EmptyTitle>
-                  <EmptyDescription>{report.interpretation?.message ?? report.notice}</EmptyDescription>
+                  <EmptyTitle>
+                    {report.interpretation?.status === "needs-clarification"
+                      ? "Уточните запрос"
+                      : "Подходящих карточек нет"}
+                  </EmptyTitle>
+                  <EmptyDescription>
+                    {report.interpretation?.message ?? report.notice}
+                  </EmptyDescription>
                 </EmptyHeader>
                 <div className="w-full max-w-2xl">
                   <FilterChips report={report} centered />
