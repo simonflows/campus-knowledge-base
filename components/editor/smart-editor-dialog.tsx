@@ -399,7 +399,7 @@ function SmartEditorForm({
   };
 
   return (
-    <DialogContent className="max-h-[90vh] max-w-[calc(100%-1rem)] overflow-y-auto sm:max-w-4xl">
+    <DialogContent className="max-h-[90vh] max-w-[calc(100%-1rem)] overflow-y-auto sm:max-w-4xl" aria-busy={isGenerating}>
       <DialogHeader>
         <div className="flex items-center gap-2">
           <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">

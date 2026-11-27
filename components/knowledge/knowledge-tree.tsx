@@ -2,60 +2,19 @@
 
 import { useMemo, useState } from "react";
 import {
-  BookOpen,
-  Boxes,
   ChevronRight,
-  ContactRound,
-  FileCheck2,
-  FlaskConical,
-  Folder,
   FolderOpen,
-  GraduationCap,
-  Handshake,
-  HardHat,
-  Landmark,
-  Layers,
-  Network,
-  Rocket,
 } from "lucide-react";
 
 import { getFolderDisplayName } from "./folder-labels";
 import { Badge } from "@/components/ui/badge";
 import {
-  folderIds,
   getCardsForFolder,
   type KnowledgeCard,
-  type KnowledgeFolderKind,
   type KnowledgeFolderNode,
 } from "@/lib/knowledge";
 import { cn } from "@/lib/utils";
-
-const folderIcons: Record<KnowledgeFolderKind, typeof Folder> = {
-  campus: Landmark,
-  "universities-root": GraduationCap,
-  university: BookOpen,
-  subfolder: Folder,
-  joint: Handshake,
-  "custom-root": Layers,
-  "custom-type": Folder,
-};
-
-const universitySectionIcons = {
-  passport: ContactRound,
-  infrastructure: FlaskConical,
-  products: Boxes,
-  partners: Network,
-  articles: FileCheck2,
-} as const;
-
-function getFolderIcon(node: KnowledgeFolderNode) {
-  if (node.id === folderIds.chkkParameters) return HardHat;
-  if (node.id === folderIds.rioProjects) return Rocket;
-  const section = Object.entries(universitySectionIcons).find(
-    ([key]) => node.kind === "subfolder" && node.id.endsWith(`/${key}`)
-  );
-  return section?.[1] ?? folderIcons[node.kind];
-}
+import { getFolderIcon } from "./knowledge-icons";
 
 type KnowledgeTreeProps = {
   cards: KnowledgeCard[];

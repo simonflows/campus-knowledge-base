@@ -1,30 +1,57 @@
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
 import { chromium, type Page } from "playwright-core";
-import {
-  BROWSER_DEMO_KEY,
-  getDemoCard,
-  readBrowserDemo,
-  writeBrowserDemo,
-} from "../lib/browser-demo";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { knowledgeSeedCards } from "../lib/knowledge";
 import candidateData from "../data/pilot-0.9.5-candidates.json";
 import { version } from "../package.json";
 
-async function checkUi099(
-  page: Page,
-  fixture: { key: string; value: string; version: string }
-) {
+async function checkCandidateStageGlyphs(page: Page) {
+  const passport = knowledgeSeedCards.find(({ id }) => id === "campus-passport");
+  const candidate = candidateData.cards.find(({ card }) => card.id === "campus-passport")?.card;
+  assert.ok(passport?.type === "campus" && candidate?.campusMetrics);
+  // Server-render the same dashboard that serves the homepage, using the two-stage test passport.
+  const stylesheetStub = registerHooks({
+    load(url, context, nextLoad) {
+      if (url.endsWith(".css"))
+        return { format: "commonjs", source: "module.exports = {};", shortCircuit: true };
+      return nextLoad(url, context);
+    },
+  });
+  const { HomeDashboard } = await import("../components/home-dashboard").finally(() =>
+    stylesheetStub.deregister()
+  );
+  const markup = renderToStaticMarkup(createElement(
+    AppRouterContext.Provider,
+    { value: { back() {}, forward() {}, push() {}, replace() {}, refresh() {}, prefetch() {}, bfcacheId: "test" } },
+    createElement(HomeDashboard, {
+      passport: { ...passport, campusMetrics: candidate.campusMetrics },
+      universities: [],
+      cardsCount: 1,
+      showExampleData: false,
+      hasMidisPassport: false,
+    })
+  ));
+  await page.setContent(markup);
+  const glyphs: string[] = [];
+  for (const label of ["Первая очередь гостиниц", "Вторая очередь гостиниц"]) {
+    const icon = page.locator(".atlas-metric-card")
+      .filter({ has: page.locator("dt", { hasText: label }) })
+      .locator(".atlas-metric-icon svg");
+    assert.equal(await icon.count(), 1, label);
+    glyphs.push(await icon.innerHTML());
+  }
+  assert.notEqual(glyphs[0], glyphs[1], "The two hotel stages use distinct glyphs");
+}
+
+async function checkUi099(page: Page) {
   const failures: string[] = [];
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.addInitScript(({ key, value }) => {
-    if (
-      location.origin === "http://localhost:8080" &&
-      location.pathname === "/demo"
-    ) {
-      localStorage.setItem(key, value);
-    }
-  }, fixture);
-  await page.goto("http://localhost:8080/demo");
+  await page.goto("http://localhost:8080/");
   const trigger = page.getByRole("button", {
-    name: `Версия ${fixture.version} — что нового`,
+    name: `Версия ${version} — что нового`,
     exact: true,
   });
   const launcher = page.getByRole("button", {
@@ -32,21 +59,13 @@ async function checkUi099(
   });
   await trigger.waitFor();
 
-  const glyphs = [];
-  for (const label of ["Первая очередь гостиниц", "Вторая очередь гостиниц"]) {
-    const card = page.locator(".atlas-metric-card").filter({
-      has: page.locator("dt", { hasText: label }),
-    });
-    await card.waitFor();
-    const icons = await card
-      .locator(".atlas-metric-icon svg")
-      .evaluateAll((elements) => elements.map((element) => element.innerHTML));
-    if (icons.length !== 1)
-      failures.push(`${label}: expected one glyph, found ${icons.length}`);
-    glyphs.push(icons[0]);
-  }
-  if (glyphs[0] === glyphs[1])
-    failures.push("The two stages show identical glyphs");
+  const metrics = page.locator(".atlas-metric-card");
+  await metrics.first().waitFor();
+  const glyphs = await metrics.evaluateAll((cards) =>
+    cards.map((card) => [...card.querySelectorAll(".atlas-metric-icon svg")].map(icon => icon.innerHTML))
+  );
+  assert.ok(glyphs.every(icons => icons.length === 1), "Each displayed metric has a glyph");
+  assert.ok(new Set(glyphs.flat()).size > 1, "The dashboard shows distinct metric glyphs");
 
   const readContrast = () =>
     trigger.evaluate(async (button) => {
@@ -137,7 +156,7 @@ async function checkUi099(
     }
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("dialog", {
-      name: `Канон ${fixture.version}`,
+      name: `Канон ${version}`,
       exact: true,
     });
     await dialog.waitFor();
@@ -154,38 +173,18 @@ async function checkUi099(
   }
 
   if (failures.length) throw new Error(failures.join("\n"));
-  return "PASS: distinct stage glyphs, version contrast and keyboard interaction, isolated launcher";
+  return "PASS: homepage metric glyphs, version contrast and keyboard focus, launcher separation";
 }
 
 async function main() {
-  const data = new Map<string, string>();
-  const storage = {
-    getItem: (key: string) => data.get(key) ?? null,
-    setItem: (key: string, value: string) => {
-      data.set(key, value);
-    },
-  };
-  const demo = readBrowserDemo(storage);
-  const passport = getDemoCard(demo, "campus-passport");
-  const candidate = candidateData.cards.find(
-    ({ card }) => card.id === "campus-passport"
-  )?.card;
-  if (passport?.type !== "campus" || !candidate?.campusMetrics) {
-    throw new Error("Campus passport test fixture is unavailable");
-  }
-  demo.updates = [{ ...passport, campusMetrics: candidate.campusMetrics }];
-  writeBrowserDemo(storage, demo);
-  const value = data.get(BROWSER_DEMO_KEY);
-  if (!value) throw new Error("Browser demo test fixture was not serialized");
-
   const browser = await chromium.launch({
     channel: process.env.CAMPUS_QA_CHROME_CHANNEL ?? "chrome",
   });
   try {
     const page = await browser.newPage();
-    console.log(
-      await checkUi099(page, { key: BROWSER_DEMO_KEY, value, version })
-    );
+    await checkCandidateStageGlyphs(page);
+    console.log("PASS: rendered test passport uses distinct glyphs for the first and second hotel stages");
+    console.log(await checkUi099(page));
   } finally {
     await browser.close();
   }

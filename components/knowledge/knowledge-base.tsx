@@ -6,11 +6,7 @@ import { useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowUpRight,
   BookOpen,
-  Boxes,
   FileText,
-  FlaskConical,
-  GraduationCap,
-  Layers3,
   ChevronDown,
   ChevronUp,
   FolderOpen,
@@ -78,14 +74,7 @@ import {
   type KnowledgeCardType,
 } from "@/lib/knowledge";
 import { cn } from "@/lib/utils";
-
-const cardIcons: Record<KnowledgeCardType, typeof FileText> = {
-  campus: Layers3,
-  custom: FileText,
-  laboratory: FlaskConical,
-  project: Boxes,
-  university: GraduationCap,
-};
+import { cardTypeIcons as cardIcons } from "./knowledge-icons";
 
 type KnowledgeBaseProps = {
   initialCards: KnowledgeCard[];

@@ -1,14 +1,50 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import type { Page } from "playwright-core";
-import { readBrowserDemo } from "../lib/browser-demo";
+import type { Page, Route } from "playwright-core";
+import {
+  readBrowserDemo,
+  writeBrowserDemo,
+  type BrowserDemoState,
+} from "../lib/browser-demo";
 import { createBrowserDemoRequest } from "../lib/browser-demo-http";
 import { handleDemoTools } from "../lib/browser-demo-tools";
 
 const rewriteButton = "Переписать по официальным данным";
 const rewriteHeading = "Текст, переписанный по официальным данным";
 
-async function checkDemoRewrite(page: Page, base: string) {
+/** Reuse the offline tool implementation behind isolated browser requests. */
+export function createToolResponseFixture(
+  update?: (state: BrowserDemoState) => void
+) {
+  const entries = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => { entries.set(key, value); },
+  };
+  const state = readBrowserDemo(storage);
+  if (update) {
+    update(state);
+    writeBrowserDemo(storage, state);
+  }
+  const fixture = createBrowserDemoRequest(storage, state, [handleDemoTools]);
+  return (route: Route) => {
+    const request = route.request();
+    return fixture(new URL(request.url()).pathname, {
+      method: request.method(),
+      body: request.postData(),
+    });
+  };
+}
+
+export async function fulfillToolResponse(route: Route, response: Response) {
+  await route.fulfill({
+    status: response.status,
+    contentType: "application/json",
+    body: await response.text(),
+  });
+}
+
+async function checkRewritePresentation(page: Page, base: string) {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addInitScript(() => {
@@ -22,7 +58,7 @@ async function checkDemoRewrite(page: Page, base: string) {
     };
   });
 
-  await page.goto(base + "/demo#/check");
+  await page.goto(base + "/check");
   const draft = page.getByRole("textbox", { name: "Черновик текста" });
   const check = page.getByRole("button", { name: "Проверить текст" });
   const rewrite = page.getByRole("button", { name: rewriteButton });
@@ -134,7 +170,11 @@ async function checkDemoRewrite(page: Page, base: string) {
   );
 }
 
-async function checkWorkingRewrite(page: Page, base: string) {
+async function checkRewriteRecovery(
+  page: Page,
+  base: string,
+  setUnavailable: (value: boolean) => void
+) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addInitScript(() => {
@@ -153,29 +193,6 @@ async function checkWorkingRewrite(page: Page, base: string) {
       }
       return data;
     };
-  });
-
-  const storage = { getItem: () => null, setItem: () => {} };
-  const fixture = createBrowserDemoRequest(storage, readBrowserDemo(storage), [
-    handleDemoTools,
-  ]);
-  let unavailable = false;
-  await page.route("**/api/fact-check", async (route) => {
-    if (unavailable) {
-      await route.fulfill({
-        status: 503,
-        json: { error: "Сбой тестовой проверки." },
-      });
-      return;
-    }
-    const response = await fixture("/api/fact-check", {
-      method: route.request().method(),
-      body: route.request().postData(),
-    });
-    await route.fulfill({
-      status: response.status,
-      json: await response.json(),
-    });
   });
 
   await page.goto(base + "/check");
@@ -203,7 +220,7 @@ async function checkWorkingRewrite(page: Page, base: string) {
   assert.equal(await proposal.count(), 0);
   assert.ok(await draft.evaluate((field) => document.activeElement === field));
 
-  unavailable = true;
+  setUnavailable(true);
   await rewrite.click();
   await page
     .getByText("Сбой тестовой проверки.", { exact: true })
@@ -211,7 +228,7 @@ async function checkWorkingRewrite(page: Page, base: string) {
     .waitFor();
   assert.equal(await proposal.count(), 0);
 
-  unavailable = false;
+  setUnavailable(false);
   await sample.click();
   await rewrite.click();
   await proposal.waitFor();
@@ -223,6 +240,20 @@ async function checkWorkingRewrite(page: Page, base: string) {
 }
 
 export async function runFactResultUiChecks(page: Page, base: string) {
-  await checkDemoRewrite(page, base);
-  await checkWorkingRewrite(page, base);
+  const fixture = createToolResponseFixture();
+  let unavailable = false;
+  const endpoint = base + "/api/fact-check";
+  const respond = async (route: Route) => {
+    const response = unavailable
+      ? Response.json({ error: "Сбой тестовой проверки." }, { status: 503 })
+      : await fixture(route);
+    await fulfillToolResponse(route, response);
+  };
+  await page.route(endpoint, respond);
+  try {
+    await checkRewritePresentation(page, base);
+    await checkRewriteRecovery(page, base, (value) => { unavailable = value; });
+  } finally {
+    await page.unroute(endpoint, respond);
+  }
 }

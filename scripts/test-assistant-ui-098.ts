@@ -1,19 +1,31 @@
 import assert from "node:assert/strict";
-import type { Page } from "playwright-core";
+import type { Page, Route } from "playwright-core";
+import { createToolResponseFixture, fulfillToolResponse } from "./test-fact-result-ui-097";
 
 export async function runAssistantUiChecks(page: Page, base: string) {
-  await page.route("**/api/**", (route) => route.abort());
-  const apiRequests: string[] = [];
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/"))
-      apiRequests.push(new URL(request.url()).pathname);
-  });
+  const requests: unknown[] = [];
+  const fixture = createToolResponseFixture();
+  const endpoint = base + "/api/assistant";
+  const respond = async (route: Route) => {
+    requests.push(route.request().postDataJSON());
+    await fulfillToolResponse(route, await fixture(route));
+  };
+  await page.route(endpoint, respond);
+  try {
+    await checkAssistant(page, base, requests);
+  } finally {
+    await page.unroute(endpoint, respond);
+  }
+}
+
+async function checkAssistant(page: Page, base: string, requests: unknown[]) {
   await page.setViewportSize({ width: 320, height: 680 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(base + "/demo");
+  await page.goto(base + "/");
   const launcher = page.getByRole("button", {
     name: "Открыть помощник Канона",
   });
+  await launcher.click({ trial: true });
   await launcher.focus();
   await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Помощник Канона" });
@@ -78,8 +90,10 @@ export async function runAssistantUiChecks(page: Page, base: string) {
   );
   await composer.fill("");
   await examples.first().click();
+  const submittedQuestion = (await composer.inputValue()).trim();
   await composer.press("Shift+Enter");
   assert.equal(await dialog.locator("article").count(), 0);
+  assert.deepEqual(requests, [], "Shift+Enter must not send the question");
   await composer.press("Enter");
   await dialog
     .locator("article")
@@ -92,8 +106,8 @@ export async function runAssistantUiChecks(page: Page, base: string) {
   );
   assert.equal(await composer.inputValue(), "");
   assert.deepEqual(
-    apiRequests,
-    [],
-    "The isolated browser demo cannot contact the working API"
+    requests,
+    [{ message: submittedQuestion, history: [] }],
+    "Enter sends one canonical question through the workspace request"
   );
 }

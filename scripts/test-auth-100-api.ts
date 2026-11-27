@@ -46,7 +46,10 @@ function request(path: string, body: unknown, cookie?: string) {
   });
 }
 
-test("auth routes use DynamoDB CAS and require a signed, revocable host cookie", async () => {
+test("auth routes use DynamoDB CAS and require a signed, revocable host cookie", async (context) => {
+  // Keep all failed logins in the same five-minute rate window, even at a wall-clock boundary.
+  const stableNow = Math.floor(Date.now() / 300_000) * 300_000 + 30_000;
+  context.mock.method(Date, "now", () => stableNow);
   process.env.CAMPUS_EMAIL_ACCOUNTS_ENABLED = "true";
   process.env.CAMPUS_PUBLIC_ORIGIN = fakeOrigin;
   process.env.SESSION_SECRET = randomBytes(32).toString("hex");

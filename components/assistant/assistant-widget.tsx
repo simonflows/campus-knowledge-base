@@ -5,7 +5,7 @@ import {
   useWorkspaceRequest,
 } from "@/components/demo/workspace-transport";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import {
   AppLink as Link,
   useWorkspacePathname,
@@ -39,6 +39,7 @@ type Turn = {
 const MAX_MESSAGE_LENGTH = 2000;
 const MAX_TURNS = 12;
 const WEB_CONSENT_KEY = "canon:assistant-web-consent:v1";
+const subscribeHydration = () => () => {};
 const exampleSets = [
   [
     "Чем отличаются первая и вторая очереди гостиниц кампуса?",
@@ -73,6 +74,7 @@ export function AssistantWidget({ staff }: { staff: boolean }) {
 }
 
 function AssistantSession({ staff }: { staff: boolean }) {
+  const hydrated = useSyncExternalStore(subscribeHydration, () => true, () => false);
   const workspaceRequest = useWorkspaceRequest();
   const demo = useWorkspaceMode() === "demo";
   const exampleHeadingId = useId();
@@ -152,7 +154,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
   }
 
   async function ask(message: string, retryId?: string) {
-    if (active.current) return;
+    if (!open || active.current) return;
     const normalized = message.trim();
     if (!normalized || normalized.length > MAX_MESSAGE_LENGTH) {
       setValidation(
@@ -219,6 +221,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
       <DialogTrigger
+        disabled={!hydrated}
         render={
           <Button
             ref={trigger}
@@ -234,7 +237,8 @@ function AssistantSession({ staff }: { staff: boolean }) {
       <DialogContent
         initialFocus={title}
         finalFocus={trigger}
-        className={`${styles.panel} data-open:animate-none data-closed:animate-none`}
+        inert={!open}
+        className={styles.panel}
       >
         <DialogHeader className={styles.header}>
           <DialogTitle ref={title} tabIndex={-1}>
@@ -262,6 +266,7 @@ function AssistantSession({ staff }: { staff: boolean }) {
           ref={transcript}
           tabIndex={turns.length ? 0 : undefined}
           aria-label="Переписка с помощником"
+          aria-busy={sending}
           className={styles.transcript}
         >
           <section
@@ -282,8 +287,8 @@ function AssistantSession({ staff }: { staff: boolean }) {
             ))}
           </section>
           {turns.map((turn) => (
-            <article key={turn.id} className={`${styles.turn} space-y-2 break-words`}>
-              <p className="ml-6 rounded-lg bg-muted px-3 py-2 font-medium whitespace-pre-wrap">
+            <article key={turn.id} className="space-y-2 break-words">
+              <p className={`${styles.arrival} ml-6 rounded-lg bg-muted px-3 py-2 font-medium whitespace-pre-wrap`}>
                 {turn.message}
               </p>
               <div className="space-y-2" aria-live="polite">
@@ -291,14 +296,18 @@ function AssistantSession({ staff }: { staff: boolean }) {
                   <AiActivity label={turn.mode === "web" ? "Ищу в интернете" : "Сверяю утверждённые карточки"} detail={turn.mode === "web" ? "Собираю ответ и ссылки на внешние источники" : "Подбираю факты и версии источников"} />
                 )}
                 {turn.issue && (
-                  <p className="text-muted-foreground">{turn.issue}</p>
+                  <p className={`${styles.arrival} text-muted-foreground`}>
+                    {turn.issue}
+                  </p>
                 )}
                 {turn.answer && (
-                  <AssistantReply
-                    answer={turn.answer}
-                    onNavigate={() => changeOpen(false)}
-                    staff={staff}
-                  />
+                  <div className={`${styles.arrival} space-y-2`}>
+                    <AssistantReply
+                      answer={turn.answer}
+                      onNavigate={() => changeOpen(false)}
+                      staff={staff}
+                    />
+                  </div>
                 )}
               </div>
               {(turn.issue ||
@@ -356,7 +365,6 @@ function AssistantSession({ staff }: { staff: boolean }) {
               type="submit"
               size="icon"
               className={styles.send}
-              data-sending={sending || undefined}
               aria-label="Отправить вопрос"
               disabled={sending || !input.trim()}
             >

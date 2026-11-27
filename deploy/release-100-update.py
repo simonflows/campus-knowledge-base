@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Switch the accepted 1.0.0 writer to the f100n26b CI image without a migration."""
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 import fcntl
@@ -54,6 +55,34 @@ TABLES = frozenset({
     "knowledge-cards", "workflow-records", "account-identities", *TTL_TABLES,
 })
 phase = "arguments"
+
+
+@dataclass(frozen=True)
+class Update:
+    run: str = RUN
+    version: str = VERSION
+    series: str = "100"
+    pin_name: str = "29-release-100-update.conf"
+    script_name: str = "release-100-update.py"
+    base_run: str = BASE_RUN
+    base_revision: str = BASE_REV
+    base_image: str = BASE_IMAGE
+    base_version: str = VERSION
+    base_ci_run: int = BASE_CI_RUN
+    base_pin: str = "28-release-100.conf"
+    inherited_dropins: tuple[str, ...] = ()
+
+    def work(self, state):
+        return state / f"release{self.series}-{self.run}"
+
+    def build(self, state, revision):
+        return state / f"build{self.series}-{revision}"
+
+    def restore_prefix(self):
+        return f"qa095-{self.series}-{self.run}-old-"
+
+
+UPDATE_100 = Update()
 
 
 def check(condition):
@@ -201,12 +230,12 @@ def baseline():
     return base, build / "source", conditions, gate_files
 
 
-def check_config(work, pin_name, revision, image, run_id, accounts=True):
+def check_config(work, pin_name, revision, image, run_id, accounts=True, *, boot_command=None):
     pin = DROPINS / pin_name
     override = work / "image.override.yml"
     private(pin)
     private(override)
-    check(pin.read_bytes() == pin_content(work, revision).encode())
+    check(pin.read_bytes() == pin_content(work, revision, boot_command).encode())
     check(override.read_bytes() == override_content(image, run_id, "unless-stopped", False, accounts).encode())
 
 
@@ -218,10 +247,10 @@ def command(prop_name, expected):
     check(re.findall(r"argv\[\]=(.*?) ; ignore_errors=", prop(prop_name)) == expected)
 
 
-def image_check(image, revision):
+def image_check(image, revision, version=VERSION):
     check(run(["docker", "image", "inspect", "--format",
                '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}} '
-               '{{index .Config.Labels "org.opencontainers.image.version"}}', image]) == f"{image} {revision} {VERSION}")
+               '{{index .Config.Labels "org.opencontainers.image.version"}}', image]) == f"{image} {revision} {version}")
 
 
 def production_container():
@@ -233,23 +262,23 @@ def production_container():
     return named
 
 
-def health(image, revision, policy, run_id, candidate_ids=None):
+def health(image, revision, policy, run_id, candidate_ids=None, *, version=VERSION, update=UPDATE_100):
     container = production_container()
     check(container is not None)
     check(run(["docker", "inspect", "--format", "{{.Image}} " + LABEL_FORMAT, container]) == f"{image} {run_id}")
     if candidate_ids is not None:
-        check(run_id == RUN and image != BASE_IMAGE)
+        check(run_id == update.run and image != update.base_image)
         candidate_ids.add(container)
     fmt = ('{{.Image}} {{.State.Running}} {{.State.Health.Status}} '
            '{{.HostConfig.RestartPolicy.Name}} {{index .Config.Labels "org.opencontainers.image.revision"}} '
            '{{index .Config.Labels "org.opencontainers.image.version"}}')
-    check(run(["docker", "inspect", "--format", fmt, container]) == f"{image} true healthy {policy} {revision} {VERSION}")
+    check(run(["docker", "inspect", "--format", fmt, container]) == f"{image} true healthy {policy} {revision} {version}")
     check(prop("ActiveState") == "active" and prop("NeedDaemonReload") == "no")
     check(run(["systemctl", "is-active", "kanon-runtime.service"]) == "active")
     for origin, options in [(INTERNAL, []), (PUBLIC, PUBLIC_RESOLVE)]:
         curl = ["curl", "--disable", "--noproxy", "*", "--fail", "--silent", "--max-time", "12", *options]
         payload = json.loads(run(curl + [origin + "/api/version"]))
-        check(includes(payload, {"version": VERSION, "revision": revision}))
+        check(includes(payload, {"version": version, "revision": revision}))
         check(json.loads(run(curl + [origin + "/api/ready"])).get("status") == "ready")
     return container
 
@@ -351,19 +380,19 @@ Promise.all(['account-sessions', 'account-rate-limits'].map(TableName =>
     run(DOCKER_PROBE + ["--env-file", RUNTIME, "-e", "NODE_OPTIONS=", "--entrypoint", "node", image, "-e", predicate])
 
 
-def backup(work, label, action, archive, image, prefix=None):
-    container = f"kanon100-{RUN}-{label}"
+def backup(work, label, action, archive, image, prefix=None, *, update=UPDATE_100):
+    container = f"kanon{update.series}-{update.run}-{label}"
     query = ["docker", "ps", "-a", "--no-trunc", "--filter", f"name=^/{container}$", "-q"]
     check(not run(query))
-    marker = "canon.release100.maintenance"
+    marker = f"canon.release{update.series}.maintenance"
     args = [action, f"/backup/{archive}"]
     if action == "snapshot":
         args += ["--writers-stopped"]
     elif action == "restore":
-        check(prefix == f"qa095-100-{RUN}-old-")
+        check(prefix == update.restore_prefix())
         args += ["--prefix", prefix]
     network = ["--network", "none"] if action == "verify" else ["--env-file", RUNTIME]
-    command = DOCKER_PROBE + network + ["--name", container, "--label", f"{marker}={RUN}", "--user", "0:0",
+    command = DOCKER_PROBE + network + ["--name", container, "--label", f"{marker}={update.run}", "--user", "0:0",
         "-e", "USE_DATABASE=true", "-e", "CANON_DISK_RECOVERY=false", "-e", "NODE_OPTIONS=",
         "-e", "YANDEX_AI_STUDIO_API_KEY=", "-e", "YANDEX_DISK_OAUTH_TOKEN=", "-e", "ALIBABA_DASHSCOPE_API_KEY=",
         "-v", f"{work}:/backup", image, "node", "--import", "tsx", "scripts/database-backup.ts"]
@@ -374,7 +403,7 @@ def backup(work, label, action, archive, image, prefix=None):
         if remaining:
             check(hex_digest(remaining))
             fmt = '{{.Image}} {{index .Config.Labels "' + marker + '"}}'
-            check(run(["docker", "inspect", "--format", fmt, remaining]) == f"{image} {RUN}")
+            check(run(["docker", "inspect", "--format", fmt, remaining]) == f"{image} {update.run}")
             run(["docker", "rm", "-f", remaining])
     expected_status = {"snapshot": "saved", "verify": "verified", "restore": "restored"}
     check(report.get("status") == expected_status[action] and report.get("tables") == len(TABLES))
@@ -437,11 +466,11 @@ def boot_id():
     return value
 
 
-def boot_gate(expected_boot, revision, image):
+def boot_gate(expected_boot, revision, image, *, update=UPDATE_100):
     """Allow controlled starts this boot and fully authorized activation on later boots."""
-    work = STATE / f"release100-{RUN}"
+    work = update.work(STATE)
     private(work, directory=True)
-    expected = identity(revision, image, RUN)
+    expected = identity(revision, image, update.run, update.version)
     gate = work / "reviewed-release.json"
     if absent(gate) or not includes(read(gate), expected):
         return False
@@ -451,16 +480,16 @@ def boot_gate(expected_boot, revision, image):
     return not absent(activation) and includes(read(activation), {**expected, "status": "activation-authorized"})
 
 
-def rollback_target(image, candidate_ids):
+def rollback_target(image, candidate_ids, update=UPDATE_100):
     container = production_container()
     if container is None:
         return None, False, False, None
     fmt = "{{.Image}} " + LABEL_FORMAT + " {{.State.Running}} {{.HostConfig.RestartPolicy.Name}}"
     actual_image, run_id, running, policy = run(["docker", "inspect", "--format", fmt, container]).split()
-    candidate = (actual_image, run_id) == (image, RUN)
+    candidate = (actual_image, run_id) == (image, update.run)
     if candidate:
         candidate_ids.add(container)
-    check((candidate or (actual_image, run_id) == (BASE_IMAGE, BASE_RUN)) and running in ["true", "false"])
+    check((candidate or (actual_image, run_id) == (update.base_image, update.base_run)) and running in ["true", "false"])
     return container, candidate, running == "true", policy
 
 
@@ -488,9 +517,9 @@ def owned_pin(pin, staged_pin, expected_pin):
     check(pin.samefile(staged_pin) and pin.read_bytes() == expected_pin.encode())
 
 
-def discover_for_rollback(image, candidate_ids):
+def discover_for_rollback(image, candidate_ids, update=UPDATE_100):
     try:
-        return rollback_target(image, candidate_ids)
+        return rollback_target(image, candidate_ids, update)
     except BaseException:
         # Unknown topology cannot authorize a project-wide systemd stop.
         # Any already proven immutable IDs can still be stopped directly.
@@ -502,7 +531,7 @@ def quiesce_candidate(container):
     best_effort(run, ["docker", "container", "stop", "--time", "20", container], timeout=35)
 
 
-def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids):
+def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update=UPDATE_100):
     accepted = work / "accepted.json"
     activation = work / "activation-authorized.json"
     gate = work / "reviewed-release.json"
@@ -523,24 +552,24 @@ def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids
     # The app may still be writing. Target verified IDs immediately, without
     # making another successful Docker discovery a prerequisite for stopping.
     quiesce_remembered()
-    observed = discover_for_rollback(image, candidate_ids)
+    observed = discover_for_rollback(image, candidate_ids, update)
     if observed is None:
-        observed = discover_for_rollback(image, candidate_ids)
+        observed = discover_for_rollback(image, candidate_ids, update)
     if observed is not None:
         _, candidate, running, _ = observed
         quiesce_remembered()
         if owns_pin and (candidate or not running):
             best_effort(run, ["systemctl", "stop", UNIT], timeout=120)
     # Cancelling a start may leave a container created after the first lookup.
-    discover_for_rollback(image, candidate_ids)
+    discover_for_rollback(image, candidate_ids, update)
     quiesce_remembered()
 
     check(all(absent(path) for path in (accepted, activation, gate)))
     fsync_directory(work)
-    container, candidate, running, policy = rollback_target(image, candidate_ids)
+    container, candidate, running, policy = rollback_target(image, candidate_ids, update)
     if candidate and (running or policy != "no"):
         quiesce_candidate(container)
-        _, candidate, running, policy = rollback_target(image, candidate_ids)
+        _, candidate, running, policy = rollback_target(image, candidate_ids, update)
     if candidate:
         check(not running and policy == "no")
     if pinned:
@@ -566,10 +595,10 @@ def defer_acceptance_signals():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
-def main():
+def main(*, update=UPDATE_100, script=None, baseline_gate=baseline):
     try:
         with ExitStack() as cleanup:
-            cutover(cleanup)
+            cutover(cleanup, update, script, baseline_gate)
     except BaseException:
         if phase != "accepted":
             raise
@@ -585,16 +614,17 @@ def report_accepted(proof):
         print(message, end="", flush=True)
 
 
-def cutover(cleanup):
+def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
     global phase
     phase = "arguments"
     os.umask(0o077)
     check(os.geteuid() == 0 and len(sys.argv) == 4)
+    script = SCRIPT if script is None else script
     revision, image, run_id = sys.argv[1:]
-    check(hex_digest(revision, size=40) and revision != BASE_REV)
-    check(hex_digest(image, prefix="sha256:") and image != BASE_IMAGE and run_id == RUN)
-    work = STATE / f"release100-{RUN}"
-    pin = DROPINS / "29-release-100-update.conf"
+    check(hex_digest(revision, size=40) and revision != update.base_revision)
+    check(hex_digest(image, prefix="sha256:") and image != update.base_image and run_id == update.run)
+    work = update.work(STATE)
+    pin = DROPINS / update.pin_name
     gate = work / "reviewed-release.json"
     activation = work / "activation-authorized.json"
     accepted = work / "accepted.json"
@@ -608,8 +638,8 @@ def cutover(cleanup):
     lock = cleanup.enter_context(lock_path.open("rb"))
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     check(absent(pin) and absent(work))
-    base, base_source, conditions, gate_files = baseline()
-    old_dropins = {name: DROPINS / name for name in OLD_DROPINS}
+    base, base_source, conditions, gate_files = baseline_gate()
+    old_dropins = {name: DROPINS / name for name in (*OLD_DROPINS, *update.inherited_dropins)}
     for path in old_dropins.values():
         trusted_file(path)
     hashes = {path: digest(path) for path in old_dropins.values()}
@@ -621,21 +651,21 @@ def cutover(cleanup):
     check(dropin_disk.f_bavail * dropin_disk.f_frsize >= 4096 and dropin_disk.f_favail >= 2)
 
     phase = "candidate-source"
-    build = STATE / f"build100-{revision}"
+    build = update.build(STATE, revision)
     private(build, directory=True)
     provenance = verified_receipt(build, revision, image)
-    check(provenance["ciRunId"] != BASE_CI_RUN)
+    check(provenance["ciRunId"] != update.base_ci_run)
     source = build / "source"
     private(source, directory=True)
-    check(SCRIPT == SCRIPT.resolve() == source / "deploy/release-100-update.py")
+    check(script == script.resolve() == source / "deploy" / update.script_name)
     production_compose = REPO / "deploy/compose.prod.yml"
     check(production_compose == production_compose.resolve())
     check(all(digest(root / "deploy/compose.prod.yml") == COMPOSE_SHA256 for root in [REPO, source, base_source]))
-    check(read(source / "package.json").get("version") == VERSION)
+    check(read(source / "package.json").get("version") == update.version)
     for relative in ("lib/schema.ts", "lib/database-backup.ts", "scripts/database-backup.ts"):
         check(digest(source / relative) == digest(base_source / relative))
     this_boot = boot_id()
-    boot_command = f"/usr/bin/python3 -B {SCRIPT} --boot-gate {this_boot} {revision} {image}"
+    boot_command = f"/usr/bin/python3 -B {script} --boot-gate {this_boot} {revision} {image}"
     expected_pin = pin_content(work, revision, boot_command)
 
     def unit(candidate=False):
@@ -654,23 +684,24 @@ def cutover(cleanup):
 
     phase = "preflight"
     unit()
-    image_check(BASE_IMAGE, BASE_REV)
-    image_check(image, revision)
+    image_check(update.base_image, update.base_revision, update.base_version)
+    image_check(image, revision, update.version)
     runtime = runtime_fingerprint()
     runtime_check(image)
-    old_id = health(BASE_IMAGE, BASE_REV, "unless-stopped", BASE_RUN)
+    old_id = health(update.base_image, update.base_revision, "unless-stopped", update.base_run,
+                    version=update.base_version, update=update)
     candidate_ids = set()
     freeze(False)
     oauth_start()
-    ttl_check(BASE_IMAGE)
+    ttl_check(update.base_image)
     check(runtime_fingerprint() == runtime)
     work.mkdir(mode=0o700)
     fsync_directory(STATE)
-    proof = {**identity(revision, image, RUN), **provenance,
-             "previousRevision": BASE_REV, "previousImage": BASE_IMAGE, "previousVersion": VERSION,
-             "previousRun": BASE_RUN, "oldContainer": old_id}
-    publish(override, override_content(image, RUN, "no", True))
-    with tempfile.NamedTemporaryFile(mode="wb", prefix=".29-release-100-update-", dir=DROPINS, delete=False) as staged:
+    proof = {**identity(revision, image, update.run, update.version), **provenance,
+             "previousRevision": update.base_revision, "previousImage": update.base_image,
+             "previousVersion": update.base_version, "previousRun": update.base_run, "oldContainer": old_id}
+    publish(override, override_content(image, update.run, "no", True))
+    with tempfile.NamedTemporaryFile(mode="wb", prefix=f".{pin.stem}-", dir=DROPINS, delete=False) as staged:
         staged_pin = Path(staged.name)
         cleanup.callback(unlink_synced, staged_pin)
         staged.write(expected_pin.encode())
@@ -687,15 +718,15 @@ def cutover(cleanup):
         fsync_directory(DROPINS)
         run(["systemctl", "daemon-reload"])
         unit(True)
-        check(not boot_gate(this_boot, revision, image))
+        check(not boot_gate(this_boot, revision, image, update=update))
         phase = "baseline-snapshot"
         stopped()
-        before = backup(work, "baseline-capture", "snapshot", "before.json", BASE_IMAGE)
+        before = backup(work, "baseline-capture", "snapshot", "before.json", update.base_image, update=update)
         phase = "baseline-verify"
-        check(backup(work, "baseline-verify", "verify", "before.json", BASE_IMAGE) == before)
+        check(backup(work, "baseline-verify", "verify", "before.json", update.base_image, update=update) == before)
         phase = "baseline-isolated-restore"
-        prefix = f"qa095-100-{RUN}-old-"
-        check(backup(work, "baseline-restore", "restore", "before.json", BASE_IMAGE, prefix) == before)
+        prefix = update.restore_prefix()
+        check(backup(work, "baseline-restore", "restore", "before.json", update.base_image, prefix, update=update) == before)
         previous_inventory = inventory(work / "before.json", before)
         stopped()
         check(runtime_fingerprint() == runtime)
@@ -705,15 +736,15 @@ def cutover(cleanup):
 
         phase = "frozen-start"
         run(["systemctl", "start", UNIT], timeout=120)
-        frozen_id = health(image, revision, "no", RUN, candidate_ids)
+        frozen_id = health(image, revision, "no", update.run, candidate_ids, version=update.version, update=update)
         freeze(True)
         ttl_check(image)
         phase = "frozen-snapshot"
-        frozen = backup(work, "frozen-capture", "snapshot", "frozen.json", image)
+        frozen = backup(work, "frozen-capture", "snapshot", "frozen.json", image, update=update)
         phase = "frozen-verify"
-        check(backup(work, "frozen-verify", "verify", "frozen.json", image) == frozen)
+        check(backup(work, "frozen-verify", "verify", "frozen.json", image, update=update) == frozen)
         verify_unchanged(previous_inventory, inventory(work / "frozen.json", frozen))
-        check(health(image, revision, "no", RUN, candidate_ids) == frozen_id)
+        check(health(image, revision, "no", update.run, candidate_ids, version=update.version, update=update) == frozen_id)
         freeze(True)
         unit(True)
         check(runtime_fingerprint() == runtime)
@@ -724,22 +755,23 @@ def cutover(cleanup):
         phase = "open-writes"
         run(["systemctl", "stop", UNIT], timeout=120)
         stopped()
-        publish(override, override_content(image, RUN, "no", False))
+        publish(override, override_content(image, update.run, "no", False))
         run(["systemctl", "start", UNIT], timeout=120)
-        active_id = health(image, revision, "no", RUN, candidate_ids)
+        active_id = health(image, revision, "no", update.run, candidate_ids, version=update.version, update=update)
         freeze(False)
         oauth_start()
         check(runtime_fingerprint() == runtime)
         unit(True)
         phase = "authorize-restart"
-        publish(override, override_content(image, RUN, "unless-stopped", False))
+        publish(override, override_content(image, update.run, "unless-stopped", False))
         # Only now may Docker restart the candidate independently of systemd.
         # This authorization survives reboot. The final acceptance does not
         # exist until the live restart policy and all service checks pass.
         proof.update(container=active_id, yandexOAuthStartVerified=True)
         record(activation, {**proof, "status": "activation-authorized"})
         run(["docker", "update", "--restart", "unless-stopped", active_id])
-        check(health(image, revision, "unless-stopped", RUN, candidate_ids) == active_id)
+        check(health(image, revision, "unless-stopped", update.run, candidate_ids,
+                     version=update.version, update=update) == active_id)
         check(runtime_fingerprint() == runtime)
         unit(True)
         phase = "accept-receipt"
@@ -753,31 +785,34 @@ def cutover(cleanup):
         failed_phase = phase
         phase = "rollback"
         try:
-            rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids)
+            rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update)
             run(["systemctl", "daemon-reload"])
             unit()
-            check_config(base, "28-release-100.conf", BASE_REV, BASE_IMAGE, BASE_RUN)
+            check_config(base, update.base_pin, update.base_revision, update.base_image, update.base_run,
+                         boot_command=conditions[-1] if update.inherited_dropins else None)
             if prop("ActiveState") != "active":
                 run(["systemctl", "start", UNIT], timeout=120)
-            health(BASE_IMAGE, BASE_REV, "unless-stopped", BASE_RUN)
+            health(update.base_image, update.base_revision, "unless-stopped", update.base_run,
+                   version=update.base_version, update=update)
             freeze(False)
             record(work / "rollback.json", {"status": "rolled-back", "phase": failed_phase,
-                                           "revision": BASE_REV, "image": BASE_IMAGE, "dataRestored": False})
+                                           "revision": update.base_revision, "image": update.base_image,
+                                           "dataRestored": False})
         except BaseException:
             phase = "rollback-incomplete"
             best_effort(record, work / "rollback-incomplete.json", {
                 "status": "rollback-incomplete", "phase": failed_phase, "dataRestored": False,
             })
             raise
-        phase = failed_phase + ":rolled-back-to-accepted-100"
+        phase = failed_phase + ":rolled-back-to-accepted-" + update.base_version.replace(".", "")
         raise
     report_accepted(proof)
 
 
-if __name__ == "__main__":
+def cli(*, update=UPDATE_100, script=None, baseline_gate=baseline):
     if len(sys.argv) == 5 and sys.argv[1] == "--boot-gate":
         try:
-            sys.exit(0 if boot_gate(*sys.argv[2:]) else 1)
+            sys.exit(0 if boot_gate(*sys.argv[2:], update=update) else 1)
         except Exception:
             sys.exit(1)
 
@@ -787,9 +822,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGHUP, interrupt)
     try:
-        main()
+        main(update=update, script=script, baseline_gate=baseline_gate)
     except BaseException:
         if phase != "accepted":
             status = "rollback-incomplete" if phase == "rollback-incomplete" else "failed"
             print(json.dumps({"status": status, "phase": phase}), file=sys.stderr)
             sys.exit(1)
+
+
+if __name__ == "__main__":
+    cli()

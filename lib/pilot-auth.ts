@@ -3,7 +3,7 @@ import { z } from "zod";
 import { demoAccounts, getDemoAccount, normalizeOwnerLabel, toSessionUser, type SessionUser } from "./auth";
 
 export function demoLoginEnabled() {
-  return process.env.CAMPUS_DEMO_LOGIN === "true";
+  return process.env.NODE_ENV !== "production" && process.env.CAMPUS_DEMO_LOGIN === "true";
 }
 
 const pilotDirectorySchema = z.array(z.object({

@@ -14,15 +14,6 @@ const nextConfig: NextConfig = {
   ...(process.env.OUTPUT_MODE !== "export" && {
     async headers() {
       return [
-        {
-          source: "/demo",
-          headers: [
-            {
-              key: "Content-Security-Policy",
-              value: "connect-src 'none'; form-action 'none'; base-uri 'none'",
-            },
-          ],
-        },
         ...(isDevelopment
           ? [
               {
@@ -70,7 +61,7 @@ const nextConfig: NextConfig = {
   experimental: {
     serverSourceMaps: false,
     turbopackSourceMaps: false,
-    // Keep rendered data in the development document so /demo can hydrate without a socket.
+    // Keep development previews independent of a React debugging socket.
     ...(isDevelopment && { reactDebugChannel: false }),
   },
 };

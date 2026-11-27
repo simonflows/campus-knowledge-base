@@ -1,8 +1,37 @@
 import assert from "node:assert/strict";
-import type { Page } from "playwright-core";
+import type { Page, Route } from "playwright-core";
+import { createToolResponseFixture, fulfillToolResponse } from "./test-fact-result-ui-097";
 
 export async function runFactReportUiChecks(page: Page, base: string) {
-  await page.goto(base + "/demo#/check");
+  const fixture = createToolResponseFixture();
+  let reject = false;
+  const endpoint = base + "/api/fact-check";
+  const respond = async (route: Route) => {
+    if (reject) {
+      await route.fulfill({
+        status: 503,
+        json: { error: "Тестовый отказ сервиса" },
+      });
+      return;
+    }
+    const response = await fixture(route);
+    const isCheck = route.request().postDataJSON().mode === "check";
+    // Model availability is controlled in the fixture so the working fallback can be checked offline.
+    const result = isCheck && response.ok
+      ? Response.json({ ...(await response.json()), ai: { status: "unavailable" } })
+      : response;
+    await fulfillToolResponse(route, result);
+  };
+  await page.route(endpoint, respond);
+  try {
+    await checkFactReport(page, base, () => { reject = true; });
+  } finally {
+    await page.unroute(endpoint, respond);
+  }
+}
+
+async function checkFactReport(page: Page, base: string, rejectService: () => void) {
+  await page.goto(base + "/check");
   const input = page.getByRole("textbox", { name: "Черновик текста" });
   await input.fill(
     "Мне нравится Челябинск. Новые поколения тонко чувствуют ложь. Каким будет образование завтра?"
@@ -19,7 +48,7 @@ export async function runFactReportUiChecks(page: Page, base: string) {
   assert.match(await coverage.innerText(), /не подтверждает весь текст/);
   assert.match(
     await page.getByRole("region", { name: "Сверка с ИИ" }).innerText(),
-    /нейросеть не вызывалась/
+    /ИИ сейчас недоступен.*Показан результат проверки по правилам/
   );
   const quotedFact = "«Общая площадь кампуса составляет 114 тыс. кв. метров.»";
   await input.fill(
@@ -46,39 +75,16 @@ export async function runFactReportUiChecks(page: Page, base: string) {
       .isVisible()
   );
 
-  await page.goto(base + "/check");
-  let reject = false;
-  await page.route("**/api/fact-check", async (route) => {
-    if (reject) {
-      await route.fulfill({
-        status: 503,
-        json: { error: "Тестовый отказ сервиса" },
-      });
-    } else {
-      await route.fulfill({
-        status: 200,
-        json: {
-          findings: [],
-          checkpoints: [],
-          checkedChars: 100,
-          coverage: "unverified",
-          canPublish: true,
-          summary: { red: 0, yellow: 0, green: 0, total: 0 },
-        },
-      });
-    }
-  });
-  const draft = page.getByRole("textbox", { name: "Черновик текста" });
   const check = page.getByRole("button", {
     name: "Проверить текст",
     exact: true,
   });
-  await draft.fill(
+  await input.fill(
     "Мне нравится Челябинск, а новые поколения тонко чувствуют ложь."
   );
   await check.click();
   await coverage.waitFor();
-  reject = true;
+  rejectService();
   await check.click();
   await page
     .getByText("Тестовый отказ сервиса", { exact: true })

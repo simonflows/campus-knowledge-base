@@ -105,6 +105,8 @@ async function main() {
   process.env.CAMPUS_PILOT_ACCOUNTS = "[]";
   assert.equal(verifySessionToken(session), null);
   process.env.CAMPUS_DEMO_LOGIN = "true";
+  assert.equal((await POST(request({ accountId: "demo-pr-midis" }))).status, 503, "Production cannot enable retired demo profiles");
+  Object.assign(process.env, { NODE_ENV: "development" });
   const demo = await POST(request({ accountId: "demo-pr-midis" }));
   assert.equal(demo.status, 200);
   const demoSession = demo.cookies.get(SESSION_COOKIE)!.value;

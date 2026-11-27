@@ -277,7 +277,7 @@ function isSentenceBoundary(text: string, index: number): boolean {
   return true;
 }
 
-function sentenceAt(text: string, index: number): string {
+function sentenceAt(text: string, index: number, original = text): string {
   let start = 0;
   let end = text.length;
 
@@ -295,7 +295,7 @@ function sentenceAt(text: string, index: number): string {
     }
   }
 
-  const sentence = text.slice(start, end).trim();
+  const sentence = original.slice(start, end).trim();
 
   return sentence;
 }
@@ -365,6 +365,13 @@ const AUDIT_CATEGORY_TO_CHECKPOINT: Record<
 };
 
 type CampusAreaScope = "land" | "academic" | "hotel" | "housing" | "campus";
+const areaNumber = String.raw`[-−]?\d[\d.,\p{Zs}\t]*?`;
+const areaQuantity = String.raw`(${areaNumber})(?:[–—-][\p{Zs}\t]*(${areaNumber}))?\s*(тыс\.?\s*)?`;
+const campusAreaMeasurement = new RegExp(areaQuantity + String.raw`(?:кв\.?\s*метр[а-яё]*|кв\.?\s*м(?:2|²)?|м(?:2|²)|квадратн[а-яё]*\s+метр[а-яё]*)(?![\p{L}\p{N}])`, "iu");
+
+function parseAreaNumber(value: string): number {
+  return /^[-−]/u.test(value) ? -parseNumeric(value.slice(1)) : parseNumeric(value);
+}
 
 function campusAreaScope(text: string): CampusAreaScope | null {
   if (/земл|зем[её]л|участ(?:ок|к[а-яё]*)/iu.test(text)) return "land";
@@ -383,13 +390,13 @@ function campusAreaEvidence(card: CampusCard, scope: CampusAreaScope | null) {
       ...(campusAreaScope(label) === scope ? [`${label}: ${value}`] : []),
       ...note.split(/[,;](?!\d)/u).filter((part) => campusAreaScope(part) === scope),
     ]);
-  const pattern = /(\d[\d \u00a0.,]*?)(?:[–—-](\d[\d \u00a0.,]*?))?\s*(тыс\.?\s*)?(?:м²|м2|кв\.?\s*м(?:етр[а-яё]*)?)/giu;
+  const pattern = new RegExp(areaQuantity + String.raw`(?:м²|м2|кв\.?\s*м(?:етр[а-яё]*)?)`, "giu");
   return sources.flatMap((source) => Array.from(source.matchAll(pattern), (match) => {
     const multiplier = match[3] ? 1_000 : 1;
     return {
       source: source.trim(),
-      low: parseNumeric(match[1]) * multiplier,
-      high: parseNumeric(match[2] ?? match[1]) * multiplier,
+      low: parseAreaNumber(match[1]) * multiplier,
+      high: parseAreaNumber(match[2] ?? match[1]) * multiplier,
     };
   })).filter(({ low, high }) => Number.isFinite(low) && Number.isFinite(high));
 }
@@ -551,7 +558,7 @@ const abbreviationDot =
   /(?<![\p{L}\p{N}])(?:им|г|гг|ул|пр|корп|тыс|млн|млрд|кв|лаб|гост|эт|[А-ЯA-Z])\.(?=\s|[)])|(?<=ВЭБ)\.(?=РФ)/gu;
 
 export function factCheckSentenceRanges(line: string) {
-  const masked = line.replace(
+  const masked = line.replace(/[\r\n]/gu, " ").replace(
     abbreviationDot,
     (value) => value.slice(0, -1) + "·"
   );
@@ -564,46 +571,118 @@ export function factCheckSentenceRanges(line: string) {
   );
 }
 
-/** Respect paragraph boundaries, then split the independent sides of a contrast. */
-function lineStatements(line: string): string[] {
-  return factCheckSentenceRanges(line)
-    .flatMap(({ text }) => text.split(/;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu))
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+const contrastSeparator = /;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu;
+const listMarker = /^[^\S\r\n]*(?:[-+*•▪◦]|(?!(?:19|20|21)\d{2}[.)])\d+[.)])[^\S\r\n]+/u;
+const speechMarker = /^[^\S\r\n]*[—–][^\S\r\n]+/u;
+const markdownHeading = /^#{1,6}[^\S\r\n]+/u;
+const bareCampusHeading = /^(?:межуниверситетский\s+)?кампус\s+(?:[«"„“][^»"“”]+[»"“”]|Южный\s+Урал)\s*:?$/iu;
+const sentenceEnd = /[.!?…][»”"')\]]*$/u;
+const continuationWord = /(?:^|\s)(?:в|во|на|при|к|ко|с|со|из|от|до|для|под|над|и|или|в\s+городе|г·)$/iu;
+const numericPredicate = /(?:^|\s)(?:составля\p{L}*|насчитыва\p{L}*|равн[аоы]?|получил[аи]?)$/iu;
+
+function isSoftLineWrap(previous: string, next: string) {
+  const maskedPrevious = (previous.trimEnd() + " ").replace(abbreviationDot, value => value.slice(0, -1) + "·").trimEnd();
+  const numberContinues = /^\d/u.test(next) && (
+    numericPredicate.test(maskedPrevious) ||
+    /\d$/u.test(maskedPrevious) && /^\d{3}(?![\p{L}\p{N}-])/u.test(next)
+  );
+  return !sentenceEnd.test(maskedPrevious) && !/:$/u.test(maskedPrevious) &&
+    (numberContinues || /^[\p{Ll}«„“"]/u.test(next) || continuationWord.test(maskedPrevious) ||
+     maskedPrevious.lastIndexOf("«") > maskedPrevious.lastIndexOf("»"));
+}
+
+function isMeasurementDashWrap(previous: string, next: string): boolean {
+  if (!/[—–-]\s*$/u.test(previous) && !/^[—–-]\s*\d/u.test(next)) return false;
+  const subject = factCheckSentenceRanges(previous).at(-1)?.text.trim() ?? "";
+  const combined = factCheckSentenceRanges(subject + " " + next)[0]?.text.trim().replace(/[\r\n]/gu, " ") ?? "";
+  return !!hotelCapacityAssertion(combined) ||
+    !!campusAreaScope(subject) && !!campusAreaMeasurement.exec(combined)?.[2];
 }
 
 type StatementSpan = ClaimSpan & { frameStart: number; frameEnd: number };
+type SentenceFrame = {
+  start: number;
+  end: number;
+  text: string;
+  standalone: boolean;
+  listItem: boolean;
+};
+
+/** Segment prose with original offsets, keeping explicit headings and list items apart. */
+function factCheckFrames(text: string): SentenceFrame[] {
+  const blocks: { start: number; end: number; listItem: boolean; heading: boolean }[] = [];
+  for (const line of text.matchAll(/[^\r\n]+/gu)) {
+    const trimmed = line[0].trimStart();
+    if (!trimmed) continue;
+    const marker = listMarker.exec(line[0]);
+    const heading = markdownHeading.test(trimmed) || bareCampusHeading.test(trimmed);
+    const previous = blocks.at(-1);
+    const end = line.index + line[0].length;
+    if (previous && !previous.heading && !heading && !marker &&
+        /^(?:\r\n|[\r\n])$/u.test(text.slice(previous.end, line.index))) {
+      const before = text.slice(previous.start, previous.end);
+      if (isMeasurementDashWrap(before, trimmed) || !speechMarker.test(trimmed) && isSoftLineWrap(before, trimmed)) {
+        previous.end = end;
+        continue;
+      }
+    }
+    blocks.push({ start: line.index + (marker?.[0].length ?? 0), end, listItem: !!marker, heading });
+  }
+  return blocks.flatMap(block => {
+    const sentences = factCheckSentenceRanges(text.slice(block.start, block.end));
+    return sentences.map(sentence => ({
+      start: block.start + sentence.index,
+      end: block.start + sentence.index + sentence.text.length,
+      text: sentence.text,
+      standalone: sentences.length === 1,
+      listItem: block.listItem,
+    }));
+  });
+}
+
+/** Existing clause rules see the same content and offsets across soft wraps. */
+function maskSoftLineWraps(text: string, frames: SentenceFrame[]): string {
+  let start = 0;
+  const parts: string[] = [];
+  for (const frame of frames) {
+    if (!/[\r\n]/u.test(frame.text)) continue;
+    parts.push(text.slice(start, frame.start), text.slice(frame.start, frame.end).replace(/[\r\n]/gu, " "));
+    start = frame.end;
+  }
+  return parts.join("") + text.slice(start);
+}
 
 export function factCheckClaimSpans(text: string): (StatementSpan & { standalone: boolean })[] {
-  const spans: (StatementSpan & { standalone: boolean })[] = [];
-  for (const line of text.matchAll(/[^\r\n]+/gu)) {
+  return spansFromFrames(text, factCheckFrames(text));
+}
+
+function spansFromFrames(text: string, frames: SentenceFrame[]) {
+  const separators = new RegExp(contrastSeparator.source + "|" + interviewTopic.source, "giu");
+  return frames.flatMap(({ start, end, text: sentence, standalone, listItem }) => {
     const parts: StatementSpan[] = [];
-    for (const sentence of factCheckSentenceRanges(line[0])) {
-      const start = line.index + sentence.index;
-      const frameEnd = start + sentence.text.length;
-      const add = (left: number, right: number) => parts.push({
-        ...claimSpan(text, start + left, start + right), frameStart: start, frameEnd,
-      });
-      let previous = opinionQualifierEnd(sentence.text);
-      if (previous > 0) add(0, previous);
-      const separators = new RegExp(
-        /;\s+|,\s+(?:а|но|тогда\s+как)\s+/iu.source + "|" + interviewTopic.source,
-        "giu"
-      );
-      for (const separator of sentence.text.matchAll(separators)) {
-        if (separator.index < previous) continue;
-        add(previous, separator.index);
-        previous = separator.index + separator[0].length;
-      }
-      add(previous, sentence.text.length);
+    const add = (left: number, right: number) => {
+      parts.push({ ...claimSpan(text, start + left, start + right), frameStart: start, frameEnd: end });
+    };
+    let previous = opinionQualifierEnd(sentence);
+    if (previous > 0) add(0, previous);
+    for (const separator of sentence.matchAll(separators)) {
+      if (separator.index < previous) continue;
+      add(previous, separator.index);
+      previous = separator.index + separator[0].length;
     }
-    spans.push(...parts.filter(({ quote }) => quote).map(part => ({ ...part, standalone: parts.length === 1 })));
-  }
-  return spans;
+    add(previous, sentence.length);
+    return parts.filter(({ quote }) => quote).map(part => ({
+      ...part,
+      standalone: standalone && (!listItem || bareCampusHeading.test(sentence.trim())) && parts.length === 1,
+    }));
+  });
 }
 
 export function factCheckStatements(text: string): string[] {
-  return text.split(/[\r\n]/u).flatMap(lineStatements);
+  return factCheckFrames(text)
+    .flatMap(frame => frame.text.split(contrastSeparator))
+    .map(statement => statement.trim())
+    .filter(Boolean);
 }
 
 function locallyNegated(claim: string, index: number): boolean {
@@ -1074,7 +1153,7 @@ function auditSuggestion(ruleId: string, card: KnowledgeCard, fallback: string) 
 }
 
 /** Scope at the claim, never at the whole document. Commas in decimals stay intact. */
-function claimClause(text: string, index: number): string {
+function claimClause(text: string, index: number, original = text): string {
   const separatorAt = (position: number) =>
     /[;\n]/.test(text[position]) ||
     isSentenceBoundary(text, position) ||
@@ -1083,7 +1162,7 @@ function claimClause(text: string, index: number): string {
   let end = index;
   while (start > 0 && !separatorAt(start - 1)) start--;
   while (end < text.length && !separatorAt(end)) end++;
-  return text.slice(start, end).trim();
+  return original.slice(start, end).trim();
 }
 
 function universitiesIn(value: string): string[] {
@@ -1126,8 +1205,8 @@ function namesOtherCampus(sentence: string, card: CampusCard): boolean {
 }
 
 type HotelScope = "total" | "first" | "second";
-const hotelPlaces = String.raw`(?<number>\d+(?:[ \u00a0\u202f]\d{3})*)\s+(?<unit>мест(?:а|о)?)`;
-const hotelCampus = String.raw`гостиниц(?:\s+(?<campus>кампуса)(?:\s+[«"„“]Южный Урал[»"“”])?)?`;
+const hotelPlaces = String.raw`(?<number>\d+(?:\s+\d{3})*)\s+(?<unit>мест(?:а|о)?)`;
+const hotelCampus = String.raw`гостиниц(?:\s+(?<campus>кампуса)(?:\s+[«"„“]Южный\s+Урал[»"“”])?)?`;
 const hotelAssertionPrefix = String.raw`^(?:[—–-]\s+)?`;
 const hotelCapacityStatements = {
   total: new RegExp(hotelAssertionPrefix + String.raw`(?:(?:общая|проектная)\s+)?вместимость\s+` + hotelCampus +
@@ -1146,6 +1225,9 @@ const campusContextQualification = /(?<![\p{L}\p{N}])(?:план|проектн\
 const campusMetricQualification = /(?<!\p{L})(?:план|планов\p{L}*|прогноз\p{L}*|будущ\p{L}*|ожидаем\p{L}*|устаревш\p{L}*|историческ\p{L}*|архивн\p{L}*|стар\p{L}*\s+оценк\p{L}*|ориентировочн\p{L}*|предварительн\p{L}*|данные\s+уточняются|учебн\p{L}*\s+(?:пример|сценари)\p{L}*|не\s+подтвержд[её]н\p{L}*)(?!\p{L})/iu;
 const universityPlacesAllocation = /(?<!\p{L})получил[аи]?\s+\d[\d\s]*\s+мест(?:а|о)?(?!\p{L})/iu;
 const calendarYears = /\b(?:19|20|21)\d{2}\b/gu;
+const hotelCapacitySubject =
+  /^(?:[—–-]\s+)?(?:(?:(?:общая|проектная)\s+)?вместимость(?:\s+(?:первой|второй)\s+очереди)?|(?:первая|вторая)\s+очередь)\s+гостиниц(?!\p{L})/iu;
+const hotelCapacityPredicate = /(?<!\p{L})(?:составля\p{L}*|рассчитан\p{L}*)(?!\p{L})/iu;
 
 function hotelCapacityAssertion(quote: string) {
   const match = hotelCapacityStatements.total.exec(quote) ?? hotelCapacityStatements.queue.exec(quote) ??
@@ -1156,31 +1238,56 @@ function hotelCapacityAssertion(quote: string) {
   return { scope, number, unit, value: parseNumeric(number), requiresCampusHeading: !campus };
 }
 
-function campusProofContext(text: string, span: StatementSpan, campus: CampusCard, scope?: HotelScope, requiresCampusHeading = false): boolean {
+function campusProofContext(
+  text: string,
+  span: StatementSpan,
+  campus: CampusCard,
+  scope?: HotelScope,
+  requiresCampusHeading = false,
+  frames = factCheckFrames(text)
+): boolean {
   if (text.slice(span.frameStart, span.frameEnd).trim() !== span.quote || namesOtherCampus(span.quote, campus)) return false;
+  const explicitCampus = span.quote.match(campusName) !== null;
   let campusResolved = false;
   let includePlainContext = true;
   let sectionDepth = 7;
-  const previous = text.slice(0, span.frameStart).split(/\r\n|[\r\n]/u);
-  for (let index = previous.length - 1; index >= 0; index--) {
-    const line = previous[index].trim();
-    if (!line) continue;
-    const depth = /^(#{1,6})[ \t]+/u.exec(line)?.[1].length ?? 0;
+  let prior = frames.findLastIndex(frame => frame.start < span.frameStart);
+  for (let index = prior; index >= 0; index--) {
+    const frame = frames[index];
+    const line = frame.text.trim();
+    const depth = markdownHeading.exec(line)?.[0].trimEnd().length ?? 0;
     if (depth) {
       if (depth >= sectionDepth) continue;
       sectionDepth = depth;
       includePlainContext = false;
     } else if (!includePlainContext) continue;
 
-    const heading = depth > 0 || !/[.!?…]$/u.test(line) || /\d\s*г\.$/iu.test(line);
-    const inline = index === previous.length - 1;
-    const unquotedName = (heading || inline) ? unquotedCampusLead.exec(line)?.[1] : undefined;
+    // Each capacity or construction assertion carries its own subject, predicate and scope.
+    // Its queue or quantity cannot qualify the next sentence simply because they share a line.
+    const foreignCampus = namesOtherCampus(line, campus);
+    const completeAssertion = sentenceEnd.test(line) && claimVerb.test(line) &&
+      !framedCampusDescription.test(line) && !omitsAssertionQualification(line.replace(datedYear, ""), "");
+    const unrelatedDatedStatement = completeAssertion && datedYear.test(line) &&
+      !domainSubject.test(line) && !campusRelativePeriod.test(line);
+    const independentAssertion = foreignCampus
+      ? explicitCampus && completeAssertion
+      : hotelCapacityAssertion(line) || hotelCapacitySubject.test(line) && hotelCapacityPredicate.test(line) ||
+        matchesCampusOpeningAssertion(line, campus) || unrelatedDatedStatement;
+    if (!depth && independentAssertion) {
+      if (index === prior) prior--;
+      continue;
+    }
+
+    const heading = depth > 0 || bareCampusHeading.test(line) ||
+      !frame.listItem && (!sentenceEnd.test(line) || /\d\s*г\.$/iu.test(line));
+    const adjacent = index === prior;
+    const unquotedName = (heading || adjacent) ? unquotedCampusLead.exec(line)?.[1] : undefined;
     const campusWords = unquotedName && normalize(unquotedName);
     const knownUnquotedCampus = !!campusWords && /^южный урал(?:\s|$)/u.test(campusWords);
     const namedCampus = line.match(campusName) !== null || knownUnquotedCampus;
-    if (heading || namedCampus || inline) {
+    if (heading || namedCampus || adjacent) {
       // Each completed university allocation has its own date. It cannot date the following campus capacity.
-      const independentAllocations = inline && !heading && !namedCampus && lineStatements(line).every(statement =>
+      const independentAllocations = !heading && !namedCampus && line.split(contrastSeparator).every(statement =>
         universityPlacesAllocation.test(statement) && universitiesIn(statement).length === 1);
       const context = independentAllocations ? line.replace(calendarYears, "") : line;
       if (omitsAssertionQualification(context, "") || campusContextQualification.test(context) || campusRelativePeriod.test(context)) return false;
@@ -1190,8 +1297,8 @@ function campusProofContext(text: string, span: StatementSpan, campus: CampusCar
     const hotelOwner = heading && hotelHeadingOwner.exec(line)?.[1];
     if (hotelOwner && !/^(?:кампуса(?: южный урал)?|южного урала)$/u.test(normalize(hotelOwner))) return false;
     if (!campusResolved) {
-      if (namesOtherCampus(line, campus) || campusWords && !knownUnquotedCampus) return false;
-      if (namedCampus && (!requiresCampusHeading || heading && !inline)) {
+      if (foreignCampus || campusWords && !knownUnquotedCampus) return false;
+      if (namedCampus && (!requiresCampusHeading || heading && frame.standalone)) {
         campusResolved = true;
         includePlainContext = false;
       }
@@ -1207,10 +1314,10 @@ export function permitsHotelCapacityProof(text: string, span: StatementSpan, cam
   return !!assertion && campusProofContext(text, span, campus, assertion.scope, assertion.requiresCampusHeading);
 }
 
-export function matchCampusHotelCapacity(text: string, span: StatementSpan, campus: CampusCard) {
+export function matchCampusHotelCapacity(text: string, span: StatementSpan, campus: CampusCard, frames?: SentenceFrame[]) {
   const assertion = hotelCapacityAssertion(span.quote);
   if (!assertion || !Number.isSafeInteger(assertion.value) ||
-      !campusProofContext(text, span, campus, assertion.scope, assertion.requiresCampusHeading)) return undefined;
+      !campusProofContext(text, span, campus, assertion.scope, assertion.requiresCampusHeading, frames)) return undefined;
 
   const labels: Record<HotelScope, string[]> = {
     total: ["общая вместимость гостиниц", "вместимость и контингент"],
@@ -1853,6 +1960,7 @@ const framedCampusDescription = /(?:гипотез|гипотетическ|уч
 
 function matchesCampusOpeningAssertion(quote: string, campus: CampusCard): boolean {
   const opening = campus.referenceDescription.trim().split(/\r?\n[ \t]*\r?\n/u, 1)[0];
+  quote = quote.replace(speechMarker, "");
   const subject = /^(?:межуниверситетский\s+)?кампус\s+[«"„“]([^»"“”]+)[»"“”]\s+/iu.exec(quote);
   return !!subject && (` ${normalize(campus.title)} `).includes(` ${normalize(subject[1])} `) &&
     (concreteClaimForm(quote) || claimVerb.test(quote)) &&
@@ -1860,18 +1968,18 @@ function matchesCampusOpeningAssertion(quote: string, campus: CampusCard): boole
 }
 
 /** An opening assertion can stand alone only when it names the campus and keeps the source context. */
-export function hasExactCampusAssertion(text: string, span: StatementSpan, campus: CampusCard): boolean {
+export function hasExactCampusAssertion(text: string, span: StatementSpan, campus: CampusCard, frames?: SentenceFrame[]): boolean {
   return matchesCampusOpeningAssertion(span.quote, campus) &&
     !framedCampusDescription.test(campus.referenceDescription) && !omitsAssertionQualification(span.quote, "") &&
-    campusProofContext(text, span, campus);
+    campusProofContext(text, span, campus, undefined, false, frames);
 }
 
-function factRelevantSpans(draft: string, cards: KnowledgeCard[]) {
+function factRelevantSpans(draft: string, cards: KnowledgeCard[], frames = factCheckFrames(draft)) {
   const aliases = cards.flatMap(card => scopeAliases(card)
     .map(normalize).filter(name => name.length >= 4)).sort((a, b) => b.length - a.length);
   const exactFacts = new Set(cards.flatMap(card => cardEvidenceStatements(card).map(evidenceKey)));
   const models = recordedEquipmentModels(cards);
-  const spans = factCheckClaimSpans(draft);
+  const spans = spansFromFrames(draft, frames);
   let previousRelevant = false;
   let previousEnd = 0;
   let previousQuote = "";
@@ -1961,22 +2069,38 @@ function checkableStatement(statement: string, models: string[]): boolean {
   );
 }
 
+function findingSpanKey({ quoteStart, quote }: { quoteStart?: number; quote: string }) {
+  return quoteStart === undefined ? "" : quoteStart + ":" + quote.length;
+}
+
 function uncoveredStatements(
   input: string,
   statements: ReturnType<typeof factRelevantSpans>,
   cards: KnowledgeCard[],
   covered: Set<string>,
-  official: ReturnType<typeof collectOfficialFindings>
+  official: ReturnType<typeof collectOfficialFindings>,
+  frames: SentenceFrame[],
+  findings: FactCheckFinding[]
 ): FactCheckFinding[] {
   const models = recordedEquipmentModels(cards);
+  const campus = cards.find((card): card is CampusCard => card.type === "campus");
+  const coveredOccurrences = new Set(findings.map(findingSpanKey));
   const candidates = statements
-    .map((span, index) => ({ ...span, statement: span.quote, index }))
+    .map((span, index) => ({
+      ...span,
+      statement: span.quote,
+      index,
+      hotel: !!campus && !!hotelCapacityAssertion(span.quote),
+      opening: !!campus && matchesCampusOpeningAssertion(span.quote, campus),
+    }))
     .filter(
       ({ statement, relevant, attributedClaim, index }) =>
         relevant &&
         (attributedClaim || checkableStatement(statement, models) || official.unbound.has(index)) &&
-        !official.checkedStatements.has(index) &&
-        !covered.has(evidenceKey(statement).replace(editorialLead, "").replace(referenceLead, ""))
+        !official.checkedStatements.has(index)
+    ).filter(span => span.hotel || span.opening
+      ? !coveredOccurrences.has(findingSpanKey(span))
+      : !covered.has(evidenceKey(span.statement).replace(editorialLead, "").replace(referenceLead, ""))
     );
   if (!candidates.length) return [];
   const records = new Map(
@@ -1986,15 +2110,14 @@ function uncoveredStatements(
     ])
   );
   const references = new Set([...records.values()].flat());
-  const campus = cards.find((card): card is CampusCard => card.type === "campus");
   return candidates.flatMap((span) => {
     const { statement, quoteStart, index } = span;
     const scope = official.headings[index];
     const key = evidenceKey(statement).replace(editorialLead, "").replace(referenceLead, "");
     if (
-      !official.unbound.has(index) &&
+      !span.hotel && !official.unbound.has(index) &&
       (scope ? records.get(scope.id)?.includes(key) : references.has(key)) &&
-      (!campus || !matchesCampusOpeningAssertion(statement, campus) || hasExactCampusAssertion(input, span, campus))
+      (!span.opening || campus && hasExactCampusAssertion(input, span, campus, frames))
     )
       return [];
     return [
@@ -2022,7 +2145,8 @@ export function checkFactText(
   cards = cards
     .map(getApprovedVersion)
     .filter((card): card is KnowledgeCard => card !== null);
-  const spans = factRelevantSpans(input, cards);
+  const frames = factCheckFrames(input);
+  const spans = factRelevantSpans(input, cards, frames);
   const relevantSpanAt = (index: number) => spans.find(span =>
     span.relevant && span.quoteStart <= index && span.quoteEnd > index
   );
@@ -2033,6 +2157,7 @@ export function checkFactText(
     previousEnd = span.quoteEnd;
     return prefix + span.quote.replace(/[^\s.!?;,]/gu, value => " ".repeat(value.length));
   }).join("") + input.slice(previousEnd);
+  const scopedDraft = maskSoftLineWraps(draft, frames);
   const findings: FactCheckFinding[] = [];
   const confirmedFigures = new Set<string>();
   const checkedHotelSpans = new Set<number>();
@@ -2072,23 +2197,21 @@ export function checkFactText(
   findings.push(...collectScopedFindings(input, draftStatements, projectCards, labCards));
 
   if (campusCard) {
-    const areaRegex =
-      /(\d[\d \u00a0.,]*?)(?:[–—-](\d[\d \u00a0.,]*?))?\s*(тыс\.?\s*)?(?:кв\.?\s*метр[а-яё]*|кв\.?\s*м(?:2|²)?|м(?:2|²)|квадратн[а-яё]*\s+метр[а-яё]*)(?![\p{L}\p{N}])/giu;
-    const nextAreaInClause = new RegExp(areaRegex.source, "i");
+    const areaRegex = new RegExp(campusAreaMeasurement, "giu");
     let areaMatch: RegExpExecArray | null;
     let previousAreaEnd = 0;
     let previousAreaScope: CampusAreaScope | null = null;
 
-    while ((areaMatch = areaRegex.exec(draft)) !== null) {
-      const preceding = draft.slice(previousAreaEnd, areaMatch.index);
+    while ((areaMatch = areaRegex.exec(scopedDraft)) !== null) {
+      const preceding = scopedDraft.slice(previousAreaEnd, areaMatch.index);
       previousAreaEnd = areaRegex.lastIndex;
       const restatementScope: CampusAreaScope | null =
-        /^\s*\(\s*$/u.test(preceding) && /^\s*\)/u.test(draft.slice(previousAreaEnd))
+        /^\s*\(\s*$/u.test(preceding) && /^\s*\)/u.test(scopedDraft.slice(previousAreaEnd))
         ? previousAreaScope
         : null;
       previousAreaScope = null;
-      const sentence = sentenceAt(draft, areaMatch.index);
-      const measure = areaMatch[0].trim();
+      const sentence = sentenceAt(scopedDraft, areaMatch.index);
+      const measure = input.slice(areaMatch.index, previousAreaEnd).trim();
       const areaSpan = relevantSpanAt(areaMatch.index);
       const quote = areaSpan?.quote ?? "";
       const antecedent = areaSpan?.antecedent ?? "";
@@ -2097,24 +2220,24 @@ export function checkFactText(
 
       if (!quote || areaSpan && omitsAssertionQualification(
           input.slice(areaSpan.frameStart, areaSpan.quoteStart), input.slice(areaSpan.quoteEnd, areaSpan.frameEnd)
-        ) || (!refersToCampus && !isCampusClaim(draft, areaMatch.index)) ||
-          namesOtherCampus(sentence, campusCard) || datedYear.test(quote) ||
+        ) || (!refersToCampus && !isCampusClaim(scopedDraft, areaMatch.index)) ||
+          namesOtherCampus(sentence, campusCard) || datedYear.test(quote) || campusMetricQualification.test(quote) ||
           /(?:историческ\p{L}*|в\s+прошлом|раньше|бывш\p{L}*|составлял\p{L}*|планиру\p{L}*|будет|предполага\p{L}*|якобы|не\s+(?:составля\p{L}*|равн\p{L}*))/iu.test(quote) ||
           questionLead.test(sentence)) continue;
 
-      const value = parseNumeric(areaMatch[1] ?? "");
+      const value = parseAreaNumber(areaMatch[1] ?? "");
       const multiplier = areaMatch[3] ? 1000 : 1;
       const multiplied = value * multiplier;
-      const multipliedHigh = areaMatch[2] ? parseNumeric(areaMatch[2]) * multiplier : multiplied;
+      const multipliedHigh = areaMatch[2] ? parseAreaNumber(areaMatch[2]) * multiplier : multiplied;
 
       if (!Number.isFinite(multiplied) || !Number.isFinite(multipliedHigh) || multipliedHigh < multiplied) continue;
 
       // The next metric in the same sentence cannot label this number.
       const prefix = claimClause(preceding, preceding.length);
       const before: CampusAreaScope | null = campusAreaScope(prefix) ?? restatementScope;
-      const tail: string = before ? "" : claimClause(draft.slice(previousAreaEnd), 0);
+      const tail: string = before ? "" : claimClause(scopedDraft.slice(previousAreaEnd), 0);
       const scope: CampusAreaScope | null = before ??
-        (tail && !nextAreaInClause.test(tail) ? campusAreaScope(tail) : null) ??
+        (tail && !campusAreaMeasurement.test(tail) ? campusAreaScope(tail) : null) ??
         (/кампус/iu.test(prefix) && !/площад/iu.test(prefix) ? "campus" : null);
       previousAreaScope = scope;
       const evidence = campusAreaEvidence(campusCard, scope);
@@ -2195,7 +2318,7 @@ export function checkFactText(
     }
 
     for (const span of spans) {
-      const proof = span.relevant && matchCampusHotelCapacity(input, span, campusCard);
+      const proof = span.relevant && matchCampusHotelCapacity(input, span, campusCard, frames);
       if (!proof) continue;
       checkedHotelSpans.add(span.quoteStart);
       confirmedFigures.add(evidenceKey(span.quote));
@@ -2271,9 +2394,9 @@ export function checkFactText(
 
     seenFigures.add(key);
 
-    const quote = sentenceAt(draft, figureMatch.index);
-    const clause = claimClause(draft, figureMatch.index);
-    const universityId = scopedUniversity(draft, figureMatch.index);
+    const quote = span && hotelCapacityAssertion(span.quote) ? span.quote : sentenceAt(scopedDraft, figureMatch.index, draft);
+    const clause = claimClause(scopedDraft, figureMatch.index, draft);
+    const universityId = scopedUniversity(scopedDraft, figureMatch.index);
     const universityIds = universitiesIn(clause);
     const localRoots = new Set(tokenRoots(quote));
     const genericRoots = new Set([
@@ -2305,7 +2428,7 @@ export function checkFactText(
           )
         : null;
     const campusScope = campusCard && !namesOtherCampus(quote, campusCard) && (
-      isCampusClaim(draft, figureMatch.index) ||
+      isCampusClaim(scopedDraft, figureMatch.index) ||
       (universityIds.length === 0 &&
         Boolean(
           campusCard?.campusMetrics.some((metric) =>
@@ -2370,9 +2493,7 @@ export function checkFactText(
       }
     } else if (sourceCard) {
       const sources = cardEvidenceStatements(sourceCard);
-      const fullStatement = evidenceKey(
-        sentenceAt(draft, figureMatch.index)
-      );
+      const fullStatement = evidenceKey(quote);
       if (
         exactDescriptionCard?.id === sourceCard.id ||
         sources.some((source) => evidenceKey(source) === fullStatement)
@@ -2387,7 +2508,7 @@ export function checkFactText(
           sourceCard,
           "places",
           value,
-          campusMeasureContext(draft, figureMatch.index)
+          campusMeasureContext(scopedDraft, figureMatch.index)
         )
       ) {
         // This typed rule covers the magnitude and its scope. The surrounding
@@ -2420,6 +2541,7 @@ export function checkFactText(
           ? "Утверждение требует подтверждения"
           : "Цифра не подтверждена официальными данными",
         quote,
+        quoteStart: span?.quote === quote ? span.quoteStart : undefined,
         explanation: sameNumberDifferentClaim
           ? "В карточке встречается такое число. Период, статус или связь с другими сведениями в этой формулировке требуют отдельного подтверждения."
           : "Метрики «" +
@@ -2548,21 +2670,26 @@ export function checkFactText(
           confirmedFigures.add(evidenceKey(statement));
       }
     }
-    findings.push(...uncoveredStatements(input, spans, cards, confirmedFigures, official));
+    findings.push(...uncoveredStatements(input, spans, cards, confirmedFigures, official, frames, findings));
   }
 
   const matchedKeys = new Set(findings.map(finding => evidenceKey(finding.quote)));
+  const matchedOccurrences = new Set(findings.map(findingSpanKey));
   const exactFields = new Map(cards.flatMap(card =>
     cardEvidenceStatements(card, false).map(value => [evidenceKey(value), card] as const)
   ));
   for (const span of spans) {
     const key = evidenceKey(span.quote);
-    if (!key || !span.relevant || matchedKeys.has(key)) continue;
-    const exactCampusAssertion = campusCard && hasExactCampusAssertion(input, span, campusCard);
+    if (!key || !span.relevant || campusCard && hotelCapacityAssertion(span.quote)) continue;
+    const opening = campusCard && matchesCampusOpeningAssertion(span.quote, campusCard);
+    if (opening ? matchedOccurrences.has(findingSpanKey(span)) : matchedKeys.has(key)) continue;
+    const exactCampusAssertion = opening && hasExactCampusAssertion(input, span, campusCard, frames);
+    if (opening && !exactCampusAssertion) continue;
     const card = exactCampusAssertion ? campusCard : exactFields.get(key);
     if (!card) continue;
-    if (card.type === "campus" && !exactCampusAssertion && !campusProofContext(input, span, card)) continue;
+    if (card.type === "campus" && !exactCampusAssertion && !campusProofContext(input, span, card, undefined, false, frames)) continue;
     matchedKeys.add(key);
+    matchedOccurrences.add(findingSpanKey(span));
     findings.push(createFinding({
       level: "green",
       checkpoint: "names",

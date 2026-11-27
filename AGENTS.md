@@ -72,8 +72,7 @@ Before building, classify the request:
 
 ## Repo Map
 
-- Public `/demo` is an explicit owner-authorized exception to working-storage rules: it keeps only an educational dataset and edits in the visitor's browser. It must never issue working API writes, call paid providers, change the working session, or export to Disk. Preserve reload/reset/corruption safeguards. All real work continues to use DynamoDB/YDB.
-- The owner now requires demo to reuse the ordinary site components and shared chrome. Keep its routes and user fields in browser fragments with an explicit scoped request/navigation transport, never a global fetch override. Preserve the isolated document/CSP and working session on entry/exit. Working server loaders remain outside the demo route.
+- Since1.1.0 public browser demo is retired at the owner's request. `/demo` redirects to `/login` without carrying its fragment/query; do not reintroduce an entry or render the browser simulator in public routes. Existing browser data must not be cleared. Historical simulator code/tests and isolated development fixtures are retained for QA only, and must remain unreachable from public routes. `CAMPUS_DEMO_LOGIN` cannot enable profile login in production. Legacy profile definitions still identify real pilot staff; preserve them.
 - For the follow-up to 0.9.6, read `docs/followup-0.9.6-workflows.md` before changing rewrite/semantic verification, draft tombstones or demo transport. Deletion must preserve history and enforce author/state/version checks; a writer unaware of tombstones must not be restarted after the new writer has run.
 - Release 0.9.6 contracts: `docs/release-0.9.6-contracts.md`, `docs/release-0.9.6-access.md`, and `docs/release-0.9.6-disk.md`. Read the matching contract before changing AI, approval or Disk protocols. Run `npm run test:096` for their regression suite; normal full checks still apply.
 
