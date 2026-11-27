@@ -18,8 +18,17 @@ export async function runReleaseNotesUiChecks(page: Page, base: string) {
   await dialog.waitFor();
   assert.equal(await dialog.getByRole("listitem").count(), 5);
   const notes = await dialog.innerText();
-  for (const feature of ["Мягкий рельеф", "Проверка фактов", "Помощник", "Значки", "уменьшение движения"]) {
-    assert.ok(notes.includes(feature), `The ${version} notes must describe: ${feature}`);
+  for (const feature of [
+    "Официальные документы",
+    "Связь проектов",
+    "Показатели",
+    "Аналитика",
+    "уменьшения движения",
+  ]) {
+    assert.ok(
+      notes.includes(feature),
+      `The ${version} notes must describe: ${feature}`
+    );
   }
   assert.equal(
     await page.evaluate(

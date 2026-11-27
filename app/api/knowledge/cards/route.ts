@@ -1,4 +1,7 @@
+import { decorateStrategyVisibleCards } from "@/lib/strategy-sources";
 import { readRouteSession } from "@/lib/account-route-session";
+import { isManagedStrategyCard } from "@/lib/strategy";
+import { StrategyWriteError } from "@/lib/strategy-server";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -15,7 +18,12 @@ import {
 import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
-import { folderIds, getUniversityIdFromFolder, isCardReadyForPublication, stakeholderApprovalRoles } from "@/lib/knowledge";
+import {
+  folderIds,
+  getUniversityIdFromFolder,
+  isCardReadyForPublication,
+  stakeholderApprovalRoles,
+} from "@/lib/knowledge";
 import { staffDirectory } from "@/lib/account-directory";
 import {
   createKnowledgeCard,
@@ -36,7 +44,10 @@ export async function GET() {
   const { user } = session;
   try {
     const cards = await getAllKnowledgeCards();
-    return NextResponse.json(visibleKnowledgeCards(user, cards), { headers: { "Cache-Control": "private, no-store" } });
+    return NextResponse.json(
+      decorateStrategyVisibleCards(cards, visibleKnowledgeCards(user, cards)),
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   } catch {
     return unavailableStorageResponse();
   }
@@ -91,10 +102,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const organizationRole = user.role === "rio" || user.role === "chkk" ? user.role : undefined;
-  const input = body && typeof body === "object" && user.role !== "admin"
-    ? { ...body, organizationScope: organizationRole }
-    : body;
+  const organizationRole =
+    user.role === "rio" || user.role === "chkk" ? user.role : undefined;
+  const input =
+    body && typeof body === "object" && user.role !== "admin"
+      ? { ...body, organizationScope: organizationRole }
+      : body;
   const parsed = knowledgeCardInputSchema.safeParse(input);
 
   if (!parsed.success) {
@@ -126,9 +139,15 @@ export async function POST(request: NextRequest) {
   }
 
   const organizationScope = cardInput.organizationScope;
-  if (organizationScope && !canCreateOrganizationCard(organizationScope, cardInput)) {
+  if (
+    organizationScope &&
+    !canCreateOrganizationCard(organizationScope, cardInput)
+  ) {
     return NextResponse.json(
-      { error: "Этот тип карточки находится за пределами ответственности организации" },
+      {
+        error:
+          "Этот тип карточки находится за пределами ответственности организации",
+      },
       { status: 403 }
     );
   }
@@ -167,7 +186,10 @@ export async function POST(request: NextRequest) {
 
   const canonicalFolder = canonicalKnowledgeFolder(cardInput);
   if (!canonicalFolder) {
-    return NextResponse.json({ error: "Выберите папку из дерева базы знаний" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Выберите папку из дерева базы знаний" },
+      { status: 400 }
+    );
   }
   cardInput = { ...cardInput, folderId: canonicalFolder };
   if (cardInput.type === "custom" && user.role !== "admin") {
@@ -186,8 +208,18 @@ export async function POST(request: NextRequest) {
       }
 
       const construction = typeDef.organizationScope === "chkk";
-      if (construction ? user.role !== "admin" && user.role !== "chkk" : cardInput.organizationScope === "chkk") {
-        return NextResponse.json({ error: "Этот тип не доступен для создания в вашей зоне ответственности." }, { status: 403 });
+      if (
+        construction
+          ? user.role !== "admin" && user.role !== "chkk"
+          : cardInput.organizationScope === "chkk"
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Этот тип не доступен для создания в вашей зоне ответственности.",
+          },
+          { status: 403 }
+        );
       }
 
       const customFields = buildCustomFieldValuesSchema(typeDef).safeParse(
@@ -206,7 +238,13 @@ export async function POST(request: NextRequest) {
 
       cardInput = {
         ...cardInput,
-        ...(construction ? { organizationScope: "chkk", folderId: folderIds.chkkParameters, universityId: undefined } : {}),
+        ...(construction
+          ? {
+              organizationScope: "chkk",
+              folderId: folderIds.chkkParameters,
+              universityId: undefined,
+            }
+          : {}),
         customFields: customFields.data,
       };
     } catch {
@@ -217,7 +255,10 @@ export async function POST(request: NextRequest) {
   if (user.role === "admin") {
     const directory = await staffDirectory().catch(() => null);
     if (!directory) return unavailableStorageResponse();
-    const ownerIds = cardInput.ownerIds ?? resolveLegacyCardOwnerIds(cardInput, directory) ?? [];
+    const ownerIds =
+      cardInput.ownerIds ??
+      resolveLegacyCardOwnerIds(cardInput, directory) ??
+      [];
     if (!areCardOwnerIdsAssignable(cardInput, ownerIds, directory)) {
       return NextResponse.json(
         { error: "Владельцы должны иметь доступ к этому разделу карточек" },
@@ -239,9 +280,19 @@ export async function POST(request: NextRequest) {
 
   const needsJointConfirmation =
     cardInput.type === "project" && cardInput.isJoint;
+  const needsStrategyApproval =
+    isManagedStrategyCard(cardInput) ||
+    ((cardInput.type === "project" || cardInput.type === "laboratory") &&
+      Boolean(cardInput.strategyLinks?.length));
   const requiredStakeholders = stakeholderApprovalRoles(cardInput);
-  const status = user.role === "admin" && !needsJointConfirmation &&
-    !requiredStakeholders.length && isCardReadyForPublication(cardInput) ? "approved" : "pending";
+  const status =
+    user.role === "admin" &&
+    !needsJointConfirmation &&
+    !needsStrategyApproval &&
+    !requiredStakeholders.length &&
+    isCardReadyForPublication(cardInput)
+      ? "approved"
+      : "pending";
 
   try {
     const created = await createKnowledgeCard(cardInput, {
@@ -249,7 +300,9 @@ export async function POST(request: NextRequest) {
       submittedBy: user.id,
       submittedByName: user.name,
       participantApprovals: [],
-      ...(requiredStakeholders.length ? { requiredApprovalStakeholderRoles: requiredStakeholders } : {}),
+      ...(requiredStakeholders.length
+        ? { requiredApprovalStakeholderRoles: requiredStakeholders }
+        : {}),
     });
     const card =
       status === "approved"
@@ -264,8 +317,22 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(visibleKnowledgeCard(user, card), { status: 201 });
   } catch (error) {
-    if (error instanceof Error && error.name === "ConditionalCheckFailedException")
-      return NextResponse.json({ error: "Тип карточки изменился. Обновите страницу и повторите действие." }, { status: 409 });
+    if (error instanceof StrategyWriteError)
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error:
+            "Тип карточки или связанный источник изменился. Обновите страницу и повторите действие.",
+        },
+        { status: 409 }
+      );
     return unavailableStorageResponse();
   }
 }
@@ -319,8 +386,16 @@ export async function DELETE(request: NextRequest) {
     await deleteKnowledgeCard(id);
     return NextResponse.json({ success: true });
   } catch (error) {
-    if (error instanceof Error && error.name === "ConditionalCheckFailedException")
-      return NextResponse.json({ error: "Карточка изменилась. Обновите страницу и повторите действие." }, { status: 409 });
+    if (
+      error instanceof Error &&
+      error.name === "ConditionalCheckFailedException"
+    )
+      return NextResponse.json(
+        {
+          error: "Карточка изменилась. Обновите страницу и повторите действие.",
+        },
+        { status: 409 }
+      );
     return unavailableStorageResponse();
   }
 }

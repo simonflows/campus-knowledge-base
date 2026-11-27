@@ -61,7 +61,7 @@ test("folder and card categories share their symbols", () => {
 test("package, lock and immutable image advertise the same release", () => {
   const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
-  assert.equal(pkg.version, "1.1.0");
+  assert.equal(pkg.version, "1.2.0");
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[""].version, pkg.version);
   assert.ok(

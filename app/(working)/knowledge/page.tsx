@@ -1,3 +1,4 @@
+import { decorateStrategyVisibleCards } from "@/lib/strategy-sources";
 import "@/app/data-workspaces.css";
 
 import { BookOpenCheck } from "lucide-react";
@@ -43,9 +44,15 @@ export default async function KnowledgePage({
     version?: string;
   }>;
 }) {
-  const articleFolder = searchParams.then(params => {
-    const universityId = params.folder ? getUniversityIdFromFolder(params.folder) : null;
-    return !params.card && universityId && params.folder === folderIds.subfolder(universityId, "articles") ? universityId : null;
+  const articleFolder = searchParams.then((params) => {
+    const universityId = params.folder
+      ? getUniversityIdFromFolder(params.folder)
+      : null;
+    return !params.card &&
+      universityId &&
+      params.folder === folderIds.subfolder(universityId, "articles")
+      ? universityId
+      : null;
   });
   const [user, data, params, articles] = await Promise.all([
     getSessionUser(),
@@ -55,24 +62,41 @@ export default async function KnowledgePage({
       getReadableStorageMode(),
     ]).catch(() => null),
     searchParams,
-    articleFolder.then(universityId => universityId
-      ? getAllArticles().then(items => items
-        .filter(article => article.universityId === universityId)
-        .map(({ id, title }) => ({ id, title }))).catch(() => null)
-      : undefined),
+    articleFolder.then((universityId) =>
+      universityId
+        ? getAllArticles()
+            .then((items) =>
+              items
+                .filter((article) => article.universityId === universityId)
+                .map(({ id, title }) => ({ id, title }))
+            )
+            .catch(() => null)
+        : undefined
+    ),
   ]);
   if (!data) return <StorageUnavailable title="База знаний" />;
   const [allCards, types, mode] = data;
-  const cards = visibleKnowledgeCards(user, allCards);
+  const cards = decorateStrategyVisibleCards(
+    allCards,
+    visibleKnowledgeCards(user, allCards)
+  );
   const customTypes = withStats(types, customCardCounts(cards));
   const dbAvailable = mode !== "static-export";
 
   const approvedOnly = params.version === "approved";
-  const ownerCandidates = !approvedOnly && user?.role === "admin"
-    ? (await staffDirectory())
-      .filter(({ role }) => ["university_owner", "rio", "chkk"].includes(role))
-      .map(({ id, role, universityId, ownershipLabel }) => ({ id, role, universityId, ownershipLabel }))
-    : [];
+  const ownerCandidates =
+    !approvedOnly && user?.role === "admin"
+      ? (await staffDirectory())
+          .filter(({ role }) =>
+            ["university_owner", "rio", "chkk"].includes(role)
+          )
+          .map(({ id, role, universityId, ownershipLabel }) => ({
+            id,
+            role,
+            universityId,
+            ownershipLabel,
+          }))
+      : [];
   return (
     <>
       {approvedOnly ? (
@@ -93,10 +117,13 @@ export default async function KnowledgePage({
         initialQuery={params.q ?? ""}
         initialCards={
           approvedOnly
-            ? cards.flatMap((card) => {
-                const approved = getPublicApprovedCard(card);
-                return approved ? [approved] : [];
-              })
+            ? decorateStrategyVisibleCards(
+                allCards,
+                cards.flatMap((card) => {
+                  const approved = getPublicApprovedCard(card);
+                  return approved ? [approved] : [];
+                })
+              )
             : cards
         }
         initialCustomTypes={customTypes}

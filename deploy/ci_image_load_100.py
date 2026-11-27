@@ -286,6 +286,16 @@ def docker_command(*args):
     return result.stdout.decode().strip()
 
 
+def image_chain(image):
+    layers = json.loads(docker_command("image", "inspect", "--format", "{{json .RootFS.Layers}}", image))
+    require(isinstance(layers, list) and layers and all(hex_digest(layer, prefix="sha256:") for layer in layers),
+            "invalid image filesystem layers")
+    chain = layers[0]
+    for layer in layers[1:]:
+        chain = "sha256:" + hashlib.sha256((chain + " " + layer).encode("ascii")).hexdigest()
+    return chain
+
+
 def image_snapshot(proof, version="1.0.0"):
     revision = proof["revision"]
     image = proof["image"]
@@ -293,11 +303,7 @@ def image_snapshot(proof, version="1.0.0"):
            '{{index .Config.Labels "org.opencontainers.image.version"}}')
     require(docker_command("image", "inspect", "--format", fmt, "campus-kb:" + revision) ==
             f"{image} linux amd64 {revision} {version}", "loaded image identity and labels differ from CI")
-    layers = json.loads(docker_command("image", "inspect", "--format", "{{json .RootFS.Layers}}", image))
-    require(layers and all(hex_digest(layer, prefix="sha256:") for layer in layers), "invalid image filesystem layers")
-    chain = layers[0]
-    for layer in layers[1:]:
-        chain = "sha256:" + hashlib.sha256((chain + " " + layer).encode("ascii")).hexdigest()
+    chain = image_chain(image)
     # Docker must construct a container from the imported snapshot. No code runs.
     container = docker_command("create", "--pull", "never", "--network", "none", "--entrypoint", "/bin/true", image)
     require(hex_digest(container), "invalid snapshot probe container ID")
@@ -305,7 +311,7 @@ def image_snapshot(proof, version="1.0.0"):
     return chain
 
 
-def load_verified(revision, source, *, state=None, namespace="build100", expected_version=None):
+def load_verified(revision, source, *, state=None, namespace="build100", expected_version=None, snapshot_check=None):
     require(os.geteuid() == 0 and hex_digest(revision, size=40), "root and exact commit required")
     state = STATE if state is None else state
     private_exact(state, 0o700)
@@ -323,7 +329,10 @@ def load_verified(revision, source, *, state=None, namespace="build100", expecte
     disk = os.statvfs("/var/lib/containerd")
     require(disk.f_bavail * disk.f_frsize >= MIN_CONTAINERD_BYTES, "insufficient Docker unpack space")
     load_image(source, proof)
-    receipt = {**proof, "loaded": True, "snapshotCommitted": image_snapshot(proof, expected_version or "1.0.0")}
+    chain = image_snapshot(proof, expected_version or "1.0.0")
+    if snapshot_check is not None:
+        snapshot_check(chain)
+    receipt = {**proof, "loaded": True, "snapshotCommitted": chain}
     new_json(build / RECEIPT, receipt)
     return receipt
 

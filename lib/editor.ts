@@ -1,3 +1,5 @@
+import { isManagedStrategyCard, isRoadmapIndicator } from "./strategy";
+import { sourceDescription, strategySourceFacts } from "./strategy-evidence";
 import {
   flattenArticleChunks,
   type FlatArticleChunk,
@@ -120,15 +122,28 @@ function matchesRoot(haystack: string, root: string): boolean {
 }
 
 function splitArticleSupport(query: string) {
-  const cue = /(?:^|\s)(?:с\s+опорой\s+на|на\s+основе|взяв\s+за\s+основу)\s+/iu.exec(query);
-  return cue ? { subject: query.slice(0, cue.index), support: query.slice(cue.index + cue[0].length) }
+  const cue =
+    /(?:^|\s)(?:с\s+опорой\s+на|на\s+основе|взяв\s+за\s+основу)\s+/iu.exec(
+      query
+    );
+  return cue
+    ? {
+        subject: query.slice(0, cue.index),
+        support: query.slice(cue.index + cue[0].length),
+      }
     : { subject: query, support: "" };
 }
 
 export function isBasisOnlyArticleRequest(query: string): boolean {
   if (!query.trim()) return true;
-  const words = query.toLowerCase().replace(/ё/g, "е").replace(/[\p{P}\s]+/gu, " ").trim();
-  return /^(?:пожалуйста )?(?:(?:напиши|написать|подготовь|подготовить|составь|сделай|собери|создай) )?(?:(?:кратк|коротк|подробн)[а-я]+ )?(?:стать[яю]|материал|текст|заметк[ау]|справк[ау]|очерк)(?:(?: по| на основе| с опорой на) (?:выбранному блоку|выбранного блока|выбранный блок))?$/u.test(words);
+  const words = query
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[\p{P}\s]+/gu, " ")
+    .trim();
+  return /^(?:пожалуйста )?(?:(?:напиши|написать|подготовь|подготовить|составь|сделай|собери|создай) )?(?:(?:кратк|коротк|подробн)[а-я]+ )?(?:стать[яю]|материал|текст|заметк[ау]|справк[ау]|очерк)(?:(?: по| на основе| с опорой на) (?:выбранному блоку|выбранного блока|выбранный блок))?$/u.test(
+    words
+  );
 }
 
 export type ScoredCard = {
@@ -143,8 +158,8 @@ export function selectRelevantCards(
 ): ScoredCard[] {
   // Remove the editorial format from the start of the request. Every remaining
   // subject and qualifier is required in the approved card's searchable fields.
-  const subject = splitArticleSupport(query).subject
-    .trim()
+  const subject = splitArticleSupport(query)
+    .subject.trim()
     .replace(
       /^(?:пожалуйста[\s,]+)?(?:напиши|написать|подготовь|составь|сделай|собери|создай)\s+/iu,
       ""
@@ -190,16 +205,26 @@ export function selectRelevantArticles(
 ): ReadyArticle[] {
   const { support } = splitArticleSupport(query);
   const roots = queryTokens(support || query);
-  const ownerScope = new Set(universities.filter((university) => {
-    const explicit = ` ${normalize(support)} `;
-    return [university.id, university.shortName, university.fullName, university.fullName.replace(/\s*\([^)]*\)\s*$/u, "")]
-      .some((name) => explicit.includes(` ${normalize(name)} `));
-  }).map((university) => university.id));
+  const ownerScope = new Set(
+    universities
+      .filter((university) => {
+        const explicit = ` ${normalize(support)} `;
+        return [
+          university.id,
+          university.shortName,
+          university.fullName,
+          university.fullName.replace(/\s*\([^)]*\)\s*$/u, ""),
+        ].some((name) => explicit.includes(` ${normalize(name)} `));
+      })
+      .map((university) => university.id)
+  );
 
   if (roots.length === 0 && !ownerScope.size) return [];
 
   return articles
-    .filter((article) => !ownerScope.size || ownerScope.has(article.universityId))
+    .filter(
+      (article) => !ownerScope.size || ownerScope.has(article.universityId)
+    )
     .map((article) => {
       const text = normalize(
         [
@@ -260,6 +285,13 @@ function cardUniversityLabel(card: KnowledgeCard): string {
 }
 
 export function serializeCardForPrompt(card: KnowledgeCard): string {
+  if (isManagedStrategyCard(card))
+    return [
+      `ID карточки: ${card.id}`,
+      `Название: ${card.title}`,
+      "Планы не являются достигнутыми результатами. Неизвестное значение не равно нулю. Единица, контур, дата и назначение обязательны.",
+      ...strategySourceFacts(card).map((fact) => `${fact.label}: ${fact.text}`),
+    ].join("\n");
   const lines = [
     `ID карточки: ${card.id}`,
     `Тип: ${card.type}`,
@@ -338,6 +370,9 @@ export function serializeCardForPrompt(card: KnowledgeCard): string {
     );
   }
 
+  lines.push(
+    ...strategySourceFacts(card).map((fact) => `${fact.label}: ${fact.text}`)
+  );
   return lines.join("\n");
 }
 
@@ -606,6 +641,39 @@ const metricUnitKeywords = [
   "процент",
 ];
 
+/** Explicit metric names cannot steal unrelated prose or transfer a value to another contour. */
+export function selectNamedRoadmapIndicators(
+  query: string,
+  cards: KnowledgeCard[]
+): KnowledgeCard[] {
+  const normalized = normalize(query);
+  if (!/показател/u.test(normalized)) return [];
+  const quoted = query.match(/показател[а-яё]*\s+[«"]([^"»]+)["»]/iu)?.[1];
+  const requested = universities.filter(
+    (university) =>
+      ` ${normalized} `.includes(` ${normalize(university.shortName)} `) ||
+      ` ${normalized} `.includes(` ${university.id} `) ||
+      normalized.includes(normalize(university.fullName))
+  );
+  return cards.flatMap((input) => {
+    const card = getApprovedVersion(input);
+    if (!isRoadmapIndicator(card)) return [];
+    const name = normalize(card.title);
+    const named = quoted
+      ? normalize(quoted) === name
+      : name.length >= 4 && ` ${normalized} `.includes(` ${name} `);
+    if (!named) return [];
+    if (
+      requested.length &&
+      (requested.length !== 1 ||
+        card.roadmapIndicator.scope.kind !== "university" ||
+        card.roadmapIndicator.scope.universityId !== requested[0].id)
+    )
+      return [];
+    return [card];
+  });
+}
+
 export function selectUniversityMetricCards(
   query: string,
   cards: KnowledgeCard[]
@@ -684,7 +752,7 @@ function formatUniversityMetric(
 ): string {
   const status = metric.kind === "plan" ? "план" : "факт";
   const value = new Intl.NumberFormat("ru-RU", {
-    maximumFractionDigits: 12,
+    maximumSignificantDigits: 21,
   }).format(metric.value);
   return `${getUniversityName(card.universityId)} за ${metric.year} год (${status}) — ${metric.label.toLowerCase()} составляет ${value} ${metric.unit}. [${card.id}]`;
 }
@@ -733,7 +801,7 @@ export function isGroundedArticleText(
 export function groundGeneratedArticle(
   candidate: GeneratedArticlePayload,
   selectedCards: KnowledgeCard[],
-  { requireStandaloneLead = false }: { requireStandaloneLead?: boolean } = {},
+  { requireStandaloneLead = false }: { requireStandaloneLead?: boolean } = {}
 ): string | null {
   const ids = new Set(candidate.sourceCardIds);
   const sources = selectedCards.filter((card) => ids.has(card.id));
@@ -749,41 +817,66 @@ export function groundGeneratedArticle(
     return "Ответ модели содержит противоречие или факт без подтверждения. Черновик собран по утверждённым карточкам.";
   if (candidate.lead.length > 1000)
     return "Лид модели превышает 1000 знаков. Использован черновик по утверждённым карточкам.";
-  const prose = (value: string) => normalize(value.replace(/\[[^\]\n]+\]/gu, ""));
+  const prose = (value: string) =>
+    normalize(value.replace(/\[[^\]\n]+\]/gu, ""));
   const lead = prose(candidate.lead);
   const title = prose(candidate.title);
   const paragraphs = new Set<string>();
-  if (!lead || lead === title || sources.some((card) => lead === prose(card.title)))
+  if (
+    !lead ||
+    lead === title ||
+    sources.some((card) => lead === prose(card.title))
+  )
     return "Лид повторяет только название. Использован черновик по утверждённым карточкам.";
   for (const section of candidate.sections) {
-    if (/^(?:введение|заключение|вступление|основной текст)$/u.test(prose(section.heading)))
+    if (
+      /^(?:введение|заключение|вступление|основной текст)$/u.test(
+        prose(section.heading)
+      )
+    )
       return "Подзаголовки должны называть содержание блока. Использован черновик по утверждённым карточкам.";
     for (const chunk of section.chunks) {
-      const parts = chunk.content.split(/(?:\r?\n)+/u).map(prose).filter(Boolean);
+      const parts = chunk.content
+        .split(/(?:\r?\n)+/u)
+        .map(prose)
+        .filter(Boolean);
       if (parts.length === 0 || parts.length > 2)
         return "Смысловой блок должен содержать один или два абзаца. Использован черновик по утверждённым карточкам.";
       for (const part of parts) {
-        if (part === title || paragraphs.has(part) || requireStandaloneLead && part === lead)
+        if (
+          part === title ||
+          paragraphs.has(part) ||
+          (requireStandaloneLead && part === lead)
+        )
           return "Обнаружен повтор заголовка или блока. Использован черновик по утверждённым карточкам.";
         paragraphs.add(part);
       }
     }
   }
   if (requireStandaloneLead) {
-    const primary = sources.find((card) => candidate.lead.includes(`[${card.id}]`)) ?? sources[0];
+    const primary =
+      sources.find((card) => candidate.lead.includes(`[${card.id}]`)) ??
+      sources[0];
     const contains = (value: string) => {
       const subject = prose(value);
       return Boolean(subject) && ` ${lead} `.includes(` ${subject} `);
     };
-    const hasUniversity = (id: string) => contains(getUniversityName(id)) || contains(getUniversityFullName(id));
-    const participants = primary?.type === "project"
-      ? primary.isJoint ? primary.participantUniversityIds : [primary.initiatorUniversityId].filter(Boolean)
-      : [];
-    const lacksContext = primary?.type === "project" && (
-      participants.some((id) => !hasUniversity(id)) ||
-      (primary.contour !== "не уточнён" && !contains(primary.contour))
-    );
-    if (lacksContext || (primary?.type === "laboratory" && !contains(primary.affiliation)))
+    const hasUniversity = (id: string) =>
+      contains(getUniversityName(id)) || contains(getUniversityFullName(id));
+    const participants =
+      primary?.type === "project"
+        ? primary.isJoint
+          ? primary.participantUniversityIds
+          : [primary.initiatorUniversityId].filter(Boolean)
+        : [];
+    const lacksContext =
+      primary?.type === "project" &&
+      (participants.some((id) => !hasUniversity(id)) ||
+        (primary.contour !== "не уточнён" && !contains(primary.contour)));
+    if (
+      lacksContext ||
+      (primary?.type === "laboratory" && !contains(primary.affiliation))
+    )
       return "Лид не называет известных участников, вуз или контур. Использован черновик по утверждённым карточкам.";
   }
   return null;
@@ -987,7 +1080,7 @@ export function buildDeterministicArticleDraft(params: {
       });
     }
   } else {
-    lead = (primary.referenceDescription || primary.title).slice(0, 990);
+    lead = (sourceDescription(primary) || primary.title).slice(0, 990);
     sections.push({
       id: "section-custom",
       heading: `Сведения карточки «${primary.title}»`,
@@ -996,12 +1089,16 @@ export function buildDeterministicArticleDraft(params: {
         {
           id: "section-custom-chunk-1",
           content:
-            Object.entries(primary.customFields)
-              .map(
-                ([k, v]) =>
-                  `${k}: ${Array.isArray(v) ? v.join(", ") : String(v ?? "—")}`
-              )
-              .join("; ") || primary.title,
+            (isManagedStrategyCard(primary)
+              ? strategySourceFacts(primary)
+                  .map((fact) => fact.text)
+                  .join("\n\n")
+              : Object.entries(primary.customFields)
+                  .map(
+                    ([k, v]) =>
+                      `${k}: ${Array.isArray(v) ? v.join(", ") : String(v ?? "—")}`
+                  )
+                  .join("; ")) || primary.title,
         },
       ],
     });
@@ -1014,7 +1111,7 @@ export function buildDeterministicArticleDraft(params: {
       level: 3,
       chunks: secondaryCards.map((card, index) => ({
         id: `section-related-chunk-${index + 1}`,
-        content: `${card.title}: ${card.referenceDescription} [${card.id}]`,
+        content: `${isManagedStrategyCard(card) ? sourceDescription(card) : `${card.title}: ${card.referenceDescription}`} [${card.id}]`,
       })),
     });
   }

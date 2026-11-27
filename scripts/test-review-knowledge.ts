@@ -77,7 +77,12 @@ function withAdmin<T>(
     body = {},
     expected,
     profile = "demo-admin",
-  }: { method?: string; body?: unknown; expected?: string; profile?: string } = {}
+  }: {
+    method?: string;
+    body?: unknown;
+    expected?: string;
+    profile?: string;
+  } = {}
 ): T {
   const headers = new Headers({ "Content-Type": "application/json" });
   const token = signSessionToken(profile);
@@ -218,7 +223,12 @@ test("The type catalog includes definitions from subsequent DynamoDB pages", asy
   });
   assert.deepEqual(
     (await getAllCardTypes()).map(({ id }) => id),
-    [cardType.id, second.id]
+    [
+      cardType.id,
+      second.id,
+      "canon-official-document",
+      "canon-roadmap-indicator",
+    ]
   );
 });
 
@@ -257,15 +267,27 @@ test("A decision for an older card version is refused without changing the lates
 
 test("A stale participation decision returns a version conflict before checking completed participation", async (context) => {
   const card: ProjectCard = {
-    ...knowledgeSeedCards.find((card): card is ProjectCard => card.type === "project")!,
-    id: "fixture-joint", status: "pending", isJoint: true,
+    ...knowledgeSeedCards.find(
+      (card): card is ProjectCard => card.type === "project"
+    )!,
+    id: "fixture-joint",
+    status: "pending",
+    isJoint: true,
     folderId: "02_joint",
-    initiatorUniversityId: "midis", participantUniversityIds: ["midis", "susu"],
-    requiredApprovalUniversityIds: ["midis", "susu"], participantApprovals: ["midis"],
-    submittedBy: "fixture-coordinator", ownerIds: ["demo-owner-midis"], updatedAt: version,
+    initiatorUniversityId: "midis",
+    participantUniversityIds: ["midis", "susu"],
+    requiredApprovalUniversityIds: ["midis", "susu"],
+    participantApprovals: ["midis"],
+    submittedBy: "fixture-coordinator",
+    ownerIds: ["demo-owner-midis"],
+    updatedAt: version,
   };
   card.participantApprovalRecords = {
-    midis: { revisionId: getCardVersionId(card), actorId: "demo-owner-midis", at: version },
+    midis: {
+      revisionId: getCardVersionId(card),
+      actorId: "demo-owner-midis",
+      at: version,
+    },
   };
   useDynamo(context, (command) => {
     assert.ok(command instanceof GetCommand, "A stale decision must not write");
@@ -273,7 +295,9 @@ test("A stale participation decision returns a version conflict before checking 
   });
   const path = `/api/knowledge/cards/${card.id}/moderation`;
   const stale = await withAdmin(path, moderate, card.id, {
-    profile: "demo-owner-midis", body: { action: "confirm-participation" }, expected: "older-version",
+    profile: "demo-owner-midis",
+    body: { action: "confirm-participation" },
+    expected: "older-version",
   });
   assert.equal(stale.status, 409);
   for (const options of [
@@ -282,7 +306,8 @@ test("A stale participation decision returns a version conflict before checking 
     { profile: "demo-owner-csu", expected: "older-version" },
   ]) {
     const response = await withAdmin(path, moderate, card.id, {
-      ...options, body: { action: "confirm-participation" },
+      ...options,
+      body: { action: "confirm-participation" },
     });
     assert.equal(response.status, 403);
   }

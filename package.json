@@ -1,6 +1,6 @@
 {
   "name": "vibecraft-template",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "scripts": {
     "dev": "next dev -p 8080",
@@ -26,7 +26,7 @@
     "test:review-regressions": "tsx scripts/test-review-analysis.ts && tsx scripts/test-review-auth.ts && tsx scripts/test-review-knowledge.ts && tsx scripts/test-review-editorial.ts && tsx scripts/test-review-disk.ts && tsx scripts/test-review-ui.ts",
     "test:interface": "tsx scripts/test-interface.ts",
     "qa:init-fixture": "tsx scripts/init-qa-fixture.ts",
-    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions && npm run test:canon-offline && npm run test:096 && npm run test:098 && npm run test:099 && npm run test:100 && npm run test:110",
+    "test:offline": "npm test && npm run test:pilot-auth && npm run test:interface && npm run test:fact-storage && npm run test:benchmark && npm run test:flash-assist && tsx scripts/test-deploy-storage.ts && npm run test:release-regressions && npm run test:review-regressions && npm run test:canon-offline && npm run test:096 && npm run test:098 && npm run test:099 && npm run test:100 && npm run test:110 && npm run test:120",
     "test:099": "node --import tsx --test scripts/test-facts-099.ts scripts/test-fact-evidence-099.ts scripts/test-assistant-summary-099.ts scripts/test-fact-report-099.ts",
     "test:ui:099": "tsx scripts/run-ui-099.ts && tsx scripts/test-ui-099.ts",
     "test:098": "node --import tsx --test scripts/test-fact-semantics-098.ts scripts/test-semantic-full-098.ts scripts/test-semantic-stream-098.ts scripts/test-semantic-provider-098.ts scripts/test-public-source-facts-098.ts scripts/test-fact-stream-reader-098.ts scripts/test-fact-report-098.ts scripts/test-contour-period-098.ts scripts/test-editor-ux-098.ts scripts/test-assistant-examples-098.ts",
@@ -37,7 +37,7 @@
     "test:requests": "tsx scripts/test-requests.ts",
     "test:pilot-browser": "tsx scripts/run-pilot-qa.ts",
     "test:public-source-cycle": "tsx scripts/test-public-source-cycle.ts",
-    "test:fixture": "npm run test:editorial && npm run test:requests && npm run test:pilot-browser && npm run test:public-source-cycle && npm run test:canon-fixture && node --import tsx --test scripts/test-auth-100-fixture.ts && node --import tsx --test scripts/test-account-integration-100.ts",
+    "test:fixture": "npm run test:editorial && npm run test:requests && npm run test:pilot-browser && npm run test:public-source-cycle && npm run test:canon-fixture && node --import tsx --test scripts/test-auth-100-fixture.ts && node --import tsx --test scripts/test-account-integration-100.ts && node --import tsx scripts/run-strategy-fixture-120.ts",
     "test:benchmark": "tsx scripts/test-benchmark-pilot.ts",
     "test:canon-offline": "tsx scripts/test-workflow.ts && tsx scripts/test-work-queue.ts && tsx scripts/test-external-project.ts && tsx scripts/test-database-backup.ts && tsx scripts/test-integrated-flash.ts && tsx scripts/test-editor-assist.ts && tsx scripts/test-editorial-readiness.ts && tsx scripts/test-editor-source-versions.ts && tsx scripts/test-editor-deep-links.ts && tsx scripts/test-knowledge-deep-links.ts && tsx scripts/test-readiness-panel.ts && tsx components/work/work-state.test.ts && tsx scripts/test-reviewed-package-import.ts && node --import tsx --test scripts/test-qa-ydb-relay.mjs",
     "test:canon-fixture": "tsx scripts/test-canon-versions.ts && tsx scripts/test-canon-type-race.ts && cross-env CANON_EDITORIAL_DB_TEST=yes tsx scripts/test-editorial-readiness.ts && tsx scripts/test-canon-disk-race.ts && tsx scripts/test-workflow-db.ts && tsx scripts/test-shared-requests.ts && tsx scripts/test-card-usage.ts && tsx scripts/test-reviewed-package-import.ts",
@@ -46,7 +46,9 @@
     "test:096": "node --import tsx --test scripts/test-access-096.ts scripts/test-analytics-ai-plan-096.ts scripts/test-assistant-api-096.ts scripts/test-assistant-ui-096.ts scripts/test-browser-demo-096.ts scripts/test-canon-ai-096.ts scripts/test-disk-recovery-096.ts scripts/test-editor-approval-current-096.ts scripts/test-editor-approval-race-096.ts scripts/test-editor-grounding-096.ts scripts/test-fact-scope-096.ts scripts/test-grounded-api-096.ts scripts/test-query-096.ts scripts/test-library-basis-096.ts scripts/test-disk-download-096.ts scripts/test-ai-followup-096.ts scripts/test-draft-delete-096.ts scripts/test-demo-collaboration-096.ts scripts/test-ai-account-lock-096.ts scripts/test-deploy-write-freeze-096.ts scripts/test-database-read-096.ts scripts/test-login-entry-097.ts",
     "test:100": "node --import tsx --test scripts/test-*-100*.ts scripts/test-knowledge-folder-filter.ts",
     "test:110": "node --import tsx --test scripts/test-fact-format-110.ts scripts/test-release-110.ts",
-    "test:ui:110": "node --import tsx --test scripts/test-assistant-motion-110.ts scripts/test-assistant-hydration-110.ts scripts/test-ui-110.ts"
+    "test:ui:110": "node --import tsx --test scripts/test-assistant-motion-110.ts scripts/test-assistant-hydration-110.ts scripts/test-ui-110.ts",
+    "test:120": "node --import tsx --test scripts/test-strategy-120.ts scripts/test-strategy-120-routes.ts scripts/test-strategy-sources-120.ts scripts/test-strategy-analytics-120.ts scripts/test-strategy-ui-120.ts scripts/test-source-fallback-120.ts",
+    "test:ui:120": "node --import tsx --test scripts/test-ambient-120.ts scripts/test-masthead-120.ts"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.758.0",

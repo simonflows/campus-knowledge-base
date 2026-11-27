@@ -15,7 +15,10 @@ import {
   UserCheck,
   XCircle,
 } from "lucide-react";
-import { AppLink as Link, useWorkspaceNavigation } from "@/components/navigation/workspace-navigation";
+import {
+  AppLink as Link,
+  useWorkspaceNavigation,
+} from "@/components/navigation/workspace-navigation";
 import { z } from "zod";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
@@ -47,6 +50,10 @@ import {
 } from "@/lib/knowledge";
 import type { ModerationActionInput } from "@/lib/validation/access";
 import { cn } from "@/lib/utils";
+import {
+  IndicatorApprovalControls,
+  unconfirmedIndicatorSlots,
+} from "./strategy-views";
 
 type KnowledgeCardAccessPanelProps = {
   card: KnowledgeCard;
@@ -90,13 +97,20 @@ export function KnowledgeCardAccessPanel({
   const canResolveRequests = canManageEditRequests(currentUser, card);
   const canRequest = canRequestEdit(currentUser, card);
   const canConfirm = canConfirmJointParticipation(currentUser, card);
-  const canConfirmStakeholder = canConfirmStakeholderApproval(currentUser, card);
+  const canConfirmStakeholder = canConfirmStakeholderApproval(
+    currentUser,
+    card
+  );
   const canApprove = canModerate(currentUser) && status === "pending";
   const requiredUniversityIds = getRequiredUniversityApprovals(card);
   const joint = isJointProject(card) || requiredUniversityIds.length > 0;
   const stakeholderRoles = getRequiredStakeholderApprovals(card);
-  const stakeholderConfirmed = stakeholderRoles.every(role => Boolean(card.stakeholderApprovals?.[role]));
-  const awaitingApprovals = !stakeholderConfirmed || !isJointFullyApproved(card);
+  const stakeholderConfirmed = stakeholderRoles.every((role) =>
+    Boolean(card.stakeholderApprovals?.[role])
+  );
+  const awaitingApprovals =
+    !stakeholderConfirmed || !isJointFullyApproved(card);
+  const awaitingIndicator = unconfirmedIndicatorSlots(card).length > 0;
   const approvals = getParticipantApprovals(card);
   const openRequests = getPendingEditRequests(card);
   const editRequests = card.editRequests ?? [];
@@ -158,9 +172,11 @@ export function KnowledgeCardAccessPanel({
 
       onCardUpdated(data as KnowledgeCard);
       setMessage("");
-      toast.success(response.headers.get("X-Canon-Edit-Request-Recipient") === "coordinator"
-        ? "Запрос на правку отправлен координатору"
-        : "Запрос на правку отправлен владельцу карточки");
+      toast.success(
+        response.headers.get("X-Canon-Edit-Request-Recipient") === "coordinator"
+          ? "Запрос на правку отправлен координатору"
+          : "Запрос на правку отправлен владельцу карточки"
+      );
     } catch {
       toast.error("Ошибка сети при отправке запроса");
     } finally {
@@ -168,9 +184,7 @@ export function KnowledgeCardAccessPanel({
     }
   };
 
-  const handleModeration = async (
-    action: ModerationActionInput["action"]
-  ) => {
+  const handleModeration = async (action: ModerationActionInput["action"]) => {
     if (busyAction !== null) return;
     setBusyAction(action);
 
@@ -213,6 +227,10 @@ export function KnowledgeCardAccessPanel({
         toast.success("Карточка отклонена");
       } else if (action === "confirm-stakeholder") {
         toast.success("Согласование вашей организации сохранено");
+      } else if (action === "confirm-plan" || action === "confirm-actual") {
+        toast.success(
+          action === "confirm-plan" ? "План подтверждён" : "Факт подтверждён"
+        );
       } else {
         toast.success("Участие вуза подтверждено");
       }
@@ -301,7 +319,9 @@ export function KnowledgeCardAccessPanel({
               ? "Администратор базы: можно редактировать любую карточку, модерировать черновики и общие параметры кампуса."
               : canEdit
                 ? "У вас есть доступ к редактированию этой карточки."
-                : canRequest ? "Предложите правку владельцу карточки или координатору." : "Карточка доступна для просмотра."}
+                : canRequest
+                  ? "Предложите правку владельцу карточки или координатору."
+                  : "Карточка доступна для просмотра."}
           </p>
         </div>
 
@@ -323,7 +343,12 @@ export function KnowledgeCardAccessPanel({
                 type="button"
                 className="h-10 flex-1 sm:h-8 sm:flex-none"
                 onClick={() => handleModeration("approve")}
-                disabled={!dbAvailable || busyAction !== null || awaitingApprovals}
+                disabled={
+                  !dbAvailable ||
+                  busyAction !== null ||
+                  awaitingApprovals ||
+                  awaitingIndicator
+                }
               >
                 <CheckCircle2 className="h-4 w-4" />
                 {busyAction === "approve" ? "Одобряем..." : "Одобрить"}
@@ -342,6 +367,14 @@ export function KnowledgeCardAccessPanel({
           ) : null}
         </div>
       </div>
+
+      {canApprove ? (
+        <IndicatorApprovalControls
+          card={card}
+          disabled={!dbAvailable || busyAction !== null}
+          onConfirm={(action) => void handleModeration(action)}
+        />
+      ) : null}
 
       {canApprove && awaitingApprovals ? (
         <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900 ring-1 ring-amber-200">
@@ -415,11 +448,22 @@ export function KnowledgeCardAccessPanel({
       ) : null}
 
       {stakeholderRoles.length > 0 && status === "pending" ? (
-        <section className="flex flex-col items-start gap-3 rounded-2xl border p-3" aria-label="Согласования организаций">
+        <section
+          className="flex flex-col items-start gap-3 rounded-2xl border p-3"
+          aria-label="Согласования организаций"
+        >
           <div className="flex flex-wrap gap-2">
-            {stakeholderRoles.map(role => (
-              <Badge key={role} variant={card.stakeholderApprovals?.[role] ? "secondary" : "outline"}>
-                {roleShortLabels[role]} · {card.stakeholderApprovals?.[role] ? "подтверждено" : "ожидается"}
+            {stakeholderRoles.map((role) => (
+              <Badge
+                key={role}
+                variant={
+                  card.stakeholderApprovals?.[role] ? "secondary" : "outline"
+                }
+              >
+                {roleShortLabels[role]} ·{" "}
+                {card.stakeholderApprovals?.[role]
+                  ? "подтверждено"
+                  : "ожидается"}
               </Badge>
             ))}
           </div>

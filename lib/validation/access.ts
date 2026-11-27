@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CONFIRM_INDICATOR_ACTIONS } from "../strategy";
 
 export const loginSchema = z.object({
   accountId: z.string().trim().min(1, "Введите логин").max(64),
@@ -7,7 +8,13 @@ export const loginSchema = z.object({
 });
 
 export const moderationActionSchema = z.object({
-  action: z.enum(["approve", "reject", "confirm-participation", "confirm-stakeholder"]),
+  action: z.enum([
+    "approve",
+    "reject",
+    "confirm-participation",
+    "confirm-stakeholder",
+    ...CONFIRM_INDICATOR_ACTIONS,
+  ]),
   comment: z.string().trim().max(2_000).optional(),
 });
 

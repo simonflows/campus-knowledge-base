@@ -1,5 +1,6 @@
 import { readRouteSession } from "@/lib/account-route-session";
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 
 import { canManageTypes, visibleKnowledgeCards } from "@/lib/auth";
 import { getSessionUser, verifySameOrigin } from "@/lib/auth-server";
@@ -12,16 +13,27 @@ import {
 } from "@/lib/models";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import { cardTypeInputSchema } from "@/lib/validation/knowledge";
+import { isManagedStrategyType } from "@/lib/strategy";
+
+const reservedTypeSchema = z.object({
+  id: z.string().refine(isManagedStrategyType),
+});
 
 export async function GET() {
   try {
     const [types, cards, user] = await Promise.all([
-      getAllCardTypes(), getAllKnowledgeCards(), getSessionUser(),
+      getAllCardTypes(),
+      getAllKnowledgeCards(),
+      getSessionUser(),
     ]);
     const counts = customCardCounts(visibleKnowledgeCards(user, cards));
-    return NextResponse.json(types.map((type) => ({
-      ...type, cardCount: counts[type.id] ?? 0,
-    })), { headers: { "Cache-Control": "private, no-store" } });
+    return NextResponse.json(
+      types.map((type) => ({
+        ...type,
+        cardCount: counts[type.id] ?? 0,
+      })),
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
   } catch {
     return unavailableStorageResponse();
   }
@@ -29,7 +41,10 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   if (!verifySameOrigin(request)) {
-    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Недопустимый источник запроса" },
+      { status: 403 }
+    );
   }
   const session = await readRouteSession();
   if (session.response) return session.response;
@@ -71,6 +86,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (reservedTypeSchema.safeParse(body).success)
+    return NextResponse.json(
+      { error: "Встроенный шаблон защищён от изменений." },
+      { status: 409 }
+    );
   const parsed = cardTypeInputSchema.safeParse(body);
 
   if (!parsed.success) {

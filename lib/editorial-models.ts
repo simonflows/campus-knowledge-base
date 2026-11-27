@@ -1,7 +1,18 @@
+import {
+  hydrateCanonicalStrategySources,
+  hydrateHistoricalStrategySource,
+  observeSourceDependencies,
+} from "./strategy-sources";
+import { isManagedStrategyCard } from "./strategy";
+import { checkEditorialEvidence } from "./editorial-evidence";
 import { isDeepStrictEqual } from "node:util";
 import { TransactionCanceledException } from "@aws-sdk/client-dynamodb";
 import { conditionalTransactionCancellation } from "./account-transaction";
-import { authorStorageFailure, authorStorageWrites, readAuthorStorageFailure } from "./author-storage-budget";
+import {
+  authorStorageFailure,
+  authorStorageWrites,
+  readAuthorStorageFailure,
+} from "./author-storage-budget";
 import {
   GetCommand,
   ScanCommand,
@@ -15,15 +26,33 @@ import { docClient, isDatabaseAvailable } from "./db";
 import { getReadableStorageMode } from "./runtime-storage-policy";
 import { TableName } from "./schema";
 import { checkFactText } from "./fact-check";
-import { getArticleById, getCanonicalKnowledgeCards, getKnowledgeCardById } from "./models";
 import {
-  articleBasisReference, flattenArticleChunks, isApprovedArticle, articleSeed,
-  sameArticleBasisReference, type ArticleBasisReference, type ReadyArticle,
+  getArticleById,
+  getCanonicalKnowledgeCards,
+  getKnowledgeCardById,
+} from "./models";
+import {
+  articleBasisReference,
+  flattenArticleChunks,
+  isApprovedArticle,
+  articleSeed,
+  sameArticleBasisReference,
+  type ArticleBasisReference,
+  type ReadyArticle,
 } from "./articles";
 import { createPendingDiskSync, observedExportCondition } from "./disk-sync";
 import { readLocalStore } from "./local-store";
-import { getApprovedVersion, getPublicApprovedCard, getUniversityById, type KnowledgeCard } from "./knowledge";
-import { ensureApprovedCardVersion, getApprovedCardVersion, getCardVersionId } from "./knowledge-versions";
+import {
+  getApprovedVersion,
+  getPublicApprovedCard,
+  getUniversityById,
+  type KnowledgeCard,
+} from "./knowledge";
+import {
+  ensureApprovedCardVersion,
+  getApprovedCardVersion,
+  getCardVersionId,
+} from "./knowledge-versions";
 import {
   EditorialError,
   canDeleteEditorial,
@@ -50,42 +79,70 @@ async function available() {
 function isEditorialWriteConflict(error: unknown) {
   if (!(error instanceof Error)) return false;
   if (error.name === "ConditionalCheckFailedException") return true;
-  return error.name === "TransactionCanceledException" && (
-    !(error instanceof TransactionCanceledException) ||
-    !error.CancellationReasons?.some(
-      ({ Code }) => Code && !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(Code)
-    )
+  return (
+    error.name === "TransactionCanceledException" &&
+    (!(error instanceof TransactionCanceledException) ||
+      !error.CancellationReasons?.some(
+        ({ Code }) =>
+          Code &&
+          !["None", "ConditionalCheckFailed", "TransactionConflict"].includes(
+            Code
+          )
+      ))
   );
 }
 
-type EditorialWrites = NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]>;
+type EditorialWrites = NonNullable<
+  ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]
+>;
 const NEW_EDITORIAL_ROW = "attribute_not_exists(id)";
 const EDITORIAL_VERSION = "#version = :version";
-const EDITORIAL_BASIS_VERSION = "approval.revisionId = :basisRevision AND updatedAt = :basisUpdated";
+const EDITORIAL_BASIS_VERSION =
+  "approval.revisionId = :basisRevision AND updatedAt = :basisUpdated";
 
-async function authorEditorialGuardsChanged(writes: EditorialWrites, abortSignal: AbortSignal) {
-  const changed = await Promise.all(writes.map(async ({ Put, ConditionCheck }) => {
-    const guard = Put ?? ConditionCheck;
-    const id = Put?.Item?.id ?? ConditionCheck?.Key?.id;
-    const expression = guard?.ConditionExpression;
-    if (!guard || (expression !== NEW_EDITORIAL_ROW && expression !== EDITORIAL_VERSION && expression !== EDITORIAL_BASIS_VERSION))
-      throw new Error("Unexpected author editorial condition");
-    const { Item } = await docClient.send(new GetCommand({
-      TableName: guard.TableName, Key: { id }, ConsistentRead: true,
-      ProjectionExpression: "id, #version, approval, updatedAt", ExpressionAttributeNames: { "#version": "version" },
-    }), { abortSignal });
-    if (expression === NEW_EDITORIAL_ROW) return Item !== undefined;
-    const values = guard.ExpressionAttributeValues!;
-    if (expression === EDITORIAL_VERSION) return Item?.version !== values[":version"];
-    return Item?.approval?.revisionId !== values[":basisRevision"] || Item?.updatedAt !== values[":basisUpdated"];
-  }));
+async function authorEditorialGuardsChanged(
+  writes: EditorialWrites,
+  abortSignal: AbortSignal
+) {
+  const changed = await Promise.all(
+    writes.map(async ({ Put, ConditionCheck }) => {
+      const guard = Put ?? ConditionCheck;
+      const id = Put?.Item?.id ?? ConditionCheck?.Key?.id;
+      const expression = guard?.ConditionExpression;
+      if (
+        !guard ||
+        (expression !== NEW_EDITORIAL_ROW &&
+          expression !== EDITORIAL_VERSION &&
+          expression !== EDITORIAL_BASIS_VERSION)
+      )
+        throw new Error("Unexpected author editorial condition");
+      const { Item } = await docClient.send(
+        new GetCommand({
+          TableName: guard.TableName,
+          Key: { id },
+          ConsistentRead: true,
+          ProjectionExpression: "id, #version, approval, updatedAt",
+          ExpressionAttributeNames: { "#version": "version" },
+        }),
+        { abortSignal }
+      );
+      if (expression === NEW_EDITORIAL_ROW) return Item !== undefined;
+      const values = guard.ExpressionAttributeValues!;
+      if (expression === EDITORIAL_VERSION)
+        return Item?.version !== values[":version"];
+      return (
+        Item?.approval?.revisionId !== values[":basisRevision"] ||
+        Item?.updatedAt !== values[":basisUpdated"]
+      );
+    })
+  );
   return changed.some(Boolean);
 }
 
 async function writeChargedEditorial(
   writes: EditorialWrites,
   storage: ReturnType<typeof authorStorageWrites>,
-  conflict: () => EditorialError,
+  conflict: () => EditorialError
 ) {
   const input = { TransactItems: [...writes, ...storage] };
   for (let attempt = 0; ; attempt++) {
@@ -95,10 +152,14 @@ async function writeChargedEditorial(
     } catch (error) {
       const cancellation = conditionalTransactionCancellation(error);
       if (!cancellation) throw error;
-      if (cancellation.kind === "condition") throw authorStorageFailure(cancellation.codes, writes.length) ?? conflict();
+      if (cancellation.kind === "condition")
+        throw (
+          authorStorageFailure(cancellation.codes, writes.length) ?? conflict()
+        );
       if (cancellation.kind === "unknown") {
         const abortSignal = AbortSignal.timeout(3500);
-        if (await authorEditorialGuardsChanged(writes, abortSignal)) throw conflict();
+        if (await authorEditorialGuardsChanged(writes, abortSignal))
+          throw conflict();
         const limit = await readAuthorStorageFailure(storage, abortSignal);
         if (limit) throw limit;
       }
@@ -112,7 +173,9 @@ async function scan<T>(
   table: TableName,
   filter?: Pick<
     ScanCommandInput,
-    "FilterExpression" | "ExpressionAttributeNames" | "ExpressionAttributeValues"
+    | "FilterExpression"
+    | "ExpressionAttributeNames"
+    | "ExpressionAttributeValues"
   >
 ): Promise<T[]> {
   const rows: T[] = [];
@@ -134,10 +197,13 @@ async function scan<T>(
 export async function listEditorial(user: SessionUser) {
   if (user.role === "author") await available();
   else if (!(await isDatabaseAvailable())) return [];
-  const filter = user.role === "author" ? {
-    FilterExpression: "ownerId = :ownerId",
-    ExpressionAttributeValues: { ":ownerId": user.id },
-  } : undefined;
+  const filter =
+    user.role === "author"
+      ? {
+          FilterExpression: "ownerId = :ownerId",
+          ExpressionAttributeValues: { ":ownerId": user.id },
+        }
+      : undefined;
   return (await scan<EditorialDocument>(TableName.EDITORIAL_DOCUMENTS, filter))
     .filter((doc) => canReadEditorial(user, doc))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -225,9 +291,10 @@ async function scanEditorialHistory(
   }
 
   if (!conditions.length) return [];
-  const condition = conditions.length === 1
-    ? conditions[0]
-    : `(${conditions[0]} OR (${conditions[1]}))`;
+  const condition =
+    conditions.length === 1
+      ? conditions[0]
+      : `(${conditions[0]} OR (${conditions[1]}))`;
   return scan<EditorialHistoryRecord>(TableName.EDITORIAL_REVISIONS, {
     FilterExpression: `#documentId = :documentId AND ${condition}`,
     ExpressionAttributeNames: names,
@@ -268,7 +335,10 @@ async function readEditorial(
       revisions: includeRevisions ? readableRevisions(history, doc, user) : [],
     };
   }
-  throw new EditorialError("Черновик сейчас изменяется. Повторите запрос.", 409);
+  throw new EditorialError(
+    "Черновик сейчас изменяется. Повторите запрос.",
+    409
+  );
 }
 
 export async function getEditorial(id: string, user: SessionUser) {
@@ -309,93 +379,166 @@ async function getEditorialRevision(
   return item;
 }
 
-export async function getCurrentEditorialSnapshot(id: string, user: SessionUser) {
+export async function getCurrentEditorialSnapshot(
+  id: string,
+  user: SessionUser
+) {
   await available();
   const document = await getReadableEditorialHead(id, user);
-  const revision = await getEditorialRevision(document, user, document.revisionId);
+  const revision = await getEditorialRevision(
+    document,
+    user,
+    document.revisionId
+  );
   return { document, revision };
 }
 
-export async function deleteEditorial(id: string, user: SessionUser, version: number) {
+export async function deleteEditorial(
+  id: string,
+  user: SessionUser,
+  version: number
+) {
   await available();
   const current = await getReadableEditorialHead(id, user);
   if (!canWriteEditorial(user, current))
     throw new EditorialError("Черновик не найден", 404);
   if (current.version !== version)
-    throw new EditorialError("Черновик изменился. Откройте актуальную редакцию.", 409);
+    throw new EditorialError(
+      "Черновик изменился. Откройте актуальную редакцию.",
+      409
+    );
   if (!canDeleteEditorial(user, current))
-    throw new EditorialError("Удалить можно черновик, который не находится на согласовании и ещё не был утверждён.", 409);
+    throw new EditorialError(
+      "Удалить можно черновик, который не находится на согласовании и ещё не был утверждён.",
+      409
+    );
 
   const audit = event(user, "deleted", current.revisionId);
   try {
-    await docClient.send(new TransactWriteCommand({
-      TransactItems: [
-        {
-          Put: {
-            TableName: TableName.EDITORIAL_DOCUMENTS,
-            Item: {
-              ...current,
-              version: current.version + 1,
-              updatedAt: audit.at,
-              deletedAt: audit.at,
-              events: [...current.events, audit].slice(-20),
+    await docClient.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TableName.EDITORIAL_DOCUMENTS,
+              Item: {
+                ...current,
+                version: current.version + 1,
+                updatedAt: audit.at,
+                deletedAt: audit.at,
+                events: [...current.events, audit].slice(-20),
+              },
+              ConditionExpression:
+                "#version = :version AND ownerId = :ownerId AND attribute_not_exists(deletedAt)",
+              ExpressionAttributeNames: { "#version": "version" },
+              ExpressionAttributeValues: {
+                ":version": current.version,
+                ":ownerId": user.id,
+              },
             },
-            ConditionExpression: "#version = :version AND ownerId = :ownerId AND attribute_not_exists(deletedAt)",
-            ExpressionAttributeNames: { "#version": "version" },
-            ExpressionAttributeValues: { ":version": current.version, ":ownerId": user.id },
           },
-        },
-        {
-          Put: {
-            TableName: TableName.EDITORIAL_REVISIONS,
-            Item: { id: audit.id, documentId: id, kind: "event", event: audit },
-            ConditionExpression: "attribute_not_exists(id)",
+          {
+            Put: {
+              TableName: TableName.EDITORIAL_REVISIONS,
+              Item: {
+                id: audit.id,
+                documentId: id,
+                kind: "event",
+                event: audit,
+              },
+              ConditionExpression: "attribute_not_exists(id)",
+            },
           },
-        },
-        {
-          ConditionCheck: {
-            TableName: TableName.ARTICLES,
-            Key: { id },
-            ConditionExpression: "attribute_not_exists(id)",
+          {
+            ConditionCheck: {
+              TableName: TableName.ARTICLES,
+              Key: { id },
+              ConditionExpression: "attribute_not_exists(id)",
+            },
           },
-        },
-      ],
-    }));
+        ],
+      })
+    );
   } catch (error) {
     if (isEditorialWriteConflict(error))
-      throw new EditorialError("Черновик изменился или уже опубликован. Обновите список.", 409);
+      throw new EditorialError(
+        "Черновик изменился или уже опубликован. Обновите список.",
+        409
+      );
     throw error;
   }
 }
 
 export async function getEditorialSourceVersions(content: EditorialContent) {
-  const pinned = new Map(content.sourceVersions?.map((source) => [source.cardId, source.versionId]));
-  return Promise.all([...new Set(content.sourceCardIds)].map(async (id) => {
-    const versionId = pinned.get(id);
-    const [card, version] = await Promise.all([
-      getKnowledgeCardById(id),
-      versionId ? getApprovedCardVersion(versionId) : null,
-    ]);
-    const available = card && getPublicApprovedCard(card);
-    return {
-      id,
-      available: Boolean(available),
-      version: available && version?.cardId === id && getCardVersionId(version.snapshot) === versionId
-        ? version : null,
-    };
+  const pinned = new Map(
+    content.sourceVersions?.map((source) => [source.cardId, source.versionId])
+  );
+  const sources = await Promise.all(
+    [...new Set(content.sourceCardIds)].map(async (id) => {
+      const versionId = pinned.get(id);
+      const [card, version] = await Promise.all([
+        getKnowledgeCardById(id),
+        versionId ? getApprovedCardVersion(versionId) : null,
+      ]);
+      const available = card && getPublicApprovedCard(card);
+      return {
+        id,
+        available: Boolean(available),
+        version:
+          available &&
+          version?.cardId === id &&
+          getCardVersionId(version.snapshot) === versionId
+            ? version
+            : null,
+      };
+    })
+  );
+  // Historical exports keep pinned content, while current dependencies determine usable evidence.
+  const dependencies = await observeSourceDependencies(
+    sources.flatMap((source) =>
+      source.version ? [source.version.snapshot] : []
+    ),
+    getKnowledgeCardById
+  );
+  return sources.map((source) => ({
+    ...source,
+    version: source.version
+      ? {
+          ...source.version,
+          indicatorConfirmations: undefined,
+          snapshot: hydrateHistoricalStrategySource(
+            source.version,
+            dependencies.rows
+          ),
+        }
+      : null,
   }));
 }
-export function canReadLegacyArticle(user: SessionUser | null, article: ReadyArticle) {
-  return !isApprovedArticle(article) && Boolean(user && (user.role === "admin" ||
-    (["university_owner", "university_pr"].includes(user.role) && user.universityId === article.universityId)));
+export function canReadLegacyArticle(
+  user: SessionUser | null,
+  article: ReadyArticle
+) {
+  return (
+    !isApprovedArticle(article) &&
+    Boolean(
+      user &&
+      (user.role === "admin" ||
+        (["university_owner", "university_pr"].includes(user.role) &&
+          user.universityId === article.universityId))
+    )
+  );
 }
 
-export async function listLegacyArticles(user: SessionUser | null): Promise<ReadyArticle[]> {
+export async function listLegacyArticles(
+  user: SessionUser | null
+): Promise<ReadyArticle[]> {
   if (!user || user.role === "guest" || user.role === "author") return [];
-  const visible = (article: ReadyArticle) => canReadLegacyArticle(user, article);
+  const visible = (article: ReadyArticle) =>
+    canReadLegacyArticle(user, article);
   const mode = await getReadableStorageMode();
   if (mode === "static-export") return articleSeed.filter(visible);
-  if (mode === "local-json") return (await readLocalStore()).articles.filter(visible);
+  if (mode === "local-json")
+    return (await readLocalStore()).articles.filter(visible);
   return (await scan<ReadyArticle>(TableName.ARTICLES)).filter(visible);
 }
 function event(
@@ -429,66 +572,123 @@ function validateUniversity(user: SessionUser, content: EditorialContent) {
 }
 async function validateArticleBasis(
   references: ArticleBasisReference[],
-  missingStatus = 404,
+  missingStatus = 404
 ) {
-  const publications = await Promise.all([...new Set(references.map(({ articleId }) => articleId))]
-    .map(getArticleById));
-  if (publications.some((publication) => !publication || !isApprovedArticle(publication)))
-    throw new EditorialError("Утверждённая статья недоступна. Снова выберите опорный блок.", missingStatus);
+  const publications = await Promise.all(
+    [...new Set(references.map(({ articleId }) => articleId))].map(
+      getArticleById
+    )
+  );
+  if (
+    publications.some(
+      (publication) => !publication || !isApprovedArticle(publication)
+    )
+  )
+    throw new EditorialError(
+      "Утверждённая статья недоступна. Снова выберите опорный блок.",
+      missingStatus
+    );
 
   return publications.flatMap((publication) => {
     if (!publication?.approval) return [];
     const { id, approval, updatedAt } = publication;
     const chunks = flattenArticleChunks(publication);
-    for (const reference of references.filter(({ articleId }) => articleId === id)) {
+    for (const reference of references.filter(
+      ({ articleId }) => articleId === id
+    )) {
       if (approval.revisionId !== reference.revisionId)
-        throw new EditorialError("Редакция опорной статьи изменилась. Снова выберите блок.", 409);
-      const matches = chunks.filter((chunk) => chunk.chunkId === reference.chunkId);
-      const approved = matches.length === 1 ? articleBasisReference(matches[0]) : null;
+        throw new EditorialError(
+          "Редакция опорной статьи изменилась. Снова выберите блок.",
+          409
+        );
+      const matches = chunks.filter(
+        (chunk) => chunk.chunkId === reference.chunkId
+      );
+      const approved =
+        matches.length === 1 ? articleBasisReference(matches[0]) : null;
       if (!approved || !sameArticleBasisReference(approved, reference))
-        throw new EditorialError("Блок опорной статьи не совпадает с утверждённой редакцией.", 422);
+        throw new EditorialError(
+          "Блок опорной статьи не совпадает с утверждённой редакцией.",
+          422
+        );
     }
-    return [{
-      ConditionCheck: {
-        TableName: TableName.ARTICLES,
-        Key: { id },
-        ConditionExpression: EDITORIAL_BASIS_VERSION,
-        ExpressionAttributeValues: { ":basisRevision": approval.revisionId, ":basisUpdated": updatedAt },
+    return [
+      {
+        ConditionCheck: {
+          TableName: TableName.ARTICLES,
+          Key: { id },
+          ConditionExpression: EDITORIAL_BASIS_VERSION,
+          ExpressionAttributeValues: {
+            ":basisRevision": approval.revisionId,
+            ":basisUpdated": updatedAt,
+          },
+        },
       },
-    }];
+    ];
   });
 }
 async function normalizeSources(
   content: EditorialContent,
-  previous?: EditorialContent,
+  previous?: EditorialContent
 ) {
-  const { sourceVersions: supplied, articleBasis: suppliedBasis, ...fields } = content;
+  const {
+    sourceVersions: supplied,
+    articleBasis: suppliedBasis,
+    ...fields
+  } = content;
   const basis = suppliedBasis ?? previous?.articleBasis;
-  const addedBasis = suppliedBasis?.filter((reference) =>
-    !previous?.articleBasis?.some((saved) => sameArticleBasisReference(saved, reference))) ?? [];
+  const addedBasis =
+    suppliedBasis?.filter(
+      (reference) =>
+        !previous?.articleBasis?.some((saved) =>
+          sameArticleBasisReference(saved, reference)
+        )
+    ) ?? [];
   const basisGuards = await validateArticleBasis(addedBasis);
-  const requested = supplied ?? previous?.sourceVersions?.filter((source) =>
-    content.sourceCardIds.includes(source.cardId),
-  );
+  const requested =
+    supplied ??
+    previous?.sourceVersions?.filter((source) =>
+      content.sourceCardIds.includes(source.cardId)
+    );
   const ids = [...new Set(content.sourceCardIds)];
-  const pinned = new Map(requested?.map((source) => [source.cardId, source.versionId]));
-  const sourceCardTitles = await Promise.all(ids.map(async (id) => {
-    const raw = await getKnowledgeCardById(id);
-    const card = raw && getPublicApprovedCard(raw);
-    const versionId = pinned.get(id);
-    if (!card) {
-      const previousIndex = previous?.sourceCardIds.indexOf(id) ?? -1;
-      if (versionId || previousIndex < 0) throw new EditorialError("Источник недоступен в утверждённой базе", 422);
-      return previous?.sourceCardTitles[previousIndex] ?? "Источник недоступен";
-    }
-    if (!versionId) return card.title;
-    const stored = await getApprovedCardVersion(versionId) ??
-      (getCardVersionId(card) === versionId ? await ensureApprovedCardVersion(card) : null);
-    if (!stored || stored.cardId !== id || getCardVersionId(stored.snapshot) !== versionId) {
-      throw new EditorialError("Версия источника недоступна или относится к другой карточке", 422);
-    }
-    return stored.snapshot.title;
-  }));
+  const pinned = new Map(
+    requested?.map((source) => [source.cardId, source.versionId])
+  );
+  const sourceCardTitles = await Promise.all(
+    ids.map(async (id) => {
+      const raw = await getKnowledgeCardById(id);
+      const card = raw && getPublicApprovedCard(raw);
+      const versionId = pinned.get(id);
+      if (!card) {
+        const previousIndex = previous?.sourceCardIds.indexOf(id) ?? -1;
+        if (versionId || previousIndex < 0)
+          throw new EditorialError(
+            "Источник недоступен в утверждённой базе",
+            422
+          );
+        return (
+          previous?.sourceCardTitles[previousIndex] ?? "Источник недоступен"
+        );
+      }
+      if (!versionId) return card.title;
+      const stored =
+        (await getApprovedCardVersion(versionId)) ??
+        (getCardVersionId(card) === versionId
+          ? await ensureApprovedCardVersion(card)
+          : null);
+      if (
+        !stored ||
+        stored.cardId !== id ||
+        getCardVersionId(stored.snapshot) !== versionId
+      ) {
+        throw new EditorialError(
+          "Версия источника недоступна или относится к другой карточке",
+          422
+        );
+      }
+      return stored.snapshot.title;
+    })
+  );
   return {
     content: {
       ...fields,
@@ -500,8 +700,11 @@ async function normalizeSources(
     basisGuards,
   };
 }
-export async function getEditorialReviewers(doc: EditorialDocument, observedCards?: KnowledgeCard[]) {
-  const cards = observedCards ?? await getCanonicalKnowledgeCards();
+export async function getEditorialReviewers(
+  doc: EditorialDocument,
+  observedCards?: KnowledgeCard[]
+) {
+  const cards = observedCards ?? (await getCanonicalKnowledgeCards());
   const university = getUniversityById(doc.content.universityId);
   const shared = cards
     .filter((card) => doc.content.sourceCardIds.includes(card.id))
@@ -616,7 +819,9 @@ export async function createEditorial(
     actorName: user.name,
     createdAt: now,
   };
-  const writes: NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]> = [
+  const writes: NonNullable<
+    ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]
+  > = [
     {
       Put: {
         TableName: TableName.EDITORIAL_DOCUMENTS,
@@ -646,18 +851,35 @@ export async function createEditorial(
     ...normalized.basisGuards,
   ];
   const storage = authorStorageWrites(user, writes, true);
-  const basisChanged = () => new EditorialError("Опорная статья изменилась. Снова выберите блок.", 409);
+  const basisChanged = () =>
+    new EditorialError("Опорная статья изменилась. Снова выберите блок.", 409);
   if (storage.length) {
-    await writeChargedEditorial(writes, storage, normalized.basisGuards.length ? basisChanged : () =>
-      new EditorialError("Не удалось создать черновик. Повторите попытку.", 409));
+    await writeChargedEditorial(
+      writes,
+      storage,
+      normalized.basisGuards.length
+        ? basisChanged
+        : () =>
+            new EditorialError(
+              "Не удалось создать черновик. Повторите попытку.",
+              409
+            )
+    );
   } else {
     try {
       await docClient.send(new TransactWriteCommand({ TransactItems: writes }));
     } catch (error) {
-      if (normalized.basisGuards.length && error instanceof Error &&
-          error.name === "TransactionCanceledException" &&
-          (!(error instanceof TransactionCanceledException) || !error.CancellationReasons ||
-            error.CancellationReasons.slice(3).some(({ Code }) => Code === "ConditionalCheckFailed"))) throw basisChanged();
+      if (
+        normalized.basisGuards.length &&
+        error instanceof Error &&
+        error.name === "TransactionCanceledException" &&
+        (!(error instanceof TransactionCanceledException) ||
+          !error.CancellationReasons ||
+          error.CancellationReasons.slice(3).some(
+            ({ Code }) => Code === "ConditionalCheckFailed"
+          ))
+      )
+        throw basisChanged();
       throw error;
     }
   }
@@ -679,21 +901,34 @@ export async function mutateEditorial(
   let revision: EditorialRevision | undefined;
   let publication: ReadyArticle | undefined;
   let previousPublication: ReadyArticle | null = null;
-  const sourceGuards: NonNullable<ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]> = [];
+  const sourceGuards: NonNullable<
+    ConstructorParameters<typeof TransactWriteCommand>[0]["TransactItems"]
+  > = [];
   let basisGuards: Awaited<ReturnType<typeof validateArticleBasis>> = [];
   let action: EditorialEvent["action"] = "saved";
   if (mutation.action === "save" || mutation.action === "restore") {
     let content: EditorialContent;
     if (mutation.action === "save") {
-      const normalized = await normalizeSources(mutation.content, current.content);
+      const normalized = await normalizeSources(
+        mutation.content,
+        current.content
+      );
       content = normalized.content;
       basisGuards = normalized.basisGuards;
-      if (user.role === "author" && isDeepStrictEqual(
-        { ...content, sourceCardTitles: undefined },
-        { ...current.content, sourceCardTitles: undefined },
-      )) return { document: current, publication: undefined };
+      if (
+        user.role === "author" &&
+        isDeepStrictEqual(
+          { ...content, sourceCardTitles: undefined },
+          { ...current.content, sourceCardTitles: undefined }
+        )
+      )
+        return { document: current, publication: undefined };
     } else {
-      const old = await getEditorialRevision(current, user, mutation.revisionId);
+      const old = await getEditorialRevision(
+        current,
+        user,
+        mutation.revisionId
+      );
       content = old.content;
     }
     const revisionId = crypto.randomUUID();
@@ -716,7 +951,11 @@ export async function mutateEditorial(
     next.submittedRevisionId = null;
     action = mutation.action === "save" ? "saved" : "restored";
   } else {
-    const target = await getEditorialRevision(current, user, mutation.revisionId);
+    const target = await getEditorialRevision(
+      current,
+      user,
+      mutation.revisionId
+    );
     if (mutation.action === "submit" || mutation.action === "approve") {
       if (
         !target.content.title.trim() ||
@@ -732,8 +971,10 @@ export async function mutateEditorial(
     }
     if (mutation.action === "submit") {
       const reviewers = await getEditorialReviewers(current);
-      const reviewer = reviewers.find(
-        (candidate) => mutation.reviewerId ? candidate.id === mutation.reviewerId : candidate.role === "admin"
+      const reviewer = reviewers.find((candidate) =>
+        mutation.reviewerId
+          ? candidate.id === mutation.reviewerId
+          : candidate.role === "admin"
       );
       if (!reviewer)
         throw new EditorialError(
@@ -760,69 +1001,157 @@ export async function mutateEditorial(
       basisIds.delete(id);
       const maxCards = 22 - basisIds.size;
       if (ids.length > maxCards)
-        throw new EditorialError(`Для согласования оставьте не больше ${maxCards} используемых карточек с учётом опорных статей.`, 422);
+        throw new EditorialError(
+          `Для согласования оставьте не больше ${maxCards} используемых карточек с учётом опорных статей.`,
+          422
+        );
       basisGuards = await validateArticleBasis(articleBasis, 409);
       const rawSources = await Promise.all(ids.map(getKnowledgeCardById));
-      const currentSources = rawSources.flatMap(raw => {
+      const currentSources = rawSources.flatMap((raw) => {
         if (!raw) return [];
         const approved = getApprovedVersion(raw);
         const publicSource = getPublicApprovedCard(raw);
         if (!approved || !publicSource) return [];
         sourceGuards.push({
           ConditionCheck: {
-            TableName: TableName.KNOWLEDGE_CARDS, Key: { id: raw.id },
-            ConditionExpression: approved === raw ? "updatedAt = :sourceHead" :
-              "updatedAt = :sourceHead AND approvedSnapshot.updatedAt = :publishedSnapshot",
+            TableName: TableName.KNOWLEDGE_CARDS,
+            Key: { id: raw.id },
+            ConditionExpression:
+              approved === raw
+                ? "updatedAt = :sourceHead"
+                : "updatedAt = :sourceHead AND approvedSnapshot.updatedAt = :publishedSnapshot",
             ExpressionAttributeValues: {
               ":sourceHead": raw.updatedAt,
-              ...(approved !== raw ? { ":publishedSnapshot": approved.updatedAt } : {}),
+              ...(approved !== raw
+                ? { ":publishedSnapshot": approved.updatedAt }
+                : {}),
             },
           },
         });
         return [publicSource];
       });
       if (!currentSources.length || currentSources.length !== ids.length)
-        throw new EditorialError("Укажите доступные источники официальных данных", 422);
-      const allowedReviewers = await getEditorialReviewers(current, currentSources);
+        throw new EditorialError(
+          "Укажите доступные источники официальных данных",
+          422
+        );
+      const allowedReviewers = await getEditorialReviewers(
+        current,
+        currentSources
+      );
       if (!allowedReviewers.some((reviewer) => reviewer.id === user.id))
         throw new EditorialError(
           "Этот материал требует согласования координатором",
           403
         );
       const references = target.content.sourceVersions ?? [];
-      const pinned = references.length ? new Map((await getEditorialSourceVersions(target.content))
-        .flatMap(({ id, version }): [string, KnowledgeCard][] => version ? [[id, version.snapshot]] : []))
+      const pinned = references.length
+        ? new Map(
+            (await getEditorialSourceVersions(target.content)).flatMap(
+              ({ id, version }): [string, KnowledgeCard][] =>
+                version ? [[id, version.snapshot]] : []
+            )
+          )
         : new Map<string, KnowledgeCard>();
       if (references.some(({ cardId }) => !pinned.has(cardId))) {
-        throw new EditorialError("Закреплённая версия источника недоступна", 422);
+        throw new EditorialError(
+          "Закреплённая версия источника недоступна",
+          422
+        );
       }
-      const sources = currentSources.map((card) => pinned.get(card.id) ?? card);
+      const currentVersionByCard = new Map(
+        currentSources.map((card) => [card.id, getCardVersionId(card)])
+      );
+      if (
+        references.some(
+          ({ cardId, versionId }) =>
+            currentVersionByCard.get(cardId) !== versionId
+        )
+      ) {
+        throw new EditorialError(
+          "Источники обновились. Сверьте текст, переподключите актуальные карточки в источниках редакции и отправьте её на согласование.",
+          409
+        );
+      }
+      const selected = currentSources.map(
+        (card) => pinned.get(card.id) ?? card
+      );
+      const dependencies = await observeSourceDependencies(
+        selected,
+        getKnowledgeCardById
+      );
+      if (!dependencies.current)
+        throw new EditorialError(
+          "Документ-основание изменился или недоступен. Обновите связанные карточки и повторно сверьте материал.",
+          409
+        );
+      const observed = new Map(
+        rawSources.flatMap((raw) => (raw ? [[raw.id, raw] as const] : []))
+      );
+      for (const row of dependencies.rows) {
+        if (observed.has(row.id)) continue;
+        observed.set(row.id, row);
+        sourceGuards.push({
+          ConditionCheck: {
+            TableName: TableName.KNOWLEDGE_CARDS,
+            Key: { id: row.id },
+            ConditionExpression: "updatedAt = :sourceHead",
+            ExpressionAttributeValues: { ":sourceHead": row.updatedAt },
+          },
+        });
+      }
+      if (sourceGuards.length > maxCards)
+        throw new EditorialError(
+          `В источниках и их документах-основаниях оставьте не больше ${maxCards} разных карточек.`,
+          422
+        );
+      const hydrated = new Map(
+        hydrateCanonicalStrategySources([...observed.values()]).map((card) => [
+          card.id,
+          card,
+        ])
+      );
+      const sources = selected.map((card) => hydrated.get(card.id) ?? card);
       const articleText = editorialText(target.content);
+      if (
+        sources.some(isManagedStrategyCard) &&
+        !checkEditorialEvidence(articleText, sources).canPublish
+      ) {
+        throw new EditorialError(
+          "Сверьте формулировки показателей: план, факт, дата, единица и контур должны соответствовать подтверждённым источникам.",
+          422
+        );
+      }
       const check = checkFactText(articleText, sources);
       if (check.summary.red > 0)
         throw new EditorialError(
           "Согласование заблокировано: исправьте красные замечания фактчека",
           422
         );
-      const currentVersionByCard = new Map(currentSources.map(card => [card.id, getCardVersionId(card)]));
-      if (references.some(({ cardId, versionId }) => currentVersionByCard.get(cardId) !== versionId)) {
-        throw new EditorialError(
-          "Источники обновились. Сверьте текст, переподключите актуальные карточки в источниках редакции и отправьте её на согласование.",
-          409
-        );
-      }
       // Selected cards provide the evidence. Omitting a card cannot hide a known
       // contradiction elsewhere in the approved corpus.
-      const corpusCheck = checkFactText(articleText, await getCanonicalKnowledgeCards());
-      if (corpusCheck.findings.some(finding =>
-        finding.level === "red" && (references.length === 0 || Boolean(finding.sourceCardId))
-      )) {
-        throw new EditorialError("Согласование заблокировано: текст расходится с утверждёнными карточками.", 422);
+      const corpusCheck = checkFactText(
+        articleText,
+        await getCanonicalKnowledgeCards()
+      );
+      if (
+        corpusCheck.findings.some(
+          (finding) =>
+            finding.level === "red" &&
+            (references.length === 0 || Boolean(finding.sourceCardId))
+        )
+      ) {
+        throw new EditorialError(
+          "Согласование заблокировано: текст расходится с утверждёнными карточками.",
+          422
+        );
       }
       next.status = "approved";
       next.approvedRevisionId = target.id;
       action = "approved";
-      previousPublication = current.approvedRevisionId ? await getArticleById(id) : null;
+      previousPublication = current.approvedRevisionId
+        ? await getArticleById(id)
+        : null;
       publication = {
         title: target.content.title,
         lead: target.content.lead,
@@ -831,8 +1160,12 @@ export async function mutateEditorial(
         sourceCardTitles: ids.map(
           (id) => sources.find((c) => c.id === id)!.title
         ),
-        ...(target.content.sourceVersions ? { sourceVersions: target.content.sourceVersions } : {}),
-        ...(target.content.articleBasis ? { articleBasis: target.content.articleBasis } : {}),
+        ...(target.content.sourceVersions
+          ? { sourceVersions: target.content.sourceVersions }
+          : {}),
+        ...(target.content.articleBasis
+          ? { articleBasis: target.content.articleBasis }
+          : {}),
         universityId: target.content.universityId,
         projectTitle: target.content.projectTitle,
         topic: target.content.topic,
@@ -897,34 +1230,63 @@ export async function mutateEditorial(
       },
     });
   if (publication) {
-    const observed = previousPublication && observedExportCondition(previousPublication);
-    const condition = observed && previousPublication?.approval
+    const observed =
+      previousPublication && observedExportCondition(previousPublication);
+    const condition =
+      observed && previousPublication?.approval
+        ? {
+            ...observed,
+            ConditionExpression:
+              observed.ConditionExpression +
+              " AND approval.revisionId = :previousRevision",
+            ExpressionAttributeValues: {
+              ...observed.ExpressionAttributeValues,
+              ":previousRevision": previousPublication.approval.revisionId,
+            },
+          }
+        : {
+            ConditionExpression: "attribute_not_exists(id)",
+            ExpressionAttributeValues: undefined,
+          };
+    const ownBasis = basisGuards.find(
+      ({ ConditionCheck }) => ConditionCheck.Key.id === id
+    )?.ConditionCheck;
+    const articleCondition = ownBasis
       ? {
-          ...observed,
-          ConditionExpression: observed.ConditionExpression + " AND approval.revisionId = :previousRevision",
-          ExpressionAttributeValues: { ...observed.ExpressionAttributeValues, ":previousRevision": previousPublication.approval.revisionId },
+          ...condition,
+          ConditionExpression:
+            condition.ConditionExpression +
+            " AND " +
+            ownBasis.ConditionExpression,
+          ExpressionAttributeValues: {
+            ...condition.ExpressionAttributeValues,
+            ...ownBasis.ExpressionAttributeValues,
+          },
         }
-      : { ConditionExpression: "attribute_not_exists(id)", ExpressionAttributeValues: undefined };
-    const ownBasis = basisGuards.find(({ ConditionCheck }) => ConditionCheck.Key.id === id)?.ConditionCheck;
-    const articleCondition = ownBasis ? {
-      ...condition,
-      ConditionExpression: condition.ConditionExpression + " AND " + ownBasis.ConditionExpression,
-      ExpressionAttributeValues: { ...condition.ExpressionAttributeValues, ...ownBasis.ExpressionAttributeValues },
-    } : condition;
-    writes.push(...sourceGuards, { Put: { TableName: TableName.ARTICLES, Item: publication, ...articleCondition } });
+      : condition;
+    writes.push(...sourceGuards, {
+      Put: {
+        TableName: TableName.ARTICLES,
+        Item: publication,
+        ...articleCondition,
+      },
+    });
     // A transaction cannot condition-check and write the same publication as separate items.
-    basisGuards = basisGuards.filter(({ ConditionCheck }) => ConditionCheck.Key.id !== id);
+    basisGuards = basisGuards.filter(
+      ({ ConditionCheck }) => ConditionCheck.Key.id !== id
+    );
   }
   writes.push(...basisGuards);
   const storage = authorStorageWrites(user, writes);
-  const conflict = () => new EditorialError(
-    publication
-      ? "Редакция или её источник изменились. Обновите материал и проверьте источники."
-      : basisGuards.length
-        ? "Черновик или опорная статья изменились. Обновите данные и проверьте опорные блоки."
-        : "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
-    409
-  );
+  const conflict = () =>
+    new EditorialError(
+      publication
+        ? "Редакция или её источник изменились. Обновите материал и проверьте источники."
+        : basisGuards.length
+          ? "Черновик или опорная статья изменились. Обновите данные и проверьте опорные блоки."
+          : "Редакция изменилась в другой вкладке. Обновите данные и сравните свой текст",
+      409
+    );
   if (storage.length) {
     await writeChargedEditorial(writes, storage, conflict);
   } else {

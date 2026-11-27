@@ -3,7 +3,14 @@
 import { useWorkspaceRequest } from "@/components/demo/workspace-transport";
 
 import { useState } from "react";
-import { Boxes, FlaskConical, Handshake, Plus, Settings2, X } from "lucide-react";
+import {
+  Boxes,
+  FlaskConical,
+  Handshake,
+  Plus,
+  Settings2,
+  X,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +26,11 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { universities } from "@/lib/data";
-import { canAssignCardOwner, type CardOwnerCandidate, type SessionUser } from "@/lib/auth";
+import {
+  canAssignCardOwner,
+  type CardOwnerCandidate,
+  type SessionUser,
+} from "@/lib/auth";
 import {
   CONTOURS,
   folderIds,
@@ -46,6 +57,21 @@ import { cn } from "@/lib/utils";
 import { UniversityMetricsEditor } from "./university-metrics-editor";
 import { KnowledgeEvidenceFields } from "./knowledge-evidence-fields";
 import type { StructuredMetric } from "@/lib/knowledge";
+import {
+  OFFICIAL_DOCUMENT_TYPE_ID,
+  ROADMAP_INDICATOR_TYPE_ID,
+} from "@/lib/strategy";
+import {
+  blankOfficialDocument,
+  indicatorDraft,
+  indicatorPayload,
+  indicatorDraftError,
+  OfficialDocumentEditor,
+  RoadmapIndicatorEditor,
+  strategyLinkDrafts,
+  strategyLinkPayload,
+  StrategyLinksEditor,
+} from "./strategy-editors";
 
 const selectClassName =
   "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -78,7 +104,8 @@ export function projectParticipantFields(
     isJoint,
     participantUniversityIds: isJoint ? universityIds : [],
     ...(savedExternalNames.length || hadExternalNames
-      ? { externalParticipantNames: savedExternalNames } : {}),
+      ? { externalParticipantNames: savedExternalNames }
+      : {}),
   };
 }
 
@@ -123,7 +150,10 @@ type KnowledgeCardFormProps = {
   onCreated: (card: KnowledgeCard) => void;
   onUpdated?: (card: KnowledgeCard) => void;
   onCancel: () => void;
-  saveCard?: (payload: KnowledgeCardInput, initial: KnowledgeCard | null) => Promise<KnowledgeCard>;
+  saveCard?: (
+    payload: KnowledgeCardInput,
+    initial: KnowledgeCard | null
+  ) => Promise<KnowledgeCard>;
 };
 
 export function KnowledgeCardForm({
@@ -148,16 +178,28 @@ export function KnowledgeCardForm({
   const universityCard =
     initialCard?.type === "university" ? initialCard : null;
   const isEdit = Boolean(initialCard);
-  const organizationScope = initialCard?.organizationScope ?? (!isEdit &&
-    (currentUser?.role === "rio" || currentUser?.role === "chkk") ? currentUser.role : undefined);
+  const organizationScope =
+    initialCard?.organizationScope ??
+    (!isEdit && (currentUser?.role === "rio" || currentUser?.role === "chkk")
+      ? currentUser.role
+      : undefined);
   const staffUniversityId = currentUser?.universityId;
-  const laboratoryFolderUniversity = initialCard?.type === "laboratory"
-    ? getUniversityIdFromFolder(initialCard.folderId) : null;
+  const laboratoryFolderUniversity =
+    initialCard?.type === "laboratory"
+      ? getUniversityIdFromFolder(initialCard.folderId)
+      : null;
   const availableUniversities = staffUniversityId
-    ? universities.filter(university => university.id === staffUniversityId || university.id === laboratoryFolderUniversity)
+    ? universities.filter(
+        (university) =>
+          university.id === staffUniversityId ||
+          university.id === laboratoryFolderUniversity
+      )
     : universities;
-  const availableCustomTypes = customTypes.filter(definition =>
-    currentUser?.role === "admin" || (definition.organizationScope === "chkk") === (currentUser?.role === "chkk")
+  const availableCustomTypes = customTypes.filter(
+    (definition) =>
+      currentUser?.role === "admin" ||
+      (definition.organizationScope === "chkk") ===
+        (currentUser?.role === "chkk")
   );
 
   const defaultUniversityId =
@@ -166,16 +208,25 @@ export function KnowledgeCardForm({
     "susu";
   const initialCustomTypeFromFolder =
     !initialCard && defaultFolderId === folderIds.chkkParameters
-      ? availableCustomTypes.find(definition => definition.organizationScope === "chkk")?.id ?? null
+      ? (availableCustomTypes.find(
+          (definition) => definition.organizationScope === "chkk"
+        )?.id ?? null)
       : !initialCard && defaultFolderId?.startsWith(`${folderIds.customRoot}/`)
-        ? availableCustomTypes.find(definition => folderIds.customType(definition.id) === defaultFolderId)?.id ?? null
+        ? (availableCustomTypes.find(
+            (definition) =>
+              folderIds.customType(definition.id) === defaultFolderId
+          )?.id ?? null)
         : null;
   const initialFormType: FormType =
     initialCard?.type ??
-    (initialCustomTypeFromFolder ? "custom" : organizationScope === "chkk" ? "laboratory"
-      : organizationScope !== "rio" && defaultFolderId?.endsWith("/infrastructure")
+    (initialCustomTypeFromFolder
+      ? "custom"
+      : organizationScope === "chkk"
         ? "laboratory"
-        : "project");
+        : organizationScope !== "rio" &&
+            defaultFolderId?.endsWith("/infrastructure")
+          ? "laboratory"
+          : "project");
 
   const [type, setType] = useState<FormType>(initialFormType);
   const [universityId, setUniversityId] = useState(
@@ -190,22 +241,34 @@ export function KnowledgeCardForm({
   const [customFields, setCustomFields] = useState<
     Record<string, CustomFieldValue>
   >(customCard?.customFields ?? {});
+  const [officialDocument, setOfficialDocument] = useState(
+    customCard?.officialDocument ?? blankOfficialDocument
+  );
+  const [indicator, setIndicator] = useState(() =>
+    indicatorDraft(customCard?.roadmapIndicator)
+  );
+  const [strategyLinks, setStrategyLinks] = useState(() =>
+    strategyLinkDrafts(initialCard?.strategyLinks)
+  );
   const [title, setTitle] = useState(initialCard?.title ?? "");
   const [owners, setOwners] = useState(initialCard?.owners.join("\n") ?? "");
   const [ownerIds, setOwnerIds] = useState(initialCard?.ownerIds);
   const [ownerAssignmentEdited, setOwnerAssignmentEdited] = useState(false);
   const [folderId, setFolderId] = useState(
     initialCard?.folderId ??
-      (organizationScope === "chkk" ? folderIds.campus
-        : organizationScope === "rio" ? folderIds.rioProjects
-        : folderIds.subfolder(
-            defaultUniversityId,
-            initialFormType === "laboratory" ? "infrastructure" : "products"
-          ))
+      (organizationScope === "chkk"
+        ? folderIds.campus
+        : organizationScope === "rio"
+          ? folderIds.rioProjects
+          : folderIds.subfolder(
+              defaultUniversityId,
+              initialFormType === "laboratory" ? "infrastructure" : "products"
+            ))
   );
   const [sphere, setSphere] = useState(projectCard?.sphere ?? "");
   const [initiatorUniversityId, setInitiatorUniversityId] = useState(
-    projectCard?.initiatorUniversityId ?? (organizationScope === "rio" ? "" : defaultUniversityId)
+    projectCard?.initiatorUniversityId ??
+      (organizationScope === "rio" ? "" : defaultUniversityId)
   );
   const [coExecutors, setCoExecutors] = useState(
     projectCard?.coExecutors.join(", ") ?? ""
@@ -223,9 +286,14 @@ export function KnowledgeCardForm({
     projectCard?.confirmedFigures.join("\n") ?? ""
   );
   const [isJoint, setIsJoint] = useState(projectCard?.isJoint ?? false);
-  const projectFolderId = isJoint ? folderIds.joint
-    : initiatorUniversityId ? folderIds.subfolder(initiatorUniversityId, "products") : folderIds.rioProjects;
-  const [externalParticipants, setExternalParticipants] = useState(projectCard?.externalParticipantNames?.join("\n") ?? "");
+  const projectFolderId = isJoint
+    ? folderIds.joint
+    : initiatorUniversityId
+      ? folderIds.subfolder(initiatorUniversityId, "products")
+      : folderIds.rioProjects;
+  const [externalParticipants, setExternalParticipants] = useState(
+    projectCard?.externalParticipantNames?.join("\n") ?? ""
+  );
   const [participantUniversityIds, setParticipantUniversityIds] = useState<
     string[]
   >(projectCard?.participantUniversityIds ?? []);
@@ -280,7 +348,9 @@ export function KnowledgeCardForm({
     initialCard?.stopFormula ?? ""
   );
   const [sources, setSources] = useState(initialCard?.sources ?? []);
-  const [verifiedFacts, setVerifiedFacts] = useState(initialCard?.verifiedFacts ?? []);
+  const [verifiedFacts, setVerifiedFacts] = useState(
+    initialCard?.verifiedFacts ?? []
+  );
   const [changeReason, setChangeReason] = useState("");
   // This version goes with the fields captured when the form opened.
   const [editingVersion] = useState(initialCard?.updatedAt);
@@ -291,10 +361,21 @@ export function KnowledgeCardForm({
   const selectedCustomType = selectedCustomTypeId
     ? (customTypes.find((item) => item.id === selectedCustomTypeId) ?? null)
     : null;
-  const cardOrganizationScope = type === "custom" && selectedCustomType?.organizationScope === "chkk"
-    ? "chkk" : organizationScope;
-  const customFolderId = selectedCustomType?.organizationScope === "chkk"
-    ? folderIds.chkkParameters : selectedCustomType ? folderIds.customType(selectedCustomType.id) : folderId;
+  const documentType =
+    type === "custom" && selectedCustomTypeId === OFFICIAL_DOCUMENT_TYPE_ID;
+  const indicatorType =
+    type === "custom" && selectedCustomTypeId === ROADMAP_INDICATOR_TYPE_ID;
+  const strategyType = documentType || indicatorType;
+  const cardOrganizationScope =
+    type === "custom" && selectedCustomType?.organizationScope === "chkk"
+      ? "chkk"
+      : organizationScope;
+  const customFolderId =
+    selectedCustomType?.organizationScope === "chkk"
+      ? folderIds.chkkParameters
+      : selectedCustomType
+        ? folderIds.customType(selectedCustomType.id)
+        : folderId;
   const typeLabel = initialCard
     ? initialCard.type === "custom"
       ? (selectedCustomType?.name ?? knowledgeCardTypeLabels.custom)
@@ -315,8 +396,12 @@ export function KnowledgeCardForm({
 
       setType("custom");
       setSelectedCustomTypeId(typeId);
-      setFolderId(availableCustomTypes.find(definition => definition.id === typeId)?.organizationScope === "chkk"
-        ? folderIds.chkkParameters : folderIds.customType(typeId));
+      setFolderId(
+        availableCustomTypes.find((definition) => definition.id === typeId)
+          ?.organizationScope === "chkk"
+          ? folderIds.chkkParameters
+          : folderIds.customType(typeId)
+      );
       return;
     }
 
@@ -513,7 +598,11 @@ export function KnowledgeCardForm({
     setFormError(null);
 
     const externalNames = splitLines(externalParticipants);
-    if (type === "project" && isJoint && participantUniversityIds.length + externalNames.length < 2) {
+    if (
+      type === "project" &&
+      isJoint &&
+      participantUniversityIds.length + externalNames.length < 2
+    ) {
       const message = "Укажите минимум двух участников совместного проекта";
       setFormError(message);
       toast.error(message);
@@ -527,6 +616,14 @@ export function KnowledgeCardForm({
       return;
     }
 
+    const partialIndicator = indicatorType
+      ? indicatorDraftError(indicator)
+      : null;
+    if (partialIndicator) {
+      setFormError(partialIndicator);
+      toast.error(partialIndicator);
+      return;
+    }
     const base = {
       title,
       folderId:
@@ -536,16 +633,30 @@ export function KnowledgeCardForm({
             ? folderIds.campus
             : type === "university"
               ? folderIds.subfolder(universityId, "passport")
-              : type === "project" ? projectFolderId : folderId,
+              : type === "project"
+                ? projectFolderId
+                : folderId,
       owners: splitLines(owners),
-      ...(cardOrganizationScope ? { organizationScope: cardOrganizationScope } : {}),
-      ...(currentUser?.role === "admin" && ownerAssignmentEdited ? { ownerIds } : {}),
-      referenceDescription,
-      stopFormula,
+      ...(cardOrganizationScope
+        ? { organizationScope: cardOrganizationScope }
+        : {}),
+      ...(currentUser?.role === "admin" && ownerAssignmentEdited
+        ? { ownerIds }
+        : {}),
+      referenceDescription: strategyType ? "" : referenceDescription,
+      stopFormula: strategyType ? "" : stopFormula,
       ...(changeReason.trim() && { changeReason }),
-      ...((sources.length || initialCard?.sources) && { sources }),
-      ...((verifiedFacts.length || initialCard?.verifiedFacts) && { verifiedFacts }),
+      ...(!strategyType &&
+        (sources.length || initialCard?.sources) && { sources }),
+      ...(!strategyType &&
+        (verifiedFacts.length || initialCard?.verifiedFacts) && {
+          verifiedFacts,
+        }),
     };
+    const linkFields =
+      strategyLinks.length || initialCard?.strategyLinks
+        ? { strategyLinks: strategyLinkPayload(strategyLinks) }
+        : {};
 
     const payload =
       type === "university"
@@ -560,8 +671,14 @@ export function KnowledgeCardForm({
               ...base,
               type: "custom" as const,
               customTypeId: selectedCustomType.id,
-              ...(customCard?.universityId ? { universityId: customCard.universityId } : {}),
-              customFields,
+              ...(customCard?.universityId
+                ? { universityId: customCard.universityId }
+                : {}),
+              customFields: strategyType ? {} : customFields,
+              ...(documentType && { officialDocument }),
+              ...(indicatorType && {
+                roadmapIndicator: indicatorPayload(indicator),
+              }),
             }
           : type === "project"
             ? {
@@ -574,7 +691,13 @@ export function KnowledgeCardForm({
                 readinessStage,
                 contour,
                 confirmedFigures: splitList(confirmedFigures),
-                ...projectParticipantFields(isJoint, participantUniversityIds, externalNames, Boolean(projectCard?.externalParticipantNames)),
+                ...linkFields,
+                ...projectParticipantFields(
+                  isJoint,
+                  participantUniversityIds,
+                  externalNames,
+                  Boolean(projectCard?.externalParticipantNames)
+                ),
               }
             : type === "campus"
               ? {
@@ -596,6 +719,7 @@ export function KnowledgeCardForm({
                   workDirections: splitList(workDirections),
                   equipment: splitList(equipment),
                   confirmedIndicators: splitList(confirmedIndicators),
+                  ...linkFields,
                 };
 
     const parsed = knowledgeCardInputSchema.safeParse(payload);
@@ -614,7 +738,7 @@ export function KnowledgeCardForm({
 
     let cardPayload = parsed.data;
 
-    if (parsed.data.type === "custom" && selectedCustomType) {
+    if (parsed.data.type === "custom" && selectedCustomType && !strategyType) {
       const values =
         buildCustomFieldValuesSchema(selectedCustomType).safeParse(
           customFields
@@ -640,7 +764,10 @@ export function KnowledgeCardForm({
         else onCreated(card);
         toast.success("Карточка сохранена в браузере");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Не удалось сохранить карточку в браузере";
+        const message =
+          error instanceof Error
+            ? error.message
+            : "Не удалось сохранить карточку в браузере";
         setFormError(message);
         toast.error(message);
       } finally {
@@ -727,19 +854,21 @@ export function KnowledgeCardForm({
         <div className="min-w-0 space-y-1">
           <CardTitle className="font-heading text-xl">
             {saveCard
-              ? isEdit ? "Редактирование учебной карточки" : "Новая учебная карточка"
+              ? isEdit
+                ? "Редактирование учебной карточки"
+                : "Новая учебная карточка"
               : isEdit
-              ? "Редактирование официальной карточки"
-              : "Новая официальная карточка"}
+                ? "Редактирование официальной карточки"
+                : "Новая официальная карточка"}
           </CardTitle>
           <CardDescription>
             {saveCard
               ? "Изменения остаются в этом браузере. Карточку можно согласовать в учебном режиме."
               : isEdit
-              ? "Правки сохраняются в карточку. Чужие утверждённые карточки доступны только для запроса правки."
-              : currentUser?.role === "university_pr"
-                ? "Карточка сохранится черновиком и уйдёт координатору на подтверждение. В официальные данные она попадёт только после одобрения."
-                : "Сохранение доступно только при заполнении обязательных полей. Новые карточки проходят проверку координатора."}
+                ? "Правки сохраняются в карточку. Чужие утверждённые карточки доступны только для запроса правки."
+                : currentUser?.role === "university_pr"
+                  ? "Карточка сохранится черновиком и уйдёт координатору на подтверждение. В официальные данные она попадёт только после одобрения."
+                  : "Сохранение доступно только при заполнении обязательных полей. Новые карточки проходят проверку координатора."}
           </CardDescription>
         </div>
         <Button
@@ -782,13 +911,21 @@ export function KnowledgeCardForm({
                   onChange={(event) => handleTypeChange(event.target.value)}
                 >
                   <optgroup label="Стандартные типы">
-                    {organizationScope !== "chkk" && <option value="project">Проект / продукт</option>}
-                    {organizationScope !== "rio" && <option value="laboratory">Лаборатория / объект</option>}
-                    {!organizationScope && <option value="university">Паспорт вуза</option>}
-                    {currentUser?.role === "admin" && <option value="campus">Паспорт кампуса</option>}
+                    {organizationScope !== "chkk" && (
+                      <option value="project">Проект / продукт</option>
+                    )}
+                    {organizationScope !== "rio" && (
+                      <option value="laboratory">Лаборатория / объект</option>
+                    )}
+                    {!organizationScope && (
+                      <option value="university">Паспорт вуза</option>
+                    )}
+                    {currentUser?.role === "admin" && (
+                      <option value="campus">Паспорт кампуса</option>
+                    )}
                   </optgroup>
                   {availableCustomTypes.length > 0 ? (
-                    <optgroup label="Пользовательские типы">
+                    <optgroup label="Другие типы карточек">
                       {availableCustomTypes.map((customType) => (
                         <option
                           key={customType.id}
@@ -811,14 +948,18 @@ export function KnowledgeCardForm({
                 id="card-title"
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
-                placeholder="Например: Виртуальный тренажёр травмпункта"
+                placeholder={
+                  strategyType
+                    ? undefined
+                    : "Например: Виртуальный тренажёр травмпункта"
+                }
                 required
               />
             </div>
 
             <div className="space-y-2">
               <label className="text-sm font-medium" htmlFor="card-owners">
-                Владельцы карточки
+                {strategyType ? "Ответственные" : "Владельцы карточки"}
               </label>
               <Textarea
                 id="card-owners"
@@ -830,7 +971,10 @@ export function KnowledgeCardForm({
                 disabled={isEdit && currentUser?.role !== "admin"}
                 required
               />
-              <p id="card-owners-hint" className="text-[11px] text-muted-foreground">
+              <p
+                id="card-owners-hint"
+                className="text-[11px] text-muted-foreground"
+              >
                 {isEdit && currentUser?.role !== "admin"
                   ? "Владельцев карточки меняет только координатор"
                   : "Укажите каждого владельца с новой строки"}
@@ -839,7 +983,10 @@ export function KnowledgeCardForm({
 
             {currentUser?.role === "admin" && type !== "campus" && (
               <div className="space-y-2">
-                <label className="text-sm font-medium" htmlFor="card-owner-accounts">
+                <label
+                  className="text-sm font-medium"
+                  htmlFor="card-owner-accounts"
+                >
                   Персональный доступ к правке
                 </label>
                 <select
@@ -850,39 +997,63 @@ export function KnowledgeCardForm({
                   aria-describedby="card-owner-accounts-hint"
                   value={ownerIds ?? []}
                   onChange={(event) => {
-                    setOwnerIds(Array.from(event.currentTarget.selectedOptions, option => option.value));
+                    setOwnerIds(
+                      Array.from(
+                        event.currentTarget.selectedOptions,
+                        (option) => option.value
+                      )
+                    );
                     setOwnerAssignmentEdited(true);
                   }}
                 >
-                  {ownerCandidates.filter(candidate => canAssignCardOwner(candidate, {
-                    type,
-                    folderId: type === "custom" && selectedCustomType
-                      ? customFolderId
-                      : type === "university"
-                        ? folderIds.subfolder(universityId, "passport")
-                        : type === "project" ? projectFolderId : folderId,
-                    organizationScope: cardOrganizationScope,
-                    requiredApprovalUniversityIds: initialCard?.requiredApprovalUniversityIds,
-                    owners: [],
-                    universityId: type === "custom" ? customCard?.universityId : universityId,
-                    initiatorUniversityId,
-                    isJoint,
-                    participantUniversityIds,
-                  })).map(candidate => (
-                    <option key={candidate.id} value={candidate.id}>
-                      {candidate.ownershipLabel} ({candidate.id})
-                    </option>
-                  ))}
+                  {ownerCandidates
+                    .filter((candidate) =>
+                      canAssignCardOwner(candidate, {
+                        type,
+                        folderId:
+                          type === "custom" && selectedCustomType
+                            ? customFolderId
+                            : type === "university"
+                              ? folderIds.subfolder(universityId, "passport")
+                              : type === "project"
+                                ? projectFolderId
+                                : folderId,
+                        organizationScope: cardOrganizationScope,
+                        requiredApprovalUniversityIds:
+                          initialCard?.requiredApprovalUniversityIds,
+                        owners: [],
+                        universityId:
+                          type === "custom"
+                            ? customCard?.universityId
+                            : universityId,
+                        initiatorUniversityId,
+                        isJoint,
+                        participantUniversityIds,
+                      })
+                    )
+                    .map((candidate) => (
+                      <option key={candidate.id} value={candidate.id}>
+                        {candidate.ownershipLabel} ({candidate.id})
+                      </option>
+                    ))}
                 </select>
-                <p id="card-owner-accounts-hint" className="text-xs text-muted-foreground">
+                <p
+                  id="card-owner-accounts-hint"
+                  className="text-xs text-muted-foreground"
+                >
                   {isEdit && ownerIds === undefined
                     ? "У старой карточки доступ указан подписью. Выберите аккаунты, чтобы закрепить его за сотрудниками."
                     : "Подписи владельцев видны в карточке. Персональное право правки задаётся аккаунтами."}
                 </p>
-                <Button type="button" variant="outline" size="sm" onClick={() => {
-                  setOwnerIds([]);
-                  setOwnerAssignmentEdited(true);
-                }}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setOwnerIds([]);
+                    setOwnerAssignmentEdited(true);
+                  }}
+                >
                   Снять персональные назначения
                 </Button>
               </div>
@@ -909,7 +1080,9 @@ export function KnowledgeCardForm({
                     : "Карточка появится в разделе «Пользовательские типы»."}
                 </p>
               </div>
-            ) : type === "campus" || type === "university" || organizationScope === "chkk" ? (
+            ) : type === "campus" ||
+              type === "university" ||
+              organizationScope === "chkk" ? (
               <div className="space-y-2">
                 <label className="text-sm font-medium" htmlFor="card-folder">
                   Папка хранения
@@ -926,17 +1099,27 @@ export function KnowledgeCardForm({
                 <p className="text-[11px] text-muted-foreground">
                   {type === "university"
                     ? "Показатели хранятся в паспорте выбранного вуза."
-                    : organizationScope === "chkk" ? "Объекты и строительные параметры УНК."
+                    : organizationScope === "chkk"
+                      ? "Объекты и строительные параметры УНК."
                       : "Общий паспорт кампуса редактирует координатор."}
                 </p>
               </div>
             ) : type === "project" ? (
               <div className="space-y-2">
-                <label className="text-sm font-medium" htmlFor="card-folder">Папка хранения</label>
-                <Input id="card-folder" value={isJoint ? "02_Совместные_проекты"
-                  : initiatorUniversityId
-                    ? `${universities.find(university => university.id === initiatorUniversityId)?.shortName} / Продукты_и_проекты`
-                    : "04_Проекты_РИОН"} disabled />
+                <label className="text-sm font-medium" htmlFor="card-folder">
+                  Папка хранения
+                </label>
+                <Input
+                  id="card-folder"
+                  value={
+                    isJoint
+                      ? "02_Совместные_проекты"
+                      : initiatorUniversityId
+                        ? `${universities.find((university) => university.id === initiatorUniversityId)?.shortName} / Продукты_и_проекты`
+                        : "04_Проекты_РИОН"
+                  }
+                  disabled
+                />
               </div>
             ) : (
               <div className="space-y-2">
@@ -948,12 +1131,16 @@ export function KnowledgeCardForm({
                   className={selectClassName}
                   value={folderId}
                   onChange={(event) => setFolderId(event.target.value)}
-                  disabled={
-                    isEdit && currentUser?.role !== "admin"
-                  }
+                  disabled={isEdit && currentUser?.role !== "admin"}
                 >
                   {availableUniversities.map((university) => (
-                    <option key={university.id} value={folderIds.subfolder(university.id, "infrastructure")}>
+                    <option
+                      key={university.id}
+                      value={folderIds.subfolder(
+                        university.id,
+                        "infrastructure"
+                      )}
+                    >
                       {university.shortName} / Инфраструктура_и_лаборатории
                     </option>
                   ))}
@@ -996,24 +1183,39 @@ export function KnowledgeCardForm({
             <>
               <Separator />
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Settings2 className="h-4 w-4 text-primary" />
-                  Поля типа «{selectedCustomType?.name ?? "не выбран"}»
-                </div>
-                <Badge variant="secondary">
-                  {selectedCustomType?.fields.length ?? 0} полей
-                </Badge>
-              </div>
-
-              {selectedCustomType ? (
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {selectedCustomType.fields.map(renderCustomField)}
-                </div>
+              {documentType ? (
+                <OfficialDocumentEditor
+                  value={officialDocument}
+                  onChange={setOfficialDocument}
+                />
+              ) : indicatorType ? (
+                <RoadmapIndicatorEditor
+                  enabled={dbAvailable}
+                  value={indicator}
+                  onChange={setIndicator}
+                />
               ) : (
-                <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
-                  Выберите пользовательский тип, чтобы увидеть его поля.
-                </p>
+                <>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <Settings2 className="h-4 w-4 text-primary" />
+                      Поля типа «{selectedCustomType?.name ?? "не выбран"}»
+                    </div>
+                    <Badge variant="secondary">
+                      {selectedCustomType?.fields.length ?? 0} полей
+                    </Badge>
+                  </div>
+
+                  {selectedCustomType ? (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      {selectedCustomType.fields.map(renderCustomField)}
+                    </div>
+                  ) : (
+                    <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-amber-200">
+                      Выберите пользовательский тип, чтобы увидеть его поля.
+                    </p>
+                  )}
+                </>
               )}
             </>
           ) : type === "project" ? (
@@ -1033,7 +1235,12 @@ export function KnowledgeCardForm({
                       setIsJoint(event.target.checked);
                       if (event.target.checked && !isEdit) {
                         setInitiatorUniversityId("");
-                      } else if (!event.target.checked && (staffUniversityId || (!initiatorUniversityId && organizationScope !== "rio"))) {
+                      } else if (
+                        !event.target.checked &&
+                        (staffUniversityId ||
+                          (!initiatorUniversityId &&
+                            organizationScope !== "rio"))
+                      ) {
                         setInitiatorUniversityId(defaultUniversityId);
                       }
                     }}
@@ -1091,9 +1298,26 @@ export function KnowledgeCardForm({
                     </Badge>
                   ) : null}
                   <div className="flex flex-col gap-2">
-                    <label htmlFor="card-external-participants" className="text-sm font-medium">Внешние участники</label>
-                    <Textarea id="card-external-participants" value={externalParticipants} onChange={event => setExternalParticipants(event.target.value)} placeholder="Одна организация в строке" maxLength={6000} />
-                    <p className="text-xs text-muted-foreground">Не подставляйте вуз-резидент вместо внешнего соавтора. До отдельного подтверждения внешних участников запись остаётся черновиком.</p>
+                    <label
+                      htmlFor="card-external-participants"
+                      className="text-sm font-medium"
+                    >
+                      Внешние участники
+                    </label>
+                    <Textarea
+                      id="card-external-participants"
+                      value={externalParticipants}
+                      onChange={(event) =>
+                        setExternalParticipants(event.target.value)
+                      }
+                      placeholder="Одна организация в строке"
+                      maxLength={6000}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Не подставляйте вуз-резидент вместо внешнего соавтора. До
+                      отдельного подтверждения внешних участников запись
+                      остаётся черновиком.
+                    </p>
                   </div>
                 </div>
               ) : null}
@@ -1127,13 +1351,20 @@ export function KnowledgeCardForm({
                       setInitiatorUniversityId(event.target.value)
                     }
                   >
-                    {isJoint ? <option value="">Совместная инициатива, отдельный инициатор не установлен</option>
-                      : organizationScope === "rio" ? <option value="">АНО «РИОН»</option> : null}
-                    {(isJoint ? universities : availableUniversities).map((university) => (
-                      <option key={university.id} value={university.id}>
-                        {university.shortName}
+                    {isJoint ? (
+                      <option value="">
+                        Совместная инициатива, отдельный инициатор не установлен
                       </option>
-                    ))}
+                    ) : organizationScope === "rio" ? (
+                      <option value="">АНО «РИОН»</option>
+                    ) : null}
+                    {(isJoint ? universities : availableUniversities).map(
+                      (university) => (
+                        <option key={university.id} value={university.id}>
+                          {university.shortName}
+                        </option>
+                      )
+                    )}
                   </select>
                 </div>
 
@@ -1461,48 +1692,63 @@ export function KnowledgeCardForm({
             </>
           )}
 
-          <Separator />
+          {type === "project" || type === "laboratory" ? (
+            <StrategyLinksEditor
+              enabled={dbAvailable}
+              links={strategyLinks}
+              onChange={setStrategyLinks}
+            />
+          ) : null}
 
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="card-reference">
-                Эталонное описание
-              </label>
-              <textarea
-                id="card-reference"
-                className={textareaClassName}
-                value={referenceDescription}
-                onChange={(event) =>
-                  setReferenceDescription(event.target.value)
-                }
-                placeholder="Проверенная формулировка для статей и релизов"
-                required={type !== "custom"}
+          {!strategyType ? (
+            <>
+              <Separator />
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                <div className="space-y-2">
+                  <label
+                    className="text-sm font-medium"
+                    htmlFor="card-reference"
+                  >
+                    Эталонное описание
+                  </label>
+                  <textarea
+                    id="card-reference"
+                    className={textareaClassName}
+                    value={referenceDescription}
+                    onChange={(event) =>
+                      setReferenceDescription(event.target.value)
+                    }
+                    placeholder="Проверенная формулировка для статей и релизов"
+                    required={type !== "custom"}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium" htmlFor="card-stop">
+                    Ограничения для ИИ (стоп-формула)
+                  </label>
+                  <textarea
+                    id="card-stop"
+                    className={textareaClassName}
+                    value={stopFormula}
+                    onChange={(event) => setStopFormula(event.target.value)}
+                    placeholder="Что нельзя утверждать и какие ошибки запрещены"
+                    required={type !== "custom"}
+                  />
+                </div>
+              </div>
+
+              <KnowledgeEvidenceFields
+                sources={sources}
+                facts={verifiedFacts}
+                reason={changeReason}
+                onSourcesChange={setSources}
+                onFactsChange={setVerifiedFacts}
+                onReasonChange={setChangeReason}
               />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="card-stop">
-                Ограничения для ИИ (стоп-формула)
-              </label>
-              <textarea
-                id="card-stop"
-                className={textareaClassName}
-                value={stopFormula}
-                onChange={(event) => setStopFormula(event.target.value)}
-                placeholder="Что нельзя утверждать и какие ошибки запрещены"
-                required={type !== "custom"}
-              />
-            </div>
-          </div>
-
-          <KnowledgeEvidenceFields
-            sources={sources}
-            facts={verifiedFacts}
-            reason={changeReason}
-            onSourcesChange={setSources}
-            onFactsChange={setVerifiedFacts}
-            onReasonChange={setChangeReason}
-          />
+            </>
+          ) : null}
 
           {formError ? (
             <p
@@ -1517,7 +1763,7 @@ export function KnowledgeCardForm({
             <Button
               type="button"
               variant="outline"
-              className="h-10 sm:h-8"
+              className={strategyType ? "min-h-11" : "h-10 sm:h-8"}
               onClick={onCancel}
               disabled={isSaving}
             >
@@ -1525,15 +1771,17 @@ export function KnowledgeCardForm({
             </Button>
             <Button
               type="submit"
-              className="h-10 sm:h-8"
+              className={strategyType ? "min-h-11" : "h-10 sm:h-8"}
               disabled={isSaving || !dbAvailable}
             >
               <Plus className="h-4 w-4" />
               {isSaving
                 ? "Сохраняем..."
-                : isEdit
-                  ? "Сохранить изменения"
-                  : "Сохранить карточку"}
+                : strategyType
+                  ? "Отправить на подтверждение"
+                  : isEdit
+                    ? "Сохранить изменения"
+                    : "Сохранить карточку"}
             </Button>
           </div>
         </form>

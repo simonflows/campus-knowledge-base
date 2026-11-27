@@ -1,6 +1,18 @@
-import { getApprovedVersion, getUniversityName, placementStatusLabels, type KnowledgeCard } from "./knowledge";
+import { isManagedStrategyCard } from "./strategy";
+import { sourceDescription, strategySourceFacts } from "./strategy-evidence";
+import {
+  getApprovedVersion,
+  getUniversityName,
+  placementStatusLabels,
+  type KnowledgeCard,
+} from "./knowledge";
 
-export type CanonFact = { id: string; field: string; label: string; text: string };
+export type CanonFact = {
+  id: string;
+  field: string;
+  label: string;
+  text: string;
+};
 export type CanonSource = {
   id: string;
   cardId: string;
@@ -11,7 +23,11 @@ export type CanonSource = {
   facts: CanonFact[];
   constraints: string[];
 };
-export type CanonReferenceInput = { sourceId: string; factId: string; quote?: string };
+export type CanonReferenceInput = {
+  sourceId: string;
+  factId: string;
+  quote?: string;
+};
 export type CanonQuoteInput = CanonReferenceInput & { quote: string };
 export type CanonCitation = CanonQuoteInput & {
   cardId: string;
@@ -23,7 +39,10 @@ export type CanonCitation = CanonQuoteInput & {
 };
 
 /** Explicit public projection: never serialize owners, approval actors or a raw database row. */
-export function buildCanonSources(cards: KnowledgeCard[], versions: Record<string, string>): CanonSource[] {
+export function buildCanonSources(
+  cards: KnowledgeCard[],
+  versions: Record<string, string>
+): CanonSource[] {
   return cards.flatMap((input, index) => {
     const card = getApprovedVersion(input);
     if (!card) return [];
@@ -31,82 +50,171 @@ export function buildCanonSources(cards: KnowledgeCard[], versions: Record<strin
     function add(field: string, label: string, value: unknown) {
       if (Array.isArray(value)) {
         value.forEach((item, index) => add(`${field}.${index}`, label, item));
-      } else if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      } else if (
+        typeof value === "string" ||
+        typeof value === "number" ||
+        typeof value === "boolean"
+      ) {
         const text = String(value).trim();
-        if (text) facts.push({ id: `f${facts.length + 1}`, field, label, text });
+        if (text)
+          facts.push({ id: `f${facts.length + 1}`, field, label, text });
       }
     }
     add("title", "Название", card.title);
-    add("referenceDescription", "Утверждённое описание", card.referenceDescription.replace(/https?:\/\/\S+/giu, "").trim());
+    add(
+      "referenceDescription",
+      "Утверждённое описание",
+      sourceDescription(card)
+        .replace(/https?:\/\/\S+/giu, "")
+        .trim()
+    );
     if (card.type === "project") {
       add("sphere", "Отрасль", card.sphere);
-      add("initiatorUniversityId", "Вуз-инициатор", getUniversityName(card.initiatorUniversityId));
-      add("participantUniversityIds", "Вуз-участник", card.participantUniversityIds.map(getUniversityName));
+      add(
+        "initiatorUniversityId",
+        "Вуз-инициатор",
+        getUniversityName(card.initiatorUniversityId)
+      );
+      add(
+        "participantUniversityIds",
+        "Вуз-участник",
+        card.participantUniversityIds.map(getUniversityName)
+      );
       add("coExecutors", "Соисполнитель", card.coExecutors);
-      add("industrialPartner", "Индустриальный партнёр", card.industrialPartner);
+      add(
+        "industrialPartner",
+        "Индустриальный партнёр",
+        card.industrialPartner
+      );
       add("readinessStage", "Стадия готовности", card.readinessStage);
       add("contour", "Контур", card.contour);
-      add("confirmedFigures", "Подтверждённый показатель", card.confirmedFigures);
+      add(
+        "confirmedFigures",
+        "Подтверждённый показатель",
+        card.confirmedFigures
+      );
     } else if (card.type === "laboratory") {
       add("affiliation", "Принадлежность", card.affiliation);
       add("partner", "Партнёр", card.partner);
       add("head", "Руководитель по публичной карточке", card.head);
-      add("placementStatus", "Статус размещения", placementStatusLabels[card.placementStatus]);
+      add(
+        "placementStatus",
+        "Статус размещения",
+        placementStatusLabels[card.placementStatus]
+      );
       add("placementDetails", "Размещение", card.placementDetails);
       add("workDirections", "Направление работы", card.workDirections);
       add("equipment", "Оборудование", card.equipment);
-      add("confirmedIndicators", "Подтверждённый показатель", card.confirmedIndicators);
+      add(
+        "confirmedIndicators",
+        "Подтверждённый показатель",
+        card.confirmedIndicators
+      );
     } else if (card.type === "campus") {
-      card.campusMetrics.forEach((metric, index) => add(`campusMetrics.${index}`, metric.label, `${metric.value}${metric.note ? ` (${metric.note})` : ""}`));
-      card.tariffs.forEach((tariff, index) => add(`tariffs.${index}`, tariff.label, tariff.value));
-      card.legalEntities.forEach((entity, index) => add(`legalEntities.${index}`, entity.name, entity.role));
+      card.campusMetrics.forEach((metric, index) =>
+        add(
+          `campusMetrics.${index}`,
+          metric.label,
+          `${metric.value}${metric.note ? ` (${metric.note})` : ""}`
+        )
+      );
+      card.tariffs.forEach((tariff, index) =>
+        add(`tariffs.${index}`, tariff.label, tariff.value)
+      );
+      card.legalEntities.forEach((entity, index) =>
+        add(`legalEntities.${index}`, entity.name, entity.role)
+      );
     } else if (card.type === "university") {
       add("universityId", "Вуз", getUniversityName(card.universityId));
-      card.structuredMetrics.forEach((metric, index) => add(`structuredMetrics.${index}`, metric.label,
-        `${getUniversityName(card.universityId)}: ${metric.value} ${metric.unit}, ${metric.year} год, ${metric.kind === "plan" ? "план" : "факт"}`));
-    } else if (card.type === "custom") {
-      for (const [key, value] of Object.entries(card.customFields)) add(`customFields.${key}`, key, value);
+      card.structuredMetrics.forEach((metric, index) =>
+        add(
+          `structuredMetrics.${index}`,
+          metric.label,
+          `${getUniversityName(card.universityId)}: ${metric.value} ${metric.unit}, ${metric.year} год, ${metric.kind === "plan" ? "план" : "факт"}`
+        )
+      );
+    } else if (card.type === "custom" && !isManagedStrategyCard(card)) {
+      for (const [key, value] of Object.entries(card.customFields))
+        add(`customFields.${key}`, key, value);
     }
-    for (const [index, fact] of (card.verifiedFacts ?? []).entries()) {
-      add(`verifiedFacts.${index}`, fact.label,
-        `${fact.scope}: ${fact.value} ${fact.unit}, ${fact.year} год, ${fact.kind === "plan" ? "план" : "факт"}`);
+    for (const fact of strategySourceFacts(card))
+      add(fact.field, fact.label, fact.text);
+    for (const [index, fact] of (isManagedStrategyCard(card)
+      ? []
+      : (card.verifiedFacts ?? [])
+    ).entries()) {
+      add(
+        `verifiedFacts.${index}`,
+        fact.label,
+        `${fact.scope}: ${fact.value} ${fact.unit}, ${fact.year} год, ${fact.kind === "plan" ? "план" : "факт"}`
+      );
     }
     const versionId = versions[card.id] ?? "approved";
-    return [{
-      id: `s${index + 1}`, cardId: card.id, versionId, title: card.title, type: card.type,
-      href: `/knowledge?card=${encodeURIComponent(card.id)}&version=${encodeURIComponent(versionId)}`,
-      facts,
-      constraints: [card.stopFormula, ...(card.type === "campus" ? card.stopList : [])].filter(Boolean),
-    }];
+    return [
+      {
+        id: `s${index + 1}`,
+        cardId: card.id,
+        versionId,
+        title: card.title,
+        type: card.type,
+        href: `/knowledge?card=${encodeURIComponent(card.id)}&version=${encodeURIComponent(versionId)}`,
+        facts,
+        constraints: [
+          card.stopFormula,
+          ...(card.type === "campus" ? card.stopList : []),
+        ].filter(Boolean),
+      },
+    ];
   });
 }
 
 function findCanonFact(input: CanonReferenceInput, sources: CanonSource[]) {
-  const source = sources.find(source => source.id === input.sourceId);
-  const fact = source?.facts.find(fact => fact.id === input.factId);
+  const source = sources.find((source) => source.id === input.sourceId);
+  const fact = source?.facts.find((fact) => fact.id === input.factId);
   return source && fact ? { source, fact } : null;
 }
 
-function citeCanonFact({ source, fact }: { source: CanonSource; fact: CanonFact }): CanonCitation {
+function citeCanonFact({
+  source,
+  fact,
+}: {
+  source: CanonSource;
+  fact: CanonFact;
+}): CanonCitation {
   return {
     // Display and verify the complete canonical field, including negation and qualifications.
     // A model-selected substring must never become a new standalone positive assertion.
-    sourceId: source.id, factId: fact.id, quote: fact.text, cardId: source.cardId, versionId: source.versionId,
-    title: source.title, href: source.href, field: fact.field, label: fact.label,
+    sourceId: source.id,
+    factId: fact.id,
+    quote: fact.text,
+    cardId: source.cardId,
+    versionId: source.versionId,
+    title: source.title,
+    href: source.href,
+    field: fact.field,
+    label: fact.label,
   };
 }
 
-export function validateCanonQuote(input: CanonQuoteInput, sources: CanonSource[]): CanonCitation | null {
+export function validateCanonQuote(
+  input: CanonQuoteInput,
+  sources: CanonSource[]
+): CanonCitation | null {
   const found = findCanonFact(input, sources);
   const quote = typeof input.quote === "string" ? input.quote.trim() : "";
   if (!found || !quote || quote.length > 1200) return null;
   const { text } = found.fact;
-  if (quote.length < Math.min(8, text.length) || !text.includes(quote)) return null;
+  if (quote.length < Math.min(8, text.length) || !text.includes(quote))
+    return null;
   return citeCanonFact(found);
 }
 
-export function resolveCanonReference(input: CanonReferenceInput, sources: CanonSource[]): CanonCitation | null {
-  if (input.quote !== undefined) return validateCanonQuote({ ...input, quote: input.quote }, sources);
+export function resolveCanonReference(
+  input: CanonReferenceInput,
+  sources: CanonSource[]
+): CanonCitation | null {
+  if (input.quote !== undefined)
+    return validateCanonQuote({ ...input, quote: input.quote }, sources);
   const found = findCanonFact(input, sources);
   return found ? citeCanonFact(found) : null;
 }

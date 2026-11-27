@@ -1,3 +1,9 @@
+import { isManagedStrategyCard } from "./strategy";
+import { strategySourceProjection } from "./strategy-evidence";
+import {
+  hydrateCanonicalStrategySources,
+  observeSourceDependencies,
+} from "./strategy-sources";
 import { z } from "zod";
 import type { SessionUser } from "./auth";
 import {
@@ -82,10 +88,12 @@ function titleKey(text: string) {
 
 function preservesApprovedTitle(original: string, replacement: string) {
   if (/[\r\n\v\f\u0085\u2028\u2029]/u.test(replacement)) return false;
-  const content = replacement.trim().replace(
-    /^(?:по данным|согласно данным)\s+(?:(?:официальной|утвержд[её]нной)\s+)?карточки\s*,\s*/iu,
-    ""
-  );
+  const content = replacement
+    .trim()
+    .replace(
+      /^(?:по данным|согласно данным)\s+(?:(?:официальной|утвержд[её]нной)\s+)?карточки\s*,\s*/iu,
+      ""
+    );
   const expected = titleKey(original);
   return titleKey(replacement) === expected || titleKey(content) === expected;
 }
@@ -138,7 +146,9 @@ export async function requestEditorSuggestion({
       original,
       channel,
       sources: modelSources,
-      ...(action === "rewrite" && { scope: titleRewrite ? "title" : "fragment" }),
+      ...(action === "rewrite" && {
+        scope: titleRewrite ? "title" : "fragment",
+      }),
     }),
     action === "rewrite" ? 700 : 1_000
   ).catch(() => ({ status: "failed" as const }));
@@ -147,7 +157,13 @@ export async function requestEditorSuggestion({
   if (action === "rewrite") {
     const parsed = fragmentOutput.safeParse(answer.output);
     if (!parsed.success) return { status: "failed" };
-    if (titleRewrite && !preservesApprovedTitle(selection, (answer.output as { text: string }).text))
+    if (
+      titleRewrite &&
+      !preservesApprovedTitle(
+        selection,
+        (answer.output as { text: string }).text
+      )
+    )
       return { status: "failed" };
     suggestion = { action, ...parsed.data };
   } else {
@@ -214,7 +230,22 @@ export async function assistEditorial(
   const ids = [...new Set(revision.content.sourceCardIds)];
   const loadApproved = async (id: string) => {
     const card = await getKnowledgeCardById(id);
-    return card ? getPublicApprovedCard(card) : null;
+    const published = card ? getPublicApprovedCard(card) : null;
+    if (
+      !card ||
+      !published ||
+      (!isManagedStrategyCard(published) && !published.strategyLinks?.length)
+    )
+      return published;
+    const dependencies = await observeSourceDependencies(
+      [published],
+      getKnowledgeCardById
+    );
+    return (
+      hydrateCanonicalStrategySources([card, ...dependencies.rows]).find(
+        (source) => source.id === id
+      ) ?? null
+    );
   };
   const cards = (await Promise.all(ids.map(loadApproved))).filter(
     (card): card is KnowledgeCard => card !== null
@@ -248,7 +279,10 @@ export async function assistEditorial(
     const current = await Promise.all(ids.map(loadApproved));
     const sourcesChanged = sourceVersions.some(
       ({ versionId }, index) =>
-        !current[index] || getCardVersionId(current[index]) !== versionId
+        !current[index] ||
+        getCardVersionId(current[index]) !== versionId ||
+        JSON.stringify(strategySourceProjection(current[index])) !==
+          JSON.stringify(strategySourceProjection(cards[index]))
     );
     if (sourcesChanged)
       return {

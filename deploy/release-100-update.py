@@ -71,6 +71,7 @@ class Update:
     base_ci_run: int = BASE_CI_RUN
     base_pin: str = "28-release-100.conf"
     inherited_dropins: tuple[str, ...] = ()
+    block_old_writer_after_open: bool = False
 
     def work(self, state):
         return state / f"release{self.series}-{self.run}"
@@ -80,6 +81,9 @@ class Update:
 
     def restore_prefix(self):
         return f"qa095-{self.series}-{self.run}-old-"
+
+    def writer_fence(self, work):
+        return work / "new-writer-allowed.json"
 
 
 UPDATE_100 = Update()
@@ -466,6 +470,18 @@ def boot_id():
     return value
 
 
+def updater_lock_held(work):
+    """An unfinished same-boot candidate may start only while its updater is alive."""
+    lock_path = work / "updater-active.lock"
+    private(lock_path)
+    with lock_path.open("rb") as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False  # Closing this descriptor releases the acquired probe lock.
+
+
 def boot_gate(expected_boot, revision, image, *, update=UPDATE_100):
     """Allow controlled starts this boot and fully authorized activation on later boots."""
     work = update.work(STATE)
@@ -474,7 +490,26 @@ def boot_gate(expected_boot, revision, image, *, update=UPDATE_100):
     gate = work / "reviewed-release.json"
     if absent(gate) or not includes(read(gate), expected):
         return False
-    if expected_boot == boot_id():
+    same_boot = expected_boot == boot_id()
+    if update.block_old_writer_after_open:
+        activation = work / "activation-authorized.json"
+        authorized = not absent(activation) and includes(read(activation), {**expected, "status": "activation-authorized"})
+        if same_boot and not authorized and not updater_lock_held(work):
+            return False
+        override = work / "image.override.yml"
+        private(override)
+        contents = override.read_bytes()
+        if contents == override_content(image, update.run, "unless-stopped", False).encode() and not authorized:
+            return False
+        if same_boot and contents == override_content(image, update.run, "no", True).encode():
+            return True
+        if not any(contents == override_content(image, update.run, policy, False).encode()
+                   for policy in (("no", "unless-stopped") if same_boot else ("unless-stopped",))):
+            return False
+        fence = update.writer_fence(work)
+        if absent(fence) or not includes(read(fence), {**expected, "status": "new-writer-allowed"}):
+            return False
+    if same_boot:
         return True
     activation = work / "activation-authorized.json"
     return not absent(activation) and includes(read(activation), {**expected, "status": "activation-authorized"})
@@ -531,7 +566,7 @@ def quiesce_candidate(container):
     best_effort(run, ["docker", "container", "stop", "--time", "20", container], timeout=35)
 
 
-def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update=UPDATE_100):
+def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update=UPDATE_100, *, retain_pin=False):
     accepted = work / "accepted.json"
     activation = work / "activation-authorized.json"
     gate = work / "reviewed-release.json"
@@ -572,6 +607,11 @@ def rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids
         _, candidate, running, policy = rollback_target(image, candidate_ids, update)
     if candidate:
         check(not running and policy == "no")
+    if retain_pin:
+        # A retained pin and withdrawn gate block even a subsequent systemd start.
+        check(pinned and owns_pin and (container is None or candidate))
+        stopped()
+        return
     if pinned:
         check(owns_pin)
         # The accepted writer may have won a start race before our closed
@@ -595,10 +635,10 @@ def defer_acceptance_signals():
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
-def main(*, update=UPDATE_100, script=None, baseline_gate=baseline):
+def main(*, update=UPDATE_100, script=None, baseline_gate=baseline, snapshot_check=None):
     try:
         with ExitStack() as cleanup:
-            cutover(cleanup, update, script, baseline_gate)
+            cutover(cleanup, update, script, baseline_gate, snapshot_check=snapshot_check)
     except BaseException:
         if phase != "accepted":
             raise
@@ -614,7 +654,7 @@ def report_accepted(proof):
         print(message, end="", flush=True)
 
 
-def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
+def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline, *, snapshot_check=None):
     global phase
     phase = "arguments"
     os.umask(0o077)
@@ -629,6 +669,7 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
     activation = work / "activation-authorized.json"
     accepted = work / "accepted.json"
     override = work / "image.override.yml"
+    fence = update.writer_fence(work)
     phase = "baseline-gates"
     trusted_directories(STATE)
     trusted_directories(DROPINS)
@@ -686,6 +727,8 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
     unit()
     image_check(update.base_image, update.base_revision, update.base_version)
     image_check(image, revision, update.version)
+    if snapshot_check is not None:
+        snapshot_check(image, provenance["snapshotCommitted"])
     runtime = runtime_fingerprint()
     runtime_check(image)
     old_id = health(update.base_image, update.base_revision, "unless-stopped", update.base_run,
@@ -696,6 +739,11 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
     ttl_check(update.base_image)
     check(runtime_fingerprint() == runtime)
     work.mkdir(mode=0o700)
+    if update.block_old_writer_after_open:
+        active_lock_path = work / "updater-active.lock"
+        active_lock = cleanup.enter_context(active_lock_path.open("xb"))
+        active_lock_path.chmod(0o600)
+        fcntl.flock(active_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     fsync_directory(STATE)
     proof = {**identity(revision, image, update.run, update.version), **provenance,
              "previousRevision": update.base_revision, "previousImage": update.base_image,
@@ -755,6 +803,10 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
         phase = "open-writes"
         run(["systemctl", "stop", UNIT], timeout=120)
         stopped()
+        if update.block_old_writer_after_open:
+            phase = "seal-writer-fence"
+            record(fence, {**identity(revision, image, update.run, update.version), "status": "new-writer-allowed"})
+            phase = "open-writes"
         publish(override, override_content(image, update.run, "no", False))
         run(["systemctl", "start", UNIT], timeout=120)
         active_id = health(image, revision, "no", update.run, candidate_ids, version=update.version, update=update)
@@ -783,6 +835,23 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
         if phase == "accepted":
             raise
         failed_phase = phase
+        if update.block_old_writer_after_open and not absent(fence):
+            phase = "maintenance-required"
+            try:
+                rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update, retain_pin=True)
+                run(["systemctl", "daemon-reload"])
+                unit(True)
+                check(not boot_gate(boot_id(), revision, image, update=update))
+                stopped()
+                record(work / "maintenance-required.json", {**identity(revision, image, update.run, update.version),
+                    "status": "maintenance-required", "phase": failed_phase, "dataRestored": False})
+            except BaseException:
+                phase = "maintenance-incomplete"
+                best_effort(record, work / "maintenance-incomplete.json", {
+                    "status": phase, "phase": failed_phase, "dataRestored": False,
+                })
+                raise
+            raise
         phase = "rollback"
         try:
             rollback_candidate(work, pin, staged_pin, expected_pin, image, candidate_ids, update)
@@ -809,7 +878,7 @@ def cutover(cleanup, update=UPDATE_100, script=None, baseline_gate=baseline):
     report_accepted(proof)
 
 
-def cli(*, update=UPDATE_100, script=None, baseline_gate=baseline):
+def cli(*, update=UPDATE_100, script=None, baseline_gate=baseline, snapshot_check=None):
     if len(sys.argv) == 5 and sys.argv[1] == "--boot-gate":
         try:
             sys.exit(0 if boot_gate(*sys.argv[2:], update=update) else 1)
@@ -822,10 +891,10 @@ def cli(*, update=UPDATE_100, script=None, baseline_gate=baseline):
     signal.signal(signal.SIGTERM, interrupt)
     signal.signal(signal.SIGHUP, interrupt)
     try:
-        main(update=update, script=script, baseline_gate=baseline_gate)
+        main(update=update, script=script, baseline_gate=baseline_gate, snapshot_check=snapshot_check)
     except BaseException:
         if phase != "accepted":
-            status = "rollback-incomplete" if phase == "rollback-incomplete" else "failed"
+            status = phase if phase in {"rollback-incomplete", "maintenance-required", "maintenance-incomplete"} else "failed"
             print(json.dumps({"status": status, "phase": phase}), file=sys.stderr)
             sys.exit(1)
 

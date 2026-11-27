@@ -1,4 +1,5 @@
 import { readRouteSession } from "@/lib/account-route-session";
+import { StrategyWriteError } from "@/lib/strategy-server";
 import { NextRequest, NextResponse } from "next/server";
 
 import {
@@ -13,7 +14,13 @@ import {
 import { verifySameOrigin } from "@/lib/auth-server";
 import { isStorageWritable } from "@/lib/db";
 import { syncKnowledgeCardRecord } from "@/lib/disk-sync-service";
-import { folderIds, getApprovedVersion, getCardStatus, getLegacyCustomDraftUniversityId, getRequiredUniversityApprovals } from "@/lib/knowledge";
+import {
+  folderIds,
+  getApprovedVersion,
+  getCardStatus,
+  getLegacyCustomDraftUniversityId,
+  getRequiredUniversityApprovals,
+} from "@/lib/knowledge";
 import { staffDirectory } from "@/lib/account-directory";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
 import {
@@ -86,14 +93,16 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     );
   }
 
-  const input = body && typeof body === "object"
-    ? {
-        ...body,
-        organizationScope: user.role === "admin" && "organizationScope" in body
-          ? body.organizationScope
-          : current.organizationScope,
-      }
-    : body;
+  const input =
+    body && typeof body === "object"
+      ? {
+          ...body,
+          organizationScope:
+            user.role === "admin" && "organizationScope" in body
+              ? body.organizationScope
+              : current.organizationScope,
+        }
+      : body;
   const parsed = knowledgeCardInputSchema.safeParse(input);
 
   if (!parsed.success) {
@@ -130,25 +139,52 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       { status: 400 }
     );
 
-  if (cardInput.type !== current.type ||
-      (cardInput.type === "custom" && current.type === "custom" && cardInput.customTypeId !== current.customTypeId)) {
+  if (
+    cardInput.type !== current.type ||
+    (cardInput.type === "custom" &&
+      current.type === "custom" &&
+      cardInput.customTypeId !== current.customTypeId)
+  ) {
     return NextResponse.json(
       { error: "Тип карточки нельзя изменить после создания" },
       { status: 400 }
     );
   }
 
-  if (cardInput.organizationScope && !canCreateOrganizationCard(cardInput.organizationScope, cardInput)) {
-    return NextResponse.json({ error: "Этот тип карточки находится за пределами ответственности организации" }, { status: 400 });
+  if (
+    cardInput.organizationScope &&
+    !canCreateOrganizationCard(cardInput.organizationScope, cardInput)
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Этот тип карточки находится за пределами ответственности организации",
+      },
+      { status: 400 }
+    );
   }
-  if (current.type === "laboratory" && getRequiredUniversityApprovals(current).length && cardInput.organizationScope) {
-    return NextResponse.json({ error: "Совместная лаборатория сохраняет ответственность вузов. Её нельзя перенести в зону отдельной организации." }, { status: 409 });
+  if (
+    current.type === "laboratory" &&
+    getRequiredUniversityApprovals(current).length &&
+    cardInput.organizationScope
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Совместная лаборатория сохраняет ответственность вузов. Её нельзя перенести в зону отдельной организации.",
+      },
+      { status: 409 }
+    );
   }
-  const canonicalFolder = user.role !== "admin" && getLegacyCustomDraftUniversityId(current)
-    ? current.folderId
-    : canonicalKnowledgeFolder(cardInput);
+  const canonicalFolder =
+    user.role !== "admin" && getLegacyCustomDraftUniversityId(current)
+      ? current.folderId
+      : canonicalKnowledgeFolder(cardInput);
   if (!canonicalFolder) {
-    return NextResponse.json({ error: "Выберите папку из дерева базы знаний" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Выберите папку из дерева базы знаний" },
+      { status: 400 }
+    );
   }
   cardInput = { ...cardInput, folderId: canonicalFolder };
 
@@ -156,7 +192,10 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     if (current.type === "custom") {
       cardInput = {
         ...cardInput,
-        universityId: user.role === "admin" ? cardInput.universityId ?? current.universityId : current.universityId,
+        universityId:
+          user.role === "admin"
+            ? (cardInput.universityId ?? current.universityId)
+            : current.universityId,
       };
     }
     let typeDef;
@@ -174,8 +213,15 @@ export async function PUT(request: NextRequest, context: RouteContext) {
     }
 
     const construction = typeDef.organizationScope === "chkk";
-    if (construction ? user.role !== "admin" && user.role !== "chkk" : cardInput.organizationScope === "chkk") {
-      return NextResponse.json({ error: "Изменение зоны доступа через карточку недоступно." }, { status: 403 });
+    if (
+      construction
+        ? user.role !== "admin" && user.role !== "chkk"
+        : cardInput.organizationScope === "chkk"
+    ) {
+      return NextResponse.json(
+        { error: "Изменение зоны доступа через карточку недоступно." },
+        { status: 403 }
+      );
     }
 
     const customFields = buildCustomFieldValuesSchema(typeDef).safeParse(
@@ -194,7 +240,13 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
     cardInput = {
       ...cardInput,
-      ...(construction ? { organizationScope: "chkk", folderId: folderIds.chkkParameters, universityId: undefined } : {}),
+      ...(construction
+        ? {
+            organizationScope: "chkk",
+            folderId: folderIds.chkkParameters,
+            universityId: undefined,
+          }
+        : {}),
       customFields: customFields.data,
     };
   }
@@ -214,22 +266,39 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   } else {
     const directory = await staffDirectory().catch(() => null);
     if (!directory) return unavailableStorageResponse();
-    const assignment = { ...cardInput, requiredApprovalUniversityIds: current.requiredApprovalUniversityIds };
+    const assignment = {
+      ...cardInput,
+      requiredApprovalUniversityIds: current.requiredApprovalUniversityIds,
+    };
     const published = getApprovedVersion(current);
-    const proposedUniversities = cardInput.type === "project" && cardInput.isJoint
-      ? cardInput.participantUniversityIds : [];
+    const proposedUniversities =
+      cardInput.type === "project" && cardInput.isJoint
+        ? cardInput.participantUniversityIds
+        : [];
     if (published?.type === "project") {
-      const removedUniversities = getRequiredUniversityApprovals(published).filter(id => !proposedUniversities.includes(id));
-      if (removedUniversities.length &&
-          missingJointOwnerUniversityIds(published, directory).some(id => removedUniversities.includes(id))) {
-        return NextResponse.json({
-          error: "Перед изменением состава назначьте руководителей от выбывающих вузов в утверждённой карточке.",
-        }, { status: 409 });
+      const removedUniversities = getRequiredUniversityApprovals(
+        published
+      ).filter((id) => !proposedUniversities.includes(id));
+      if (
+        removedUniversities.length &&
+        missingJointOwnerUniversityIds(published, directory).some((id) =>
+          removedUniversities.includes(id)
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Перед изменением состава назначьте руководителей от выбывающих вузов в утверждённой карточке.",
+          },
+          { status: 409 }
+        );
       }
     }
     const changedScope = !sameCardOwnerScope(current, cardInput);
     const ownerIds =
-      cardInput.ownerIds ?? current.ownerIds ?? resolveLegacyCardOwnerIds(assignment, directory) ??
+      cardInput.ownerIds ??
+      current.ownerIds ??
+      resolveLegacyCardOwnerIds(assignment, directory) ??
       (changedScope ? [] : undefined);
     if (
       ownerIds !== undefined &&
@@ -245,11 +314,16 @@ export async function PUT(request: NextRequest, context: RouteContext) {
   }
 
   try {
-    const updated = await updateKnowledgeCard(id, cardInput, {
-      id: user.id,
-      name: user.name,
-      isAdmin: user.role === "admin",
-    }, current.updatedAt);
+    const updated = await updateKnowledgeCard(
+      id,
+      cardInput,
+      {
+        id: user.id,
+        name: user.name,
+        isAdmin: user.role === "admin",
+      },
+      current.updatedAt
+    );
 
     if (!updated) {
       return NextResponse.json(
@@ -271,6 +345,11 @@ export async function PUT(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json(visibleKnowledgeCard(user, card));
   } catch (error) {
+    if (error instanceof StrategyWriteError)
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
     if (
       error instanceof Error &&
       error.name === "ConditionalCheckFailedException"
@@ -278,7 +357,7 @@ export async function PUT(request: NextRequest, context: RouteContext) {
       return NextResponse.json(
         {
           error:
-            "Карточка изменилась. Обновите её перед повторным сохранением.",
+            "Карточка или связанный источник изменился. Обновите данные перед повторным сохранением.",
         },
         { status: 409 }
       );

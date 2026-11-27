@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { AnimatedNumber } from "@/components/motion/animated-number";
-import { UralTopography } from "@/components/motion/ural-topography";
+import { MastheadContours } from "@/components/motion/masthead-contours";
 import styles from "./workspace-masthead.module.css";
 
 type MastheadProps = {
@@ -30,7 +30,7 @@ export function WorkspaceMasthead({
       aria-labelledby={id}
     >
       <div className={styles.art} aria-hidden="true">
-        <UralTopography />
+        <MastheadContours className={styles.contours} dark={access} />
       </div>
       <div className={styles.identity}>
         <span className={styles.icon} aria-hidden="true">

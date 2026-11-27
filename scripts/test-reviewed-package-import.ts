@@ -102,6 +102,25 @@ test("a joint proposal is withheld even when a verification incorrectly lists it
   });
 });
 
+test("a reviewed package cannot insert a strategy link outside card moderation", () => {
+  const document = { cardId: "qa-document", versionId: `cv-${"a".repeat(64)}` };
+  const { bytes, proof } = packageFor([
+    candidate("approved", {
+      strategyLinks: [
+        {
+          document,
+          clauseId: "goal",
+          explanation: "Synthetic link",
+          evidence: { document, clauseId: "goal" },
+        },
+      ],
+    }),
+  ]);
+  assert.throws(() => prepareReviewedPackage(bytes, proof), {
+    code: "approval-denied",
+  });
+});
+
 test("the verification covers every ID exactly once", () => {
   const { bytes, proof } = packageFor([
     candidate("approved"),

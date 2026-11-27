@@ -1,3 +1,5 @@
+import { isManagedStrategyCard } from "./strategy";
+import { strategySourceFacts } from "./strategy-evidence";
 import {
   checkFactText,
   factCheckSentenceRanges,
@@ -16,10 +18,17 @@ type EditorialFinding = Pick<
   FactCheckFinding,
   "id" | "level" | "title" | "quote" | "sourceCardId"
 >;
-type CitedFragment = { quote: string; claim: string; context: string; start: number; end: number; sourceIds: string[] };
+type CitedFragment = {
+  quote: string;
+  claim: string;
+  context: string;
+  start: number;
+  end: number;
+  sourceIds: string[];
+};
 
 const numberFormat = new Intl.NumberFormat("ru-RU", {
-  maximumFractionDigits: 12,
+  maximumSignificantDigits: 21,
 });
 const citation = /\[([^[\]\r\n]*)\]/gu;
 const neutralHeadings = new Set([
@@ -94,6 +103,12 @@ function normalizedClaim(text: string) {
 }
 
 function evidencePhrases(card: KnowledgeCard): string[] {
+  if (isManagedStrategyCard(card))
+    return [
+      card.title,
+      `Сведения карточки «${card.title}»`,
+      ...strategySourceFacts(card).map((fact) => fact.text),
+    ];
   const phrases = [
     card.title,
     card.referenceDescription,
@@ -142,6 +157,7 @@ function evidencePhrases(card: KnowledgeCard): string[] {
       })
     );
   }
+  phrases.push(...strategySourceFacts(card).map((fact) => fact.text));
   return phrases;
 }
 
@@ -247,8 +263,11 @@ export function checkEditorialEvidence(text: string, inputs: KnowledgeCard[]) {
     return approved ? [approved] : [];
   });
   const evidence = new Map<string, Set<string>>();
-  const completeUnits: Array<{ start: number; end: number; sourceId: string }> = [];
-  const citationMasked = text.replace(citation, match => " ".repeat(match.length));
+  const completeUnits: Array<{ start: number; end: number; sourceId: string }> =
+    [];
+  const citationMasked = text.replace(citation, (match) =>
+    " ".repeat(match.length)
+  );
   for (const card of cards) {
     // A source field is one semantic unit. Splitting it can turn a hypothetical
     // or rebutted statement from a later sentence into a positive fact.
@@ -259,11 +278,21 @@ export function checkEditorialEvidence(text: string, inputs: KnowledgeCard[]) {
       sources.add(card.id);
       evidence.set(key, sources);
       if (/[\r\n]/u.test(phrase)) {
-        const literal = phrase.trim().split(/\s+/u)
-          .map(part => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("\\s+");
-        const wholeUnit = new RegExp(`(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])`, "giu");
+        const literal = phrase
+          .trim()
+          .split(/\s+/u)
+          .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+          .join("\\s+");
+        const wholeUnit = new RegExp(
+          `(?<![\\p{L}\\p{N}])${literal}(?![\\p{L}\\p{N}])`,
+          "giu"
+        );
         for (const match of citationMasked.matchAll(wholeUnit)) {
-          completeUnits.push({ start: match.index, end: match.index + match[0].length, sourceId: card.id });
+          completeUnits.push({
+            start: match.index,
+            end: match.index + match[0].length,
+            sourceId: card.id,
+          });
         }
       }
     }
@@ -272,9 +301,10 @@ export function checkEditorialEvidence(text: string, inputs: KnowledgeCard[]) {
   const checked = checkFactText(text.replace(citation, " "), cards);
   const exact: EditorialFinding[] = [];
   const uncovered: EditorialFinding[] = [];
-  for (const [index, { quote, claim, context, start, end, sourceIds }] of citedFragments(
-    text
-  ).entries()) {
+  for (const [
+    index,
+    { quote, claim, context, start, end, sourceIds },
+  ] of citedFragments(text).entries()) {
     const key = normalizedClaim(claim);
     if (!sourceIds.length && (!key || neutralHeadings.has(key))) continue;
     const sources = new Set([
@@ -282,7 +312,9 @@ export function checkEditorialEvidence(text: string, inputs: KnowledgeCard[]) {
       // A complete source paragraph can be reproduced, including its scope.
       // This applies only to this paragraph, not another copy elsewhere.
       ...(evidence.get(normalizedClaim(context)) ?? []),
-      ...completeUnits.filter(unit => unit.start <= start && unit.end >= end).map(unit => unit.sourceId),
+      ...completeUnits
+        .filter((unit) => unit.start <= start && unit.end >= end)
+        .map((unit) => unit.sourceId),
     ]);
     for (const card of cards) {
       if (metricSupports(claim, card)) sources.add(card.id);

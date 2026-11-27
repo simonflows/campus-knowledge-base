@@ -11,24 +11,44 @@ import {
   getCardTypeById,
   updateCardType,
 } from "@/lib/models";
-import { cardTypeUpdateSchema, hasRequiredConstructionField } from "@/lib/validation/knowledge";
+import {
+  cardTypeUpdateSchema,
+  hasRequiredConstructionField,
+} from "@/lib/validation/knowledge";
 import { unavailableStorageResponse } from "@/lib/runtime-storage-policy";
+import { StrategyWriteError } from "@/lib/strategy-server";
 
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
 function typeWriteFailure(error: unknown) {
+  if (error instanceof StrategyWriteError)
+    return NextResponse.json(
+      { error: error.message },
+      { status: error.status }
+    );
   if (error instanceof CardTypeInUseError) {
-    return NextResponse.json({
-      error: "Тип используют сохранённые карточки. Сохраните поля или создайте новый тип.",
-      cardCount: error.count,
-    }, { status: 409 });
+    return NextResponse.json(
+      {
+        error:
+          "Тип используют сохранённые карточки. Сохраните поля или создайте новый тип.",
+        cardCount: error.count,
+      },
+      { status: 409 }
+    );
   }
-  if (error instanceof Error && error.name === "ConditionalCheckFailedException") {
-    return NextResponse.json({
-      error: "Тип карточки изменился. Обновите страницу и повторите действие.",
-    }, { status: 409 });
+  if (
+    error instanceof Error &&
+    error.name === "ConditionalCheckFailedException"
+  ) {
+    return NextResponse.json(
+      {
+        error:
+          "Тип карточки изменился. Обновите страницу и повторите действие.",
+      },
+      { status: 409 }
+    );
   }
   return unavailableStorageResponse();
 }
@@ -59,7 +79,10 @@ async function getAdminDeniedResponse() {
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
   if (!verifySameOrigin(request)) {
-    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Недопустимый источник запроса" },
+      { status: 403 }
+    );
   }
   const denied = await getAdminDeniedResponse();
 
@@ -110,11 +133,27 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     const { organizationScope, ...patch } = parsed.data;
-    if (organizationScope !== undefined && organizationScope !== (current.organizationScope ?? null)) {
-      return NextResponse.json({ error: "Доступ типа задаётся при создании. Создайте отдельный тип для другой зоны." }, { status: 409 });
+    if (
+      organizationScope !== undefined &&
+      organizationScope !== (current.organizationScope ?? null)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Доступ типа задаётся при создании. Создайте отдельный тип для другой зоны.",
+        },
+        { status: 409 }
+      );
     }
-    if (current.organizationScope === "chkk" && patch.fields && !hasRequiredConstructionField(patch.fields)) {
-      return NextResponse.json({ error: "Для параметра ЧКК добавьте обязательное поле." }, { status: 400 });
+    if (
+      current.organizationScope === "chkk" &&
+      patch.fields &&
+      !hasRequiredConstructionField(patch.fields)
+    ) {
+      return NextResponse.json(
+        { error: "Для параметра ЧКК добавьте обязательное поле." },
+        { status: 400 }
+      );
     }
     const updated = await updateCardType(id, patch, current.updatedAt);
 
@@ -135,7 +174,10 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
 export async function DELETE(request: NextRequest, context: RouteContext) {
   if (!verifySameOrigin(request)) {
-    return NextResponse.json({ error: "Недопустимый источник запроса" }, { status: 403 });
+    return NextResponse.json(
+      { error: "Недопустимый источник запроса" },
+      { status: 403 }
+    );
   }
   const denied = await getAdminDeniedResponse();
 
