@@ -648,7 +648,7 @@ body:has(.atlas-hero) .atlas-mode {
   color: var(--primary);
 }
 .atlas-passport {
-  background: #f0f2ee;
+  background: #eaf0ea6b;
   border-block: 1px solid var(--border);
 }
 .atlas-source-note {

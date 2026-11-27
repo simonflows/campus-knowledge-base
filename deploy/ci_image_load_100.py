@@ -148,7 +148,7 @@ def safe_component(name):
             not any(character in "\\:" or ord(character) < 32 for character in name))
 
 
-def source_manifest(path, revision, target=None):
+def source_manifest(path, revision, target=None, *, expected_version=None):
     entries = {}
     with tarfile.open(path, "r:gz") as archive:
         require(archive.pax_headers.get("comment") == revision, "Git archive commit does not match CI")
@@ -168,6 +168,12 @@ def source_manifest(path, revision, target=None):
                 continue
             executable = bool(member.mode & 0o111)
             with archive.extractfile(member) as data:
+                if expected_version is not None and name == "package.json":
+                    require(member.size <= CHUNK, "source package metadata is too large")
+                    package = json.loads(data.read())
+                    require(isinstance(package, dict) and package.get("version") == expected_version,
+                            "Git archive package version differs from the candidate version")
+                    data.seek(0)
                 if output is None:
                     digest, _ = hash_stream(data, expected_bytes=member.size)
                 else:
@@ -178,6 +184,8 @@ def source_manifest(path, revision, target=None):
                         os.fsync(handle.fileno())
             entries[name] = ["file", executable, digest]
     require(entries.get("") == ["dir"] and len(entries) > 1, "empty Git archive")
+    if expected_version is not None:
+        require(entries.get("package.json", [None])[0] == "file", "Git archive lacks package metadata")
     if target is not None and os.name != "nt":
         for name, entry in reversed(list(entries.items())):
             if entry == ["dir"]:
@@ -208,7 +216,7 @@ def tree_manifest(root, owner=0):
     return manifest_digest(entries)
 
 
-def verify_artifact(revision, run_id, bundle, output):
+def verify_artifact(revision, run_id, bundle, output, *, expected_version=None):
     proof = github_proof(revision, run_id)
     with bundle.open("rb") as source:
         digest, _ = hash_stream(source, expected_bytes=proof["ciArtifactBytes"])
@@ -232,7 +240,8 @@ def verify_artifact(revision, run_id, bundle, output):
             require(gzip_sha == checksum[0] and gzip_bytes > 0, "CI gzip digest mismatch")
             proof.update(image=image, gzipSha256=gzip_sha, gzipBytes=gzip_bytes,
                          sourceArchiveSha256=digests[SOURCE_ARCHIVE][0],
-                         sourceManifestSha256=source_manifest(output / SOURCE_ARCHIVE, revision))
+                         sourceManifestSha256=source_manifest(output / SOURCE_ARCHIVE, revision,
+                                                              expected_version=expected_version))
     new_json(output / PROVENANCE, proof)
     return proof
 
@@ -277,13 +286,13 @@ def docker_command(*args):
     return result.stdout.decode().strip()
 
 
-def image_snapshot(proof):
+def image_snapshot(proof, version="1.0.0"):
     revision = proof["revision"]
     image = proof["image"]
     fmt = ('{{.Id}} {{.Os}} {{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}} '
            '{{index .Config.Labels "org.opencontainers.image.version"}}')
     require(docker_command("image", "inspect", "--format", fmt, "campus-kb:" + revision) ==
-            f"{image} linux amd64 {revision} 1.0.0", "loaded image identity and labels differ from CI")
+            f"{image} linux amd64 {revision} {version}", "loaded image identity and labels differ from CI")
     layers = json.loads(docker_command("image", "inspect", "--format", "{{json .RootFS.Layers}}", image))
     require(layers and all(hex_digest(layer, prefix="sha256:") for layer in layers), "invalid image filesystem layers")
     chain = layers[0]
@@ -296,23 +305,25 @@ def image_snapshot(proof):
     return chain
 
 
-def load_verified(revision, source):
+def load_verified(revision, source, *, state=None, namespace="build100", expected_version=None):
     require(os.geteuid() == 0 and hex_digest(revision, size=40), "root and exact commit required")
-    private_exact(STATE, 0o700)
-    require(STATE.resolve() == STATE, "release state parent contains a symlink")
-    build = STATE / f"build100-{revision}"
+    state = STATE if state is None else state
+    private_exact(state, 0o700)
+    require(state.resolve() == state, "release state parent contains a symlink")
+    build = state / f"{namespace}-{revision}"
     private_exact(build, 0o700)
     require({item.name for item in build.iterdir()} == {PROVENANCE, SOURCE_ARCHIVE}, "candidate staging is not fresh")
     private_exact(build / PROVENANCE, 0o600)
     proof = json.loads((build / PROVENANCE).read_text(encoding="utf-8"))
     archive = validate_source(build, revision, proof)
     target = build / "source"
-    require(source_manifest(archive, revision, target) == tree_manifest(target) == proof["sourceManifestSha256"],
+    require(source_manifest(archive, revision, target, expected_version=expected_version) ==
+            tree_manifest(target) == proof["sourceManifestSha256"],
             "extracted source tree differs from GitHub artifact")
     disk = os.statvfs("/var/lib/containerd")
     require(disk.f_bavail * disk.f_frsize >= MIN_CONTAINERD_BYTES, "insufficient Docker unpack space")
     load_image(source, proof)
-    receipt = {**proof, "loaded": True, "snapshotCommitted": image_snapshot(proof)}
+    receipt = {**proof, "loaded": True, "snapshotCommitted": image_snapshot(proof, expected_version or "1.0.0")}
     new_json(build / RECEIPT, receipt)
     return receipt
 
@@ -332,25 +343,25 @@ def verified_receipt(build, revision, image):
     return {key: value for key, value in receipt.items() if key not in {"schema", "revision", "image", "loaded"}}
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(*, verify=verify_artifact, load=load_verified, description=__doc__):
+    parser = argparse.ArgumentParser(description=description)
     commands = parser.add_subparsers(dest="command", required=True)
-    verify = commands.add_parser("verify")
-    verify.add_argument("revision")
-    verify.add_argument("run_id", type=int)
-    verify.add_argument("bundle", type=Path)
-    verify.add_argument("output", type=Path)
-    load = commands.add_parser("load")
-    load.add_argument("revision")
+    verify_parser = commands.add_parser("verify")
+    verify_parser.add_argument("revision")
+    verify_parser.add_argument("run_id", type=int)
+    verify_parser.add_argument("bundle", type=Path)
+    verify_parser.add_argument("output", type=Path)
+    load_parser = commands.add_parser("load")
+    load_parser.add_argument("revision")
     args = parser.parse_args()
     os.umask(0o077)
     try:
         if args.command == "verify":
-            proof = verify_artifact(args.revision, args.run_id, args.bundle, args.output)
+            proof = verify(args.revision, args.run_id, args.bundle, args.output)
         else:
             for key in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG"]:
                 os.environ.pop(key, None)
-            proof = load_verified(args.revision, sys.stdin.buffer)
+            proof = load(args.revision, sys.stdin.buffer)
         print(json.dumps(proof, sort_keys=True))
     except RuntimeError as error:
         sys.exit(str(error))

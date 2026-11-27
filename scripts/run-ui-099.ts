@@ -1,33 +1,34 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
-import { chromium } from "playwright-core";
-import { BROWSER_DEMO_KEY, getDemoCard, readBrowserDemo, writeBrowserDemo } from "../lib/browser-demo";
+import { chromium, type Route } from "playwright-core";
+import { getDemoCard } from "../lib/browser-demo";
 import candidateData from "../data/pilot-0.9.5-candidates.json";
+import { createToolResponseFixture, fulfillToolResponse } from "./test-fact-result-ui-097";
 
 async function main() {
-  const stored = new Map<string, string>();
-  const storage = { getItem: (key: string) => stored.get(key) ?? null,
-    setItem: (key: string, value: string) => { stored.set(key, value); } };
-  const demo = readBrowserDemo(storage);
-  const passport = getDemoCard(demo, "campus-passport");
-  const candidate = candidateData.cards.find(({ card }) => card.id === "campus-passport")?.card;
-  assert.ok(passport?.type === "campus" && candidate?.campusMetrics);
-  demo.updates = [{ ...passport, referenceDescription: candidate.referenceDescription,
-    campusMetrics: candidate.campusMetrics, verifiedFacts: [] }];
-  writeBrowserDemo(storage, demo);
+  const base = "http://localhost:8080";
+  const fixture = createToolResponseFixture(state => {
+    const passport = getDemoCard(state, "campus-passport");
+    const candidate = candidateData.cards.find(({ card }) => card.id === "campus-passport")?.card;
+    assert.ok(passport?.type === "campus" && candidate?.campusMetrics);
+    state.updates = [{ ...passport, referenceDescription: candidate.referenceDescription,
+      campusMetrics: candidate.campusMetrics, verifiedFacts: [] }];
+  });
   const browser = await chromium.launch({ channel: process.env.CAMPUS_QA_CHROME_CHANNEL ?? "chrome" });
   try {
     const page = await browser.newPage();
     const apiRequests: string[] = [];
     const pageErrors: string[] = [];
-    page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests.push(request.url()); });
     page.on("pageerror", error => pageErrors.push(error.message));
-    await page.addInitScript(({ key, value }) => {
-      if (location.origin === "http://localhost:8080" && location.pathname === "/demo" && !localStorage.getItem(key)) localStorage.setItem(key, value);
-    }, { key: BROWSER_DEMO_KEY, value: stored.get(BROWSER_DEMO_KEY)! });
+    const respond = async (route: Route) => {
+      apiRequests.push(route.request().method() + " " + new URL(route.request().url()).pathname);
+      await fulfillToolResponse(route, await fixture(route));
+    };
+    await page.route(base + "/api/assistant", respond);
+    await page.route(base + "/api/fact-check", respond);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto("http://localhost:8080/demo");
+    await page.goto(base + "/");
     await page.getByRole("button", { name: "Открыть помощник Канона", exact: true }).click();
     const question = page.getByPlaceholder("Введите вопрос", { exact: true });
     await question.fill("Какова площадь кампуса?");
@@ -45,7 +46,7 @@ async function main() {
     assert.equal(await page.getByRole("button", { name: "Открыть помощник Канона", exact: true }).count(), 0);
     await page.keyboard.press("Escape");
 
-    await page.goto("http://localhost:8080/demo#/check");
+    await page.goto(base + "/check");
     const wrong = "Общая вместимость гостиниц кампуса составляет 9 999 мест.";
     const correct = wrong.replace("9 999", "3 400");
     const area = "Общая площадь кампуса составляет 114 тыс. кв. метров.";
@@ -71,9 +72,9 @@ async function main() {
       await page.getByRole("heading", { name: "Текст, переписанный по официальным данным", exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: `.playwright-cli/ui-099/rewrite-${width}.png` });
     }
-    assert.deepEqual(apiRequests, [], "browser demo made a working API request");
+    assert.deepEqual(apiRequests, ["POST /api/assistant", "POST /api/assistant", "POST /api/fact-check"]);
     assert.deepEqual(pageErrors, []);
-    console.log("PASS 099: direct assistant answers/versioned sources/keyboard disclosure; rewrite R1Y1G1→R0Y1G2; original separate; 390/1440px; 0 working API calls");
+    console.log("PASS 099: direct assistant answers/versioned sources/keyboard disclosure; rewrite R1Y1G1→R0Y1G2; original separate; 390/1440px; replayed tool responses");
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

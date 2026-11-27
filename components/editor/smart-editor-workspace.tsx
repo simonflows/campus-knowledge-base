@@ -1222,7 +1222,7 @@ function EditorSession({
     : { nativeButton: false, render: <a href={downloadHref} download /> };
 
   return (
-    <div className="atlas-wrap campus-workspace desk-editor">
+    <div className="atlas-wrap campus-workspace desk-editor" aria-busy={pendingAction !== null}>
       <Dialog
         open={!!draftToDelete}
         onOpenChange={(open) => { if (!open && !operationBusy) setDraftToDelete(null); }}

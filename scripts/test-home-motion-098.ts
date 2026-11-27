@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium, type Page } from "playwright-core";
 
-const demoUrl = "http://localhost:8080/demo";
+const demoUrl = "http://localhost:8080/";
 
 async function readContours(page: Page) {
   return page.locator("[data-home-topography]").evaluate((field) => {

@@ -10,7 +10,6 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
-  FlaskConical,
   KeyRound,
   LockKeyhole,
   LogOut,
@@ -19,8 +18,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { buttonVariants } from "@/components/ui/button-variants";
-import { cn } from "@/lib/utils";
+import { YandexSignInButton } from "@/components/auth/yandex-sign-in-button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,7 +38,6 @@ type LoginScreenProps = {
   demo: boolean;
   returnTo?: string;
   staffRequired?: boolean;
-  demoHref: string;
   emailEnabled?: boolean;
   yandexEnabled?: boolean;
   oauthStatus?: "invalid" | "cancelled";
@@ -53,7 +50,6 @@ export function LoginScreen({
   demo,
   returnTo = "/knowledge",
   staffRequired = false,
-  demoHref,
   emailEnabled = false,
   yandexEnabled = false,
   oauthStatus,
@@ -169,7 +165,7 @@ export function LoginScreen({
         <div className="desk-access-body">
           {staffRequired && (
             <p className="text-sm text-muted-foreground" role="status">
-              Войдите, чтобы открыть аналитику, или попробуйте локальное демо.
+              Войдите, чтобы открыть рабочие инструменты.
             </p>
           )}
           {currentUser ? (
@@ -199,9 +195,7 @@ export function LoginScreen({
           ) : null}
           {yandexEnabled && !currentUser && (!proofMode || !emailEnabled) && (
             <form method="post" action={basePath + "/api/auth/yandex/start?next=" + encodeURIComponent(returnTo)}>
-              <Button type="submit" size="lg">
-                Войти через Яндекс <ArrowRight aria-hidden="true" />
-              </Button>
+              <YandexSignInButton />
               {oauthStatus && (
                 <p className="mt-3 text-sm text-muted-foreground" role="status">
                   {oauthStatus === "cancelled" ? "Вход через Яндекс отменён." : "Ссылка входа недействительна или устарела. Попробуйте снова."}
@@ -271,10 +265,6 @@ export function LoginScreen({
             </details>
           ) : null}
           <div className="flex flex-wrap items-center gap-4">
-            <a href={demoHref} className={cn(buttonVariants({ variant: "outline", className: "gap-2 text-foreground" }))}>
-              <FlaskConical aria-hidden="true" />
-              Попробовать в демо-режиме
-            </a>
             {!demo && currentUser && currentUser.role !== "guest" && returnTo !== "/knowledge" && !blockedDestination && (
               <Link href={returnTo} className="desk-text-link">Продолжить работу <ArrowRight size={15} aria-hidden="true" /></Link>
             )}

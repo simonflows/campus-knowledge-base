@@ -23,18 +23,22 @@
   flex-direction: column;
   gap: 0;
   width: 24rem;
+  height: min(38rem, calc(100dvh - var(--assistant-offset) - 1rem));
   max-width: calc(100% - 2 * var(--assistant-inline));
   max-height: calc(100dvh - var(--assistant-offset) - 1rem);
   padding: 0;
   overflow: hidden;
   border-radius: 1rem;
   translate: none;
+  transform-origin: bottom right;
   box-shadow: 0 10px 32px #10233230;
+  animation: none;
 }
 
 :global([data-slot="dialog-overlay"]):has(~ .panel) {
   background-color: rgb(16 35 50 / 18%);
   backdrop-filter: none;
+  animation: none;
 }
 
 .panel[data-slot="dialog-content"] [data-slot="dialog-close"] {
@@ -90,8 +94,8 @@
 }
 
 .send:not(:disabled) { box-shadow: 0 3px 8px #14293724; }
-.send svg { transition: transform 160ms cubic-bezier(0.16, 1, 0.3, 1); }
-.send:not(:disabled):active svg { transform: scale(0.88); }
+.send svg { transition: transform var(--m-press) var(--m-ease); }
+.send:not(:disabled):active svg { transform: scale(0.94); }
 
 .webAnswer { display: grid; gap: 0.65rem; }
 .webLabel { display: flex; align-items: center; gap: 0.4rem; color: var(--muted-foreground); font-size: 0.75rem; }
@@ -105,17 +109,8 @@
 .warningActions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
 
 @media (hover: hover) and (pointer: fine) {
-  .send:not(:disabled):hover svg { transform: translate(2px, -2px); }
+  .send:not(:disabled):hover:not(:active) svg { transform: translate(2px, -2px); }
   .externalLink:hover { background: var(--muted); }
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  :global(html:not([data-motion="off"])) .turn {
-    transition: opacity 180ms ease-out, transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  }
-  @starting-style {
-    :global(html:not([data-motion="off"])) .turn { opacity: 0; transform: translateY(4px); }
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -220,19 +215,38 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  :global(html:not([data-motion="off"])) .panel[data-slot="dialog-content"] {
-    transition:
-      opacity 180ms cubic-bezier(0.22, 1, 0.36, 1),
-      transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  :global(html:not([data-motion="off"])) .panel[data-slot="dialog-content"],
+  :global(html:not([data-motion="off"]) [data-slot="dialog-overlay"]):has(~ .panel) {
+    transition: opacity 360ms var(--m-ease);
   }
 
-  :global(html:not([data-motion="off"]))
-    .panel[data-slot="dialog-content"]:is(
-      [data-starting-style],
-      [data-ending-style]
-    ) {
-    transform: translateY(5px);
+  :global(html:not([data-motion="off"])) .panel[data-slot="dialog-content"] {
+    transition-property: opacity, transform;
+  }
+
+  :global(html:not([data-motion="off"])) .panel[data-ending-style][data-slot="dialog-content"],
+  :global(html:not([data-motion="off"]) [data-ending-style][data-slot="dialog-overlay"]):has(~ .panel) {
+    transition-duration: 300ms;
+  }
+
+  :global(html:not([data-motion="off"])) .panel[data-slot="dialog-content"]:is([data-starting-style], [data-ending-style]),
+  :global(html:not([data-motion="off"]) [data-slot="dialog-overlay"]:is([data-starting-style], [data-ending-style])):has(~ .panel) {
     opacity: 0;
+  }
+
+  :global(html:not([data-motion="off"])) .panel[data-slot="dialog-content"]:is([data-starting-style], [data-ending-style]) {
+    transform: translateY(0.625rem) scale(0.96);
+  }
+
+  :global(html:not([data-motion="off"])) .arrival {
+    transition: opacity 340ms var(--m-ease), translate 340ms var(--m-ease);
+  }
+
+  @starting-style {
+    :global(html:not([data-motion="off"])) .panel[data-open]:not([data-starting-style]) .arrival {
+      opacity: 0.6;
+      translate: 0 0.375rem;
+    }
   }
 }
 

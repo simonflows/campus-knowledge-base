@@ -19,7 +19,6 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
       demo={demoLoginEnabled()}
       returnTo={returnTo}
       staffRequired={query.reason === "staff"}
-      demoHref={basePath + "/demo"}
       emailEnabled={emailAccountsEnabled()}
       yandexEnabled={Boolean(yandexOAuthConfig())}
       oauthStatus={query.oauth === "invalid" || query.oauth === "cancelled" ? query.oauth : undefined}

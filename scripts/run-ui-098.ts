@@ -20,7 +20,7 @@ async function main() {
     const streamed = await context.newPage();
     await runFactStreamUiChecks(streamed, "http://localhost:8080");
     console.log(
-      "PASS: rewrite ordering/focus, stale requests, honest coverage, demo AI label and service error recovery"
+      "PASS: rewrite ordering/focus, stale requests, limited coverage, AI fallback, assistant keyboard, release notes and fact stream recovery"
     );
   } finally {
     await browser.close();

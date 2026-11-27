@@ -1,13 +1,5 @@
-import type { Metadata } from "next";
-
-import { BrowserDemo } from "@/components/demo/browser-demo";
-import "@/app/data-workspaces.css";
-
-export const metadata: Metadata = {
-  title: "Демо-режим · Канон",
-  robots: { index: false, follow: false },
-};
+import { redirect } from "next/navigation";
 
 export default function DemoPage() {
-  return <BrowserDemo exitHref={`${process.env.BASE_PATH || ""}/`} />;
+  redirect("/login#");
 }

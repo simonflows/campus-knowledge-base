@@ -36,10 +36,28 @@
 
 - Составной вопрос о площади с хвостом «и из каких источников это известно» блокировался строгим подбором доказательств. Снимается только точный заключительный запрос источников; дата, отрицание, УНК, план и другойкампус сохраняются. Подсказка доступа заменена с emailрегистрации на Яндекс/author/coordinator.
 - Два исходных RED; executor51targeted/check/test:10094pass4expectedskip; независимое review81targeted+10routechecks PASS. Production build после исправлений PASS.
-- Для установки нужен новый успешный exactmainCIimage и отдельный updatef100n26b без DDL, с новыми proof/pin и свежим backup/restore11. Старый принятый helperf100n26a повторно не запускается. Этот этап пока не принят.
+- Для установки нужен новый успешный exactmainCIimage и отдельный updatef100n26b без DDL, с новыми proof/pin и свежим backup/restore11. Старый принятый helperf100n26a повторно не запускается. Обновление позднее принято как f100n26b, доказательства ниже.
 
 ## Область доказательств
 
 Full hostcheck/offline/build, свежий Dynamo fixture, HTTPS image fixture и реальный изолированный YDB учтены в progress.md и [отчёте YDB](release-100-ydb-validation.md). AUTH/OPS/assistant independent reviews закрыли блокирующие замечания. Strix engine недоступен; не заявляется полноценный pentest или отсутствие любых возможных ошибок. Owner verification в ЯндексID не выполнялась; Яндекс показывает предупреждение о неверифицированном сервисе перед стандартным входом. Базовый вход фактически работает.
 
-Финальный updatehelper прошёл независимое ревью:40целевых/116releaseтестов и7отдельныхfaultprobes. Рабочие SHA256: helper `c2b6cbb76ac2c4e5f9310a92e0337218031fcd6ce707f1281d3eb915d2acb51d`, tests `385fbf359db2c5a105adeb52bf362abc14c66ee4d9cd0cd14f9015546f0be819`. Подтверждённые замечания отката и статуса после commit исправлены. Приёмка настоящего update по-прежнему впереди.
+Финальный updatehelper прошёл независимое ревью:40целевых/116releaseтестов и7отдельныхfaultprobes. Рабочие SHA256: helper `c2b6cbb76ac2c4e5f9310a92e0337218031fcd6ce707f1281d3eb915d2acb51d`, tests `385fbf359db2c5a105adeb52bf362abc14c66ee4d9cd0cd14f9015546f0be819`. Подтверждённые замечания отката и статуса после commit исправлены. Приёмка настоящего update выполнена, доказательства ниже.
+
+## Итоговая приёмка f100n26b
+
+- Финальный код: `c1405c6987bd22b0c740c935c0af28625dc79fa7`, PR#13 https://github.com/simonflows/campus-knowledge-base/pull/13. Обязательные PR/push CI прошли перед merge; отдельный mainCI45748848661 success.
+- Exact image `sha256:7e8eecacabbbfeaf56ab5bf8737a73757487ef9bdff1e6fc7d3f3cbc5419543b`; артефакт15084817585, ZIP SHA256 `ab5a49d715920693b45307e02bcbf3c2dd31563650e1a673331e4e4a74599a95`.
+- Образ/архив исходников/полный manifest проверены, binary stream без image archive на VM. Native snapshot `sha256:14cc64b8c5390335deb8ca00d8fb3f6a533d7e989ac37c89efcd8f663fd4bf50`, KindCommitted. Перед переключением оставалось8.27GB и3.85M свободных inodes.
+- Source и helper совпали с независимо проверенным SHA256 c2b6cbb7…; preflight подтвердил старый принятый образ, все старые pin/gate, точные systemd-команды, runtime, TTL и OAuthstart.
+- Native Linux:40offlineupdateтестов и4настоящих SIGTERM-пробы на синтетических файлах с подменой Docker/systemd PASS: до публикации, успешный fsync, неуспешный fsync и после commit. Рабочая БД этими пробами не использовалась.
+- `/var/lib/canon/release100-f100n26b/accepted.json`: accepted, restored/inventoryUnchanged/yandexOAuthStartVerified=true. Принят контейнер `52c3841ea60df43b58251728e1434f7689b97c6a5787bd9eaa721b585770b6e4`; rollback/incomplete не возникли.
+- Свежий snapshot всех11таблиц проверен и реально восстановлен в `qa095-100-f100n26b-old-`. SHA256 `051f31dbc1db1db4d3d076e6abb9e90f0ca20c2292a0f2c11d99289f04fb0fd1`.
+- Frozen snapshot11 проверен; SHA256 `dffca741d546bcc14986e32216d1edfa89b94d41d8bb657f1b689f1d8621bf26`. Все9обычных таблиц и живые/постоянные строки двух TTL-таблиц совпали.
+- Оба inventory: identities1/rates7/sessions1/documents6/revisions28/requests0/articles0/customtypes0/cardversions16/cards27/workflow13. Рост документов/ревизий относительно первого выпуска — штатный собственный контрольный черновик и его tombstone. Официальные карточки не изменялись.
+- Схема рабочих таблиц не менялась; изолированный restore создавал только QA-таблицы. Старые28pin/accepted1.0.0/0.9.9/0.9.8 доказательства и образы сохранены. Pin29 и durableactivation приняты; реальный CLI bootgate с другим expectedboot также вернул0.
+- Внешние HTTPS `/api/version`200:1.0.0/c1405c6, `/api/ready`200ready. Уже открытая OAuth-сессия после обновления осталась авторской. На новой странице один помощник и версия1.0.0, consoleerrors0.
+- Исправленный составной вопрос в production теперь сообщает, что площадь отсутствует в текущем утверждённом паспорте, и даёт точную ссылку на `cv-87f29653e796c27a16ad066cf2ff2de2d248e1cc99976816f4ec82b8acaf21f3`. Значение121,8–123тыс.м² подтверждено только в локальном наборе; рабочие утверждённые данные не дополнялись догадкой.
+- Подсказка доступа вернула правильные Яндекс/author/coordinator инструкции из резервного слоя; провайдерный подбор этого ответа перешёл в явно показанный fallback. Реальная смысловая проверка и websearch ранее прошли успешно. Сервис не обещает безошибочную или постоянную доступность ИИ.
+
+Обязательные проверки и независимые ревью завершены; релиз готов. Официальная верификация владельца сервиса в ЯндексID остаётся отдельной необязательной процедурой для снятия предупреждения. Полный pentest Strix не выполнялся. Отчёт не обещает абсолютной защищённости или атомарности Docker/FS при внезапной потере питания.
